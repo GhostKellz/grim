@@ -62,7 +62,7 @@ fn testRopeMemory(allocator: std.mem.Allocator) !void {
         // Insert data in chunks to simulate real editing
         var i: usize = 0;
         const chunk_size = 1024;
-        const chunk = "A".** chunk_size;
+        const chunk = "A" ** chunk_size;
 
         while (i < TEST_FILE_SIZE_MEDIUM) : (i += chunk_size) {
             const remaining = @min(chunk_size, TEST_FILE_SIZE_MEDIUM - i);
@@ -282,7 +282,7 @@ fn createTestFile(path: []const u8, size: usize) !void {
     defer file.close();
 
     const chunk_size = 1024;
-    const chunk = "The quick brown fox jumps over the lazy dog. ".** (chunk_size / 45);
+    const chunk = "The quick brown fox jumps over the lazy dog. " ** (chunk_size / 45);
 
     var written: usize = 0;
     while (written < size) {
@@ -304,7 +304,7 @@ test "rope memory efficiency" {
     var rope = try grim.core.Rope.init(allocator);
     defer rope.deinit();
 
-    const test_data = "Hello, World!\n".** 1000;
+    const test_data = "Hello, World!\n" ** 1000;
     try rope.insert(0, test_data);
 
     // Test that rope can handle the data
