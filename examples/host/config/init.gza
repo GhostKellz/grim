@@ -1,0 +1,97 @@
+// Grim editor initialization script
+// Test Ghostlang syntax highlighting and Grove integration
+
+function setupEditor() {
+    var config = createConfig();
+
+    // Basic editor settings
+    config.lineNumbers = true;
+    config.tabSize = 4;
+    config.autoIndent = true;
+
+    // Theme configuration
+    config.theme = "dark";
+    config.fontSize = 14;
+
+    return config;
+}
+
+function configureKeybindings() {
+    var bindings = createBindings();
+
+    // Navigation
+    bindings.bind("Ctrl+P", "command_palette");
+    bindings.bind("Ctrl+Shift+P", "action_palette");
+    bindings.bind("Ctrl+G", "goto_line");
+
+    // File operations
+    bindings.bind("Ctrl+N", "new_file");
+    bindings.bind("Ctrl+O", "open_file");
+    bindings.bind("Ctrl+S", "save_file");
+
+    // Editor features
+    bindings.bind("Ctrl+F", "find");
+    bindings.bind("Ctrl+H", "replace");
+    bindings.bind("Ctrl+/", "toggle_comment");
+
+    return bindings;
+}
+
+function registerPlugins() {
+    var plugins = createPluginManager();
+
+    // Language support
+    plugins.register("zig-support", {
+        extensions: [".zig"],
+        features: ["syntax", "completion", "lsp"]
+    });
+
+    plugins.register("rust-support", {
+        extensions: [".rs"],
+        features: ["syntax", "completion", "lsp", "cargo"]
+    });
+
+    // Development tools
+    plugins.register("git-integration", {
+        commands: ["git_status", "git_commit", "git_push"],
+        statusbar: true
+    });
+
+    plugins.register("terminal", {
+        shortcut: "Ctrl+`",
+        shell: "zsh"
+    });
+
+    return plugins;
+}
+
+// Main initialization
+function main() {
+    var editor = setupEditor();
+    var keymap = configureKeybindings();
+    var plugins = registerPlugins();
+
+    // Initialize Grove tree-sitter integration
+    if (hasGroveSupport()) {
+        editor.enableTreeSitter = true;
+        editor.groveLanguages = [
+            "zig", "rust", "javascript", "typescript",
+            "python", "go", "c", "cpp", "ghostlang"
+        ];
+
+        notify("Grove tree-sitter integration enabled");
+    }
+
+    // Apply configuration
+    applyConfig(editor);
+    applyKeybindings(keymap);
+    loadPlugins(plugins);
+
+    notify("Grim editor initialized successfully");
+
+    return {
+        editor: editor,
+        keymap: keymap,
+        plugins: plugins
+    };
+}

@@ -2,7 +2,9 @@ const std = @import("std");
 
 // Grove zig-tree-sitter integration module
 // This is the pure Zig Tree-sitter implementation
-// grove package = @import("grove");
+const grove = @import("grove");
+// Import GhostlangUtilities as specified in ADAPTER_GUIDE.md
+const GhostlangUtilities = grove.editor.GhostlangUtilities;
 
 pub const GroveParser = struct {
     allocator: std.mem.Allocator,
@@ -25,6 +27,7 @@ pub const GroveParser = struct {
         json,
         yaml,
         toml,
+        ghostlang,
         unknown,
 
         pub fn fromExtension(ext: []const u8) Language {
@@ -43,6 +46,7 @@ pub const GroveParser = struct {
             if (std.mem.eql(u8, ext, ".json")) return .json;
             if (std.mem.eql(u8, ext, ".yaml") or std.mem.eql(u8, ext, ".yml")) return .yaml;
             if (std.mem.eql(u8, ext, ".toml")) return .toml;
+            if (std.mem.eql(u8, ext, ".gza") or std.mem.eql(u8, ext, ".ghost")) return .ghostlang;
             return .unknown;
         }
 
@@ -62,6 +66,7 @@ pub const GroveParser = struct {
                 .json => "json",
                 .yaml => "yaml",
                 .toml => "toml",
+                .ghostlang => "ghostlang",
                 .unknown => "unknown",
             };
         }
@@ -108,6 +113,62 @@ pub const GroveParser = struct {
     };
 
     pub const Tree = opaque {};
+
+    // Grove Editor Service Types
+    pub const DocumentSymbol = struct {
+        name: []const u8,
+        kind: SymbolKind,
+        start: Position,
+        end: Position,
+        children: []DocumentSymbol = &.{},
+
+        pub const SymbolKind = enum {
+            function,
+            variable,
+            class,
+            module,
+            property,
+            field,
+            constructor,
+            @"enum",
+            interface,
+            constant,
+        };
+    };
+
+    pub const FoldingRange = struct {
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+        kind: FoldingKind = .region,
+
+        pub const FoldingKind = enum {
+            comment,
+            imports,
+            region,
+        };
+    };
+
+    pub const Position = struct {
+        line: u32,
+        character: u32,
+    };
+
+    pub const TextObject = struct {
+        start: Position,
+        end: Position,
+        kind: TextObjectKind,
+
+        pub const TextObjectKind = enum {
+            function_outer,
+            function_inner,
+            block_outer,
+            block_inner,
+            parameter,
+            statement,
+        };
+    };
 
     pub const Error = error{
         ParseError,
@@ -232,6 +293,34 @@ pub const GroveParser = struct {
         }
 
         return highlights.toOwnedSlice();
+    }
+
+    // Grove Editor Services (as per ADAPTER_GUIDE.md)
+    pub fn documentSymbols(self: *GroveParser, allocator: std.mem.Allocator) Error![]DocumentSymbol {
+        if (self.language != .ghostlang) return &.{};
+
+        // Use actual Grove GhostlangUtilities.documentSymbols
+        return GhostlangUtilities.documentSymbols(allocator, self.source) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return &.{}, // Fallback on Grove errors
+        };
+    }
+
+    pub fn foldingRanges(self: *GroveParser, allocator: std.mem.Allocator) Error![]FoldingRange {
+        if (self.language != .ghostlang) return &.{};
+
+        // Use actual Grove GhostlangUtilities.foldingRanges
+        return GhostlangUtilities.foldingRanges(allocator, self.source) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return &.{}, // Fallback on Grove errors
+        };
+    }
+
+    pub fn textobjectAt(self: *GroveParser, position: Position) ?TextObject {
+        if (self.language != .ghostlang) return null;
+
+        // Use actual Grove GhostlangUtilities.textobjectAt
+        return GhostlangUtilities.textobjectAt(self.source, position.line, position.character) orelse null;
     }
 
     fn isCommentStart(self: *GroveParser, pos: usize) bool {

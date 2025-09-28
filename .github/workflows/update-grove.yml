@@ -1,0 +1,65 @@
+name: Update Grove Dependencies
+
+on:
+  schedule:
+    # Run weekly on Sundays at 2 AM UTC
+    - cron: '0 2 * * 0'
+  workflow_dispatch:
+    inputs:
+      grove_ref:
+        description: 'Grove git ref to fetch (default: main)'
+        required: false
+        default: 'main'
+
+jobs:
+  update-grove:
+    runs-on: [self-hosted, nvidia, gpu, zig, palladium]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Fetch Grove updates
+        run: |
+          # Clone Grove to temporary directory
+          git clone https://github.com/ghostkellz/grove.git /tmp/grove
+          cd /tmp/grove
+          git checkout ${{ github.event.inputs.grove_ref || 'main' }}
+
+          # Update vendored queries
+          rm -rf third_party/grove-queries/ghostlang/queries
+          mkdir -p third_party/grove-queries/ghostlang/queries
+          cp -r /tmp/grove/vendor/grammars/ghostlang/queries/* third_party/grove-queries/ghostlang/queries/
+
+          # Clean up
+          rm -rf /tmp/grove
+
+      - name: Test Grove integration
+        run: |
+          # Quick build test with new queries
+          zig build -Dghostlang=true test
+
+      - name: Create PR if changes
+        run: |
+          if git diff --quiet; then
+            echo "No changes to Grove dependencies"
+            exit 0
+          fi
+
+          git config user.name "grove-updater[bot]"
+          git config user.email "grove-updater@noreply.github.com"
+
+          BRANCH_NAME="update-grove-$(date +%Y%m%d)"
+          git checkout -b "$BRANCH_NAME"
+          git add third_party/grove-queries/
+          git commit -m "chore: update Grove dependencies
+
+          Auto-updated from Grove ${{ github.event.inputs.grove_ref || 'main' }}"
+
+          git push origin "$BRANCH_NAME"
+
+          gh pr create \
+            --title "🔄 Update Grove dependencies" \
+            --body "Automated update of Grove Ghostlang queries and dependencies." \
+            --head "$BRANCH_NAME" \
+            --base main

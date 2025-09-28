@@ -1,0 +1,47 @@
+name: Grim ↔ Grove (Ghostlang)
+
+on:
+  push:
+    branches: [ "feature/ghostlang-gza-adapter" ]
+  pull_request:
+    branches: [ "feature/ghostlang-gza-adapter" ]
+
+jobs:
+  smoke:
+    runs-on: [self-hosted, nvidia, gpu, zig, palladium]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: grim
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ghostkellz/grove
+          path: grove
+          ref: main
+
+      - name: Vendor Ghostlang queries
+        run: |
+          rm -rf grim/third_party/grove-queries/ghostlang/queries
+          mkdir -p grim/third_party/grove-queries/ghostlang/queries
+          cp -r grove/vendor/grammars/ghostlang/queries/* grim/third_party/grove-queries/ghostlang/queries/
+
+      - name: Build Grim
+        working-directory: grim
+        run: zig build -Dghostlang=true -Doptimize=ReleaseSafe
+
+      - name: Run Grove tests
+        working-directory: grove
+        run: zig build test --filter "ghostlang utilities"
+
+      - name: Smoke test Grim
+        working-directory: grim
+        run: ./tools/smoke_gza.sh examples/host/config/init.gza
+
+      - name: Archive artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: grim-grove-build
+          path: |
+            grim/zig-out/
+            grim/third_party/grove-queries/

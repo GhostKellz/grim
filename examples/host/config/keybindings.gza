@@ -1,0 +1,168 @@
+// Grim editor keybinding configuration
+// Demonstrates Ghostlang syntax with complex nested structures
+
+var editorBindings = {
+    // File operations
+    "file": {
+        "new": "Ctrl+N",
+        "open": "Ctrl+O",
+        "save": "Ctrl+S",
+        "save_as": "Ctrl+Shift+S",
+        "close": "Ctrl+W",
+        "quit": "Ctrl+Q"
+    },
+
+    // Navigation
+    "nav": {
+        "goto_line": "Ctrl+G",
+        "goto_symbol": "Ctrl+R",
+        "goto_definition": "F12",
+        "goto_declaration": "Ctrl+F12",
+        "find_references": "Shift+F12",
+        "back": "Alt+Left",
+        "forward": "Alt+Right"
+    },
+
+    // Editing
+    "edit": {
+        "undo": "Ctrl+Z",
+        "redo": "Ctrl+Y",
+        "cut": "Ctrl+X",
+        "copy": "Ctrl+C",
+        "paste": "Ctrl+V",
+        "select_all": "Ctrl+A",
+        "duplicate_line": "Ctrl+D",
+        "delete_line": "Ctrl+Shift+K"
+    },
+
+    // Search and replace
+    "search": {
+        "find": "Ctrl+F",
+        "find_next": "F3",
+        "find_previous": "Shift+F3",
+        "replace": "Ctrl+H",
+        "find_in_files": "Ctrl+Shift+F",
+        "replace_in_files": "Ctrl+Shift+H"
+    },
+
+    // View
+    "view": {
+        "zoom_in": "Ctrl+=",
+        "zoom_out": "Ctrl+-",
+        "zoom_reset": "Ctrl+0",
+        "toggle_sidebar": "Ctrl+B",
+        "toggle_terminal": "Ctrl+`",
+        "toggle_minimap": "Ctrl+M",
+        "split_horizontal": "Ctrl+\\",
+        "split_vertical": "Ctrl+Shift+\\"
+    }
+};
+
+// Modal editing bindings (when in vim mode)
+var vimBindings = {
+    "normal": {
+        // Movement
+        "h": "move_left",
+        "j": "move_down",
+        "k": "move_up",
+        "l": "move_right",
+        "w": "word_forward",
+        "b": "word_backward",
+        "0": "line_start",
+        "$": "line_end",
+        "gg": "file_start",
+        "G": "file_end",
+
+        // Editing
+        "i": "insert_mode",
+        "a": "append_mode",
+        "o": "open_line_below",
+        "O": "open_line_above",
+        "x": "delete_char",
+        "dd": "delete_line",
+        "yy": "yank_line",
+        "p": "paste_after",
+        "P": "paste_before",
+
+        // Visual mode
+        "v": "visual_char",
+        "V": "visual_line",
+        "Ctrl+v": "visual_block"
+    },
+
+    "insert": {
+        "Escape": "normal_mode",
+        "Ctrl+[": "normal_mode",
+        "Ctrl+c": "normal_mode"
+    },
+
+    "visual": {
+        "Escape": "normal_mode",
+        "d": "delete_selection",
+        "y": "yank_selection",
+        "c": "change_selection"
+    }
+};
+
+// Tree-sitter specific bindings
+var treeSitterBindings = {
+    "syntax": {
+        "toggle_folding": "za",
+        "fold_all": "zM",
+        "unfold_all": "zR",
+        "goto_parent": "Alt+Up",
+        "goto_next_sibling": "Alt+Right",
+        "goto_prev_sibling": "Alt+Left",
+        "select_node": "Alt+w",
+        "expand_selection": "Alt+Shift+w"
+    },
+
+    "textobjects": {
+        "function_inner": "if",
+        "function_outer": "af",
+        "class_inner": "ic",
+        "class_outer": "ac",
+        "block_inner": "ib",
+        "block_outer": "ab",
+        "parameter_inner": "ip",
+        "parameter_outer": "ap"
+    }
+};
+
+function applyKeybindings(config) {
+    var keymap = createKeymap();
+
+    // Apply editor bindings
+    for (var category in editorBindings) {
+        var bindings = editorBindings[category];
+        for (var action in bindings) {
+            var key = bindings[action];
+            keymap.bind(key, category + "." + action);
+        }
+    }
+
+    // Apply vim bindings if enabled
+    if (config.vimMode) {
+        for (var mode in vimBindings) {
+            var bindings = vimBindings[mode];
+            keymap.setMode(mode);
+            for (var key in bindings) {
+                var action = bindings[key];
+                keymap.bind(key, action, mode);
+            }
+        }
+    }
+
+    // Apply tree-sitter bindings if Grove is available
+    if (hasGroveSupport()) {
+        for (var category in treeSitterBindings) {
+            var bindings = treeSitterBindings[category];
+            for (var action in bindings) {
+                var key = bindings[action];
+                keymap.bind(key, "grove." + category + "." + action);
+            }
+        }
+    }
+
+    return keymap;
+}

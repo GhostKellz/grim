@@ -48,6 +48,10 @@
             .url = "https://github.com/ghostkellz/flare/archive/refs/heads/main.tar.gz",
             .hash = "flare-0.0.0-NK4JaX9eAQCgRuIiDBZr6uSz8D2DhSeeWswotvCbUeG_",
         },
+        .grove = .{
+            .url = "https://github.com/ghostkellz/grove/archive/refs/heads/main.tar.gz",
+            .hash = "grove-0.1.0-rGFsN78hNAAg9Iz6vWb71IfgO5biSscsMv2TEPKaiKKk",
+        },
     },
     .paths = .{
         "build.zig",

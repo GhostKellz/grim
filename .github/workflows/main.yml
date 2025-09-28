@@ -1,0 +1,30 @@
+name: Main
+
+on:
+  push:
+    branches: [ "main" ]
+    tags: [ "v*" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  # Import main CI jobs
+  build-and-test:
+    uses: ./.github/workflows/ci.yml
+
+  # Release on tag push
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build-and-test
+    runs-on: [self-hosted, nvidia, gpu, zig, palladium]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build release
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Create release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: zig-out/bin/*
+          generate_release_notes: true

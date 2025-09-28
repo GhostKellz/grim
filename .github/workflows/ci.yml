@@ -1,0 +1,51 @@
+name: CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+jobs:
+  build-and-test:
+    runs-on: [self-hosted, nvidia, gpu, zig, palladium]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache Zig dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/zig
+            zig-cache/
+          key: ${{ runner.os }}-zig-${{ hashFiles('build.zig.zon') }}
+          restore-keys: |
+            ${{ runner.os }}-zig-
+
+      - name: Build Grim
+        run: zig build -Doptimize=ReleaseSafe
+
+      - name: Run tests
+        run: zig build test
+
+      - name: Build debug
+        run: zig build -Doptimize=Debug
+
+      - name: Archive build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: grim-${{ github.sha }}
+          path: zig-out/
+
+  lint:
+    runs-on: [self-hosted, nvidia, gpu, zig, palladium]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check formatting
+        run: zig fmt --check .
+
+      - name: Static analysis
+        run: |
+          # Add any additional linting tools here
+          zig build --verbose
