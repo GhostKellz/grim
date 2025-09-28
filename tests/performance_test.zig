@@ -146,12 +146,12 @@ fn runSyntaxHighlightingTests(allocator: std.mem.Allocator) !void {
         .{
             .name = "Small Zig file",
             .content =
-                \\const std = @import("std");
-                \\
-                \\pub fn main() !void {
-                \\    const x: u32 = 42;
-                \\    std.debug.print("Hello: {}\n", .{x});
-                \\}
+            \\const std = @import("std");
+            \\
+            \\pub fn main() !void {
+            \\    const x: u32 = 42;
+            \\    std.debug.print("Hello: {}\n", .{x});
+            \\}
             ,
             .language = .zig,
         },

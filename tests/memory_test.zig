@@ -176,7 +176,7 @@ fn testEditorMemory(allocator: std.mem.Allocator) !void {
     );
 
     // Test basic movements
-    var key_sequence = [_]u21{'j', 'j', 'l', 'l', 'l', 'w', 'b', '0', '$'};
+    var key_sequence = [_]u21{ 'j', 'j', 'l', 'l', 'l', 'w', 'b', '0', '$' };
     for (key_sequence) |key| {
         try editor.handleKey(key);
     }
@@ -243,7 +243,7 @@ fn testFileOperations(allocator: std.mem.Allocator) !void {
         }
         const elapsed = timer.read();
 
-        std.debug.print("  Directory listing ({} files): {}μs\n", .{entries.len, elapsed / std.time.ns_per_us});
+        std.debug.print("  Directory listing ({} files): {}μs\n", .{ entries.len, elapsed / std.time.ns_per_us });
     }
 
     std.debug.print("  ✓ File operations tests passed\n\n");
