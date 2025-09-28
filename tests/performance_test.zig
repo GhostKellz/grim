@@ -27,7 +27,7 @@ fn runRopePerformanceTests(allocator: std.mem.Allocator) !void {
         var rope = try core.Rope.init(allocator);
         defer rope.deinit();
 
-        const large_text = "Hello, World! This is a test string. ".** 1000; // ~37KB
+        const large_text = "Hello, World! This is a test string. " ** 1000; // ~37KB
         const iterations = 1000;
 
         const start = timer.read();
