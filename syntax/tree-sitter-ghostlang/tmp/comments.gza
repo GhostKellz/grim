@@ -1,0 +1,6 @@
+// Single line comment
+function test() {
+    /* Multi-line
+       comment */
+    var x = 5;
+}

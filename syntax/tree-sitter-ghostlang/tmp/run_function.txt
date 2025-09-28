@@ -1,0 +1,27 @@
+(source_file [0, 0] - [3, 0]
+  (statement [0, 0] - [2, 1]
+    (function_declaration [0, 0] - [2, 1]
+      name: (identifier [0, 9] - [0, 14])
+      parameters: (parameter_list [0, 14] - [0, 20]
+        (identifier [0, 15] - [0, 19]))
+      body: (block_statement [0, 21] - [2, 1]
+        (statement [1, 4] - [1, 27]
+          (return_statement [1, 4] - [1, 27]
+            (expression [1, 11] - [1, 26]
+              (conditional_expression [1, 11] - [1, 26]
+                (logical_or_expression [1, 11] - [1, 26]
+                  (logical_and_expression [1, 11] - [1, 26]
+                    (equality_expression [1, 11] - [1, 26]
+                      (relational_expression [1, 11] - [1, 26]
+                        (additive_expression [1, 11] - [1, 26]
+                          (additive_expression [1, 11] - [1, 19]
+                            (multiplicative_expression [1, 11] - [1, 19]
+                              (unary_expression [1, 11] - [1, 19]
+                                (postfix_expression [1, 11] - [1, 19]
+                                  (primary_expression [1, 11] - [1, 19]
+                                    (string_literal [1, 11] - [1, 19]))))))
+                          (multiplicative_expression [1, 22] - [1, 26]
+                            (unary_expression [1, 22] - [1, 26]
+                              (postfix_expression [1, 22] - [1, 26]
+                                (primary_expression [1, 22] - [1, 26]
+                                  (identifier [1, 22] - [1, 26]))))))))))))))))))

@@ -1,0 +1,447 @@
+====================================
+Variable declaration
+====================================
+
+var x = 5;
+
+---
+
+(source_file
+  (statement
+    (variable_declaration
+      name: (identifier)
+      value: (expression
+        (conditional_expression
+          (logical_or_expression
+            (logical_and_expression
+              (equality_expression
+                (relational_expression
+                  (additive_expression
+                    (multiplicative_expression
+                      (unary_expression
+                        (postfix_expression
+                          (primary_expression
+                            (number_literal)))))))))))))))
+
+====================================
+Function declaration
+====================================
+
+function greet(name) {
+    return "Hello " + name;
+}
+
+---
+
+(source_file
+  (statement
+    (function_declaration
+      name: (identifier)
+      parameters: (parameter_list
+        (identifier))
+      body: (block_statement
+        (statement
+          (return_statement
+            (expression
+              (conditional_expression
+                (logical_or_expression
+                  (logical_and_expression
+                    (equality_expression
+                      (relational_expression
+                        (additive_expression
+                          (additive_expression
+                            (multiplicative_expression
+                              (unary_expression
+                                (postfix_expression
+                                  (primary_expression
+                                    (string_literal))))))
+                          (multiplicative_expression
+                            (unary_expression
+                              (postfix_expression
+                                (primary_expression
+                                  (identifier))))))))))))))))))
+
+====================================
+If statement
+====================================
+
+if (x > 0) {
+    notify("Positive");
+} else {
+    notify("Not positive");
+}
+
+---
+
+(source_file
+  (statement
+    (if_statement
+      condition: (expression
+        (conditional_expression
+          (logical_or_expression
+            (logical_and_expression
+              (equality_expression
+                (relational_expression
+                  (relational_expression
+                    (additive_expression
+                      (multiplicative_expression
+                        (unary_expression
+                          (postfix_expression
+                            (primary_expression
+                              (identifier)))))))
+                  (additive_expression
+                    (multiplicative_expression
+                      (unary_expression
+                        (postfix_expression
+                          (primary_expression
+                            (number_literal))))))))))))
+      then: (statement
+        (block_statement
+          (statement
+            (expression_statement
+              (expression
+                (conditional_expression
+                  (logical_or_expression
+                    (logical_and_expression
+                      (equality_expression
+                        (relational_expression
+                          (additive_expression
+                            (multiplicative_expression
+                              (unary_expression
+                                (postfix_expression
+                                  (call_expression
+                                    function: (postfix_expression
+                                      (primary_expression
+                                        (identifier)))
+                                    arguments: (argument_list
+                                      (expression
+                                        (conditional_expression
+                                          (logical_or_expression
+                                            (logical_and_expression
+                                              (equality_expression
+                                                (relational_expression
+                                                  (additive_expression
+                                                    (multiplicative_expression
+                                                      (unary_expression
+                                                        (postfix_expression
+                                                          (primary_expression
+                                                            (string_literal))))))))))))))))))))))))))))
+      else: (statement
+        (block_statement
+          (statement
+            (expression_statement
+              (expression
+                (conditional_expression
+                  (logical_or_expression
+                    (logical_and_expression
+                      (equality_expression
+                        (relational_expression
+                          (additive_expression
+                            (multiplicative_expression
+                              (unary_expression
+                                (postfix_expression
+                                  (call_expression
+                                    function: (postfix_expression
+                                      (primary_expression
+                                        (identifier)))
+                                    arguments: (argument_list
+                                      (expression
+                                        (conditional_expression
+                                          (logical_or_expression
+                                            (logical_and_expression
+                                              (equality_expression
+                                                (relational_expression
+                                                  (additive_expression
+                                                    (multiplicative_expression
+                                                      (unary_expression
+                                                        (postfix_expression
+                                                          (primary_expression
+                                                            (string_literal)))))))))))))))))))))))))))))))
+
+====================================
+Editor API calls
+====================================
+
+var line = getCurrentLine();
+setLineText(line, "New content");
+
+---
+
+(source_file
+  (statement
+    (variable_declaration
+      name: (identifier)
+      value: (expression
+        (conditional_expression
+          (logical_or_expression
+            (logical_and_expression
+              (equality_expression
+                (relational_expression
+                  (additive_expression
+                    (multiplicative_expression
+                      (unary_expression
+                        (postfix_expression
+                          (call_expression
+                            function: (postfix_expression
+                              (primary_expression
+                                (identifier)))
+                            arguments: (argument_list))))))))))))))
+  (statement
+    (expression_statement
+      (expression
+        (conditional_expression
+          (logical_or_expression
+            (logical_and_expression
+              (equality_expression
+                (relational_expression
+                  (additive_expression
+                    (multiplicative_expression
+                      (unary_expression
+                        (postfix_expression
+                          (call_expression
+                            function: (postfix_expression
+                              (primary_expression
+                                (identifier)))
+                            arguments: (argument_list
+                              (expression
+                                (conditional_expression
+                                  (logical_or_expression
+                                    (logical_and_expression
+                                      (equality_expression
+                                        (relational_expression
+                                          (additive_expression
+                                            (multiplicative_expression
+                                              (unary_expression
+                                                (postfix_expression
+                                                  (primary_expression
+                                                    (identifier))))))))))))
+                              (expression
+                                (conditional_expression
+                                  (logical_or_expression
+                                    (logical_and_expression
+                                      (equality_expression
+                                        (relational_expression
+                                          (additive_expression
+                                            (multiplicative_expression
+                                              (unary_expression
+                                                (postfix_expression
+                                                  (primary_expression
+                                                    (string_literal)))))))))))))))))))))))))))
+
+====================================
+Object literal
+====================================
+
+var config = {
+    theme: "dark",
+    fontSize: 14,
+    enabled: true
+};
+
+---
+
+(source_file
+  (statement
+    (variable_declaration
+      name: (identifier)
+      value: (expression
+        (conditional_expression
+          (logical_or_expression
+            (logical_and_expression
+              (equality_expression
+                (relational_expression
+                  (additive_expression
+                    (multiplicative_expression
+                      (unary_expression
+                        (postfix_expression
+                          (primary_expression
+                            (object_literal
+                              (object_member
+                                (identifier)
+                                (expression
+                                  (conditional_expression
+                                    (logical_or_expression
+                                      (logical_and_expression
+                                        (equality_expression
+                                          (relational_expression
+                                            (additive_expression
+                                              (multiplicative_expression
+                                                (unary_expression
+                                                  (postfix_expression
+                                                    (primary_expression
+                                                      (string_literal)))))))))))))
+                              (object_member
+                                (identifier)
+                                (expression
+                                  (conditional_expression
+                                    (logical_or_expression
+                                      (logical_and_expression
+                                        (equality_expression
+                                          (relational_expression
+                                            (additive_expression
+                                              (multiplicative_expression
+                                                (unary_expression
+                                                  (postfix_expression
+                                                    (primary_expression
+                                                      (number_literal)))))))))))))
+                              (object_member
+                                (identifier)
+                                (expression
+                                  (conditional_expression
+                                    (logical_or_expression
+                                      (logical_and_expression
+                                        (equality_expression
+                                          (relational_expression
+                                            (additive_expression
+                                              (multiplicative_expression
+                                                (unary_expression
+                                                  (postfix_expression
+                                                    (primary_expression
+                                                      (boolean_literal))))))))))))))))))))))))))))
+
+====================================
+Array literal and loops
+====================================
+
+var items = [1, 2, 3];
+for (var item in items) {
+    log(item);
+}
+
+---
+
+(source_file
+  (statement
+    (variable_declaration
+      name: (identifier)
+      value: (expression
+        (conditional_expression
+          (logical_or_expression
+            (logical_and_expression
+              (equality_expression
+                (relational_expression
+                  (additive_expression
+                    (multiplicative_expression
+                      (unary_expression
+                        (postfix_expression
+                          (primary_expression
+                            (array_literal
+                              (expression
+                                (conditional_expression
+                                  (logical_or_expression
+                                    (logical_and_expression
+                                      (equality_expression
+                                        (relational_expression
+                                          (additive_expression
+                                            (multiplicative_expression
+                                              (unary_expression
+                                                (postfix_expression
+                                                  (primary_expression
+                                                    (number_literal))))))))))))
+                              (expression
+                                (conditional_expression
+                                  (logical_or_expression
+                                    (logical_and_expression
+                                      (equality_expression
+                                        (relational_expression
+                                          (additive_expression
+                                            (multiplicative_expression
+                                              (unary_expression
+                                                (postfix_expression
+                                                  (primary_expression
+                                                    (number_literal))))))))))))
+                              (expression
+                                (conditional_expression
+                                  (logical_or_expression
+                                    (logical_and_expression
+                                      (equality_expression
+                                        (relational_expression
+                                          (additive_expression
+                                            (multiplicative_expression
+                                              (unary_expression
+                                                (postfix_expression
+                                                  (primary_expression
+                                                    (number_literal))))))))))))))))))))))))))
+  (statement
+    (for_statement
+      variable: (identifier)
+      iterable: (expression
+        (conditional_expression
+          (logical_or_expression
+            (logical_and_expression
+              (equality_expression
+                (relational_expression
+                  (additive_expression
+                    (multiplicative_expression
+                      (unary_expression
+                        (postfix_expression
+                          (primary_expression
+                            (identifier))))))))))))
+      body: (statement
+        (block_statement
+          (statement
+            (expression_statement
+              (expression
+                (conditional_expression
+                  (logical_or_expression
+                    (logical_and_expression
+                      (equality_expression
+                        (relational_expression
+                          (additive_expression
+                            (multiplicative_expression
+                              (unary_expression
+                                (postfix_expression
+                                  (call_expression
+                                    function: (postfix_expression
+                                      (primary_expression
+                                        (identifier)))
+                                    arguments: (argument_list
+                                      (expression
+                                        (conditional_expression
+                                          (logical_or_expression
+                                            (logical_and_expression
+                                              (equality_expression
+                                                (relational_expression
+                                                  (additive_expression
+                                                    (multiplicative_expression
+                                                      (unary_expression
+                                                        (postfix_expression
+                                                          (primary_expression
+                                                            (identifier)))))))))))))))))))))))))))))))
+
+====================================
+Comments
+====================================
+
+// Single line comment
+function test() {
+    /* Multi-line
+       comment */
+    var x = 5;
+}
+
+---
+
+(source_file
+  (comment)
+  (statement
+    (function_declaration
+      name: (identifier)
+      parameters: (parameter_list)
+      body: (block_statement
+        (comment)
+        (statement
+          (variable_declaration
+            name: (identifier)
+            value: (expression
+              (conditional_expression
+                (logical_or_expression
+                  (logical_and_expression
+                    (equality_expression
+                      (relational_expression
+                        (additive_expression
+                          (multiplicative_expression
+                            (unary_expression
+                              (postfix_expression
+                                (primary_expression
+                                  (number_literal))))))))))))))))))
