@@ -65,7 +65,7 @@ pub const SimpleTUI = struct {
             try self.stdout.writeAll(line_str);
 
             // Content (truncate to screen width)
-            const display_line = if (line.len > width - 6) line[0..width - 6] else line;
+            const display_line = if (line.len > width - 6) line[0 .. width - 6] else line;
             try self.stdout.writeAll(display_line);
             try self.stdout.writeAll("\r\n");
 
@@ -103,8 +103,8 @@ pub const SimpleTUI = struct {
         const padding_len = if (base_status.len < width) width - base_status.len else 0;
         var final_status_buf: [256]u8 = undefined;
         @memcpy(final_status_buf[0..base_status.len], base_status);
-        @memset(final_status_buf[base_status.len..base_status.len + padding_len], ' ');
-        const status = final_status_buf[0..base_status.len + padding_len];
+        @memset(final_status_buf[base_status.len .. base_status.len + padding_len], ' ');
+        const status = final_status_buf[0 .. base_status.len + padding_len];
 
         try self.stdout.writeAll(status[0..@min(status.len, width)]);
         try self.resetColor();

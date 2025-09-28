@@ -82,11 +82,7 @@ const AutoFormatterPlugin = struct {
     fn onBufferSaved(ctx: *runtime.PluginContext, data: runtime.EventData) !void {
         switch (data) {
             .buffer_saved => |save_data| {
-                try ctx.showMessage(try std.fmt.allocPrint(
-                    ctx.scratch_allocator,
-                    "Buffer saved: {s}",
-                    .{save_data.filename}
-                ));
+                try ctx.showMessage(try std.fmt.allocPrint(ctx.scratch_allocator, "Buffer saved: {s}", .{save_data.filename}));
                 // Auto-format if enabled
                 try formatCurrentBuffer(ctx);
             },
@@ -168,9 +164,7 @@ pub fn exampleUsage() !void {
     try plugin_api.executeCommand("format", "auto-formatter", &.{});
 
     // Test event emission
-    try plugin_api.emitEvent(.buffer_saved, .{
-        .buffer_saved = .{ .buffer_id = 1, .filename = "test.zig" }
-    });
+    try plugin_api.emitEvent(.buffer_saved, .{ .buffer_saved = .{ .buffer_id = 1, .filename = "test.zig" } });
 
     // Test keystroke handling
     const handled = try plugin_api.handleKeystroke("<leader>f", .normal);

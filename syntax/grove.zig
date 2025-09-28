@@ -238,8 +238,7 @@ pub const GroveParser = struct {
         if (pos >= self.source.len) return false;
 
         return switch (self.language) {
-            .zig, .c, .cpp, .rust, .javascript, .typescript =>
-                pos + 1 < self.source.len and
+            .zig, .c, .cpp, .rust, .javascript, .typescript => pos + 1 < self.source.len and
                 self.source[pos] == '/' and
                 self.source[pos + 1] == '/',
             .python, .yaml, .toml => self.source[pos] == '#',

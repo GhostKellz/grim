@@ -22,11 +22,9 @@ pub fn main() !void {
     var text = try phantom.widgets.Text.init(allocator, "Hello from Grim!\nPress 'q' to quit.");
     defer text.deinit();
 
-    text.setStyle(
-        phantom.Style.default()
-            .withFg(phantom.Color.bright_green)
-            .withBold()
-    );
+    text.setStyle(phantom.Style.default()
+        .withFg(phantom.Color.bright_green)
+        .withBold());
 
     // Add widget to app
     try app.addWidget(&text.widget);
