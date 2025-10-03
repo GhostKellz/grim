@@ -119,48 +119,153 @@ pub const SimpleTUI = struct {
 
     fn handleInput(self: *SimpleTUI) !void {
         var buf: [8]u8 = undefined;
-        const bytes_read = try self.stdin.read(&buf);
-        if (bytes_read == 0) return;
+        const n = try self.stdin.read(buf[0..1]); // Read one byte at a time
+        if (n == 0) return;
 
-        for (buf[0..bytes_read]) |byte| {
-            switch (byte) {
-                3 => { // Ctrl+C
-                    self.running = false;
-                    return;
-                },
+        var key_bytes: [4]u8 = undefined;
+        key_bytes[0] = buf[0];
+        var key_len: usize = 1;
+
+        // Handle escape sequences (simplified - no timeout)
+        if (buf[0] == 27) { // ESC
+            // Try to read more bytes for escape sequences
+            const next_n = self.stdin.read(buf[1..2]) catch 0;
+            if (next_n > 0) {
+                key_bytes[1] = buf[1];
+                key_len = 2;
+                
+                if (buf[1] == '[') {
+                    // Arrow keys and other sequences
+                    const third_n = self.stdin.read(buf[2..3]) catch 0;
+                    if (third_n > 0) {
+                        key_bytes[2] = buf[2];
+                        key_len = 3;
+                    }
+                }
+            }
+        }
+
+        try self.processKeyInput(key_bytes[0..key_len]);
+    }
+
+    fn processKeyInput(self: *SimpleTUI, key_bytes: []const u8) !void {
+        if (key_bytes.len == 1) {
+            const key = key_bytes[0];
+            
+            // Global commands (work in any mode)
+            switch (key) {
                 17 => { // Ctrl+Q
                     self.running = false;
                     return;
                 },
-                27 => { // Escape or arrow keys
-                    if (bytes_read > 1 and buf[1] == '[') {
-                        // Arrow keys
-                        if (bytes_read > 2) {
-                            switch (buf[2]) {
-                                'A' => try self.editor.handleKey('k'), // Up
-                                'B' => try self.editor.handleKey('j'), // Down
-                                'C' => try self.editor.handleKey('l'), // Right
-                                'D' => try self.editor.handleKey('h'), // Left
-                                else => {},
-                            }
-                        }
-                    } else {
-                        try self.editor.handleKey(27); // Escape
-                    }
-                },
-                127 => { // Backspace
-                    if (self.editor.mode == .insert and self.editor.cursor.offset > 0) {
-                        self.editor.cursor.offset -= 1;
-                        try self.editor.rope.delete(self.editor.cursor.offset, 1);
-                    }
-                },
-                13 => { // Enter
-                    try self.editor.handleKey('\n');
-                },
-                else => {
-                    try self.editor.handleKey(byte);
-                },
+                else => {},
             }
+
+            // Mode-specific commands
+            switch (self.editor.mode) {
+                .normal => try self.handleNormalMode(key),
+                .insert => try self.handleInsertMode(key),
+                .visual => try self.handleVisualMode(key),
+                .command => try self.handleCommandMode(key),
+            }
+        } else if (key_bytes.len == 3 and key_bytes[0] == 27 and key_bytes[1] == '[') {
+            // Arrow keys
+            switch (key_bytes[2]) {
+                'A' => self.editor.moveCursorUp(),    // Up arrow
+                'B' => self.editor.moveCursorDown(),  // Down arrow
+                'C' => self.editor.moveCursorRight(), // Right arrow
+                'D' => self.editor.moveCursorLeft(),  // Left arrow
+                else => {},
+            }
+        }
+    }
+
+    fn handleNormalMode(self: *SimpleTUI, key: u8) !void {
+        switch (key) {
+            27 => {}, // ESC in normal mode - already in normal
+            'h' => self.editor.moveCursorLeft(),
+            'j' => self.editor.moveCursorDown(),
+            'k' => self.editor.moveCursorUp(),
+            'l' => self.editor.moveCursorRight(),
+            'i' => self.editor.mode = .insert,
+            'I' => {
+                self.editor.moveCursorToLineStart();
+                self.editor.mode = .insert;
+            },
+            'a' => {
+                self.editor.moveCursorRight();
+                self.editor.mode = .insert;
+            },
+            'A' => {
+                self.editor.moveCursorToLineEnd();
+                self.editor.mode = .insert;
+            },
+            'o' => {
+                try self.editor.insertNewlineAfter();
+                self.editor.mode = .insert;
+            },
+            'O' => {
+                try self.editor.insertNewlineBefore();
+                self.editor.mode = .insert;
+            },
+            'x' => try self.editor.deleteChar(),
+            'w' => self.editor.moveWordForward(),
+            'b' => self.editor.moveWordBackward(),
+            '0' => self.editor.moveCursorToLineStart(),
+            '$' => self.editor.moveCursorToLineEnd(),
+            'g' => {
+                // TODO: Handle 'gg' for goto top
+            },
+            'G' => self.editor.moveCursorToEnd(),
+            ':' => self.editor.mode = .command,
+            'v' => self.editor.mode = .visual,
+            'q' => self.running = false, // Simple quit
+            else => {}, // Ignore unhandled keys
+        }
+    }
+
+    fn handleInsertMode(self: *SimpleTUI, key: u8) !void {
+        switch (key) {
+            27 => self.editor.mode = .normal, // ESC
+            8, 127 => try self.editor.backspace(), // Backspace/Delete
+            13 => try self.editor.insertChar('\n'), // Enter
+            else => {
+                if (key >= 32 and key < 127) { // Printable ASCII
+                    try self.editor.insertChar(key);
+                }
+            },
+        }
+    }
+
+    fn handleVisualMode(self: *SimpleTUI, key: u8) !void {
+        switch (key) {
+            27 => self.editor.mode = .normal, // ESC
+            'h' => self.editor.moveCursorLeft(),
+            'j' => self.editor.moveCursorDown(),
+            'k' => self.editor.moveCursorUp(),
+            'l' => self.editor.moveCursorRight(),
+            'd' => {
+                // TODO: Delete selection
+                self.editor.mode = .normal;
+            },
+            'y' => {
+                // TODO: Yank selection
+                self.editor.mode = .normal;
+            },
+            else => {},
+        }
+    }
+
+    fn handleCommandMode(self: *SimpleTUI, key: u8) !void {
+        switch (key) {
+            27 => self.editor.mode = .normal, // ESC
+            13 => { // Enter
+                // TODO: Execute command
+                self.editor.mode = .normal;
+            },
+            else => {
+                // TODO: Build command string
+            },
         }
     }
 

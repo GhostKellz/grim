@@ -228,7 +228,7 @@ pub const Editor = struct {
         };
     }
 
-    fn insertChar(self: *Editor, key: u21) !void {
+    pub fn insertChar(self: *Editor, key: u21) !void {
         var buf: [4]u8 = undefined;
         const len = try std.unicode.utf8Encode(key, &buf);
         try self.rope.insert(self.cursor.offset, buf[0..len]);
@@ -274,7 +274,7 @@ pub const Editor = struct {
         }
     }
 
-    fn moveCursorUp(self: *Editor) void {
+    pub fn moveCursorUp(self: *Editor) void {
         // Save current column position
         const current_col = self.getColumnPosition();
 
@@ -289,7 +289,7 @@ pub const Editor = struct {
         }
     }
 
-    fn moveCursorDown(self: *Editor) void {
+    pub fn moveCursorDown(self: *Editor) void {
         // Save current column position
         const current_col = self.getColumnPosition();
 
@@ -324,7 +324,7 @@ pub const Editor = struct {
         self.cursor.offset = @min(line_start + col, line_end);
     }
 
-    fn moveCursorWordForward(self: *Editor) void {
+    pub fn moveCursorWordForward(self: *Editor) void {
         const len = self.rope.len();
         if (self.cursor.offset >= len) return;
 
@@ -349,7 +349,7 @@ pub const Editor = struct {
         self.cursor.offset = @min(self.cursor.offset + i, len);
     }
 
-    fn moveCursorWordBackward(self: *Editor) void {
+    pub fn moveCursorWordBackward(self: *Editor) void {
         if (self.cursor.offset == 0) return;
 
         const slice = self.rope.slice(.{ .start = 0, .end = self.cursor.offset }) catch return;
@@ -363,6 +363,57 @@ pub const Editor = struct {
         while (i > 0 and (std.ascii.isAlphanumeric(slice[i - 1]) or slice[i - 1] == '_')) : (i -= 1) {}
 
         self.cursor.offset = i;
+    }
+
+    // Public interface aliases for SimpleTUI
+    pub fn moveCursorLeft(self: *Editor) void {
+        self.cursor.moveLeft(&self.rope);
+    }
+
+    pub fn moveCursorRight(self: *Editor) void {
+        self.cursor.moveRight(&self.rope);
+    }
+
+    pub fn moveCursorToLineStart(self: *Editor) void {
+        self.cursor.moveToLineStart(&self.rope);
+    }
+
+    pub fn moveCursorToLineEnd(self: *Editor) void {
+        self.cursor.moveToLineEnd(&self.rope);
+    }
+
+    pub fn moveCursorToEnd(self: *Editor) void {
+        self.cursor.offset = self.rope.len();
+    }
+
+    pub fn moveWordForward(self: *Editor) void {
+        self.moveCursorWordForward();
+    }
+
+    pub fn moveWordBackward(self: *Editor) void {
+        self.moveCursorWordBackward();
+    }
+
+    pub fn deleteChar(self: *Editor) !void {
+        try self.deleteCharAtCursor();
+    }
+
+    pub fn insertNewlineAfter(self: *Editor) !void {
+        self.cursor.moveToLineEnd(&self.rope);
+        try self.rope.insert(self.cursor.offset, "\n");
+        self.cursor.offset += 1;
+    }
+
+    pub fn insertNewlineBefore(self: *Editor) !void {
+        self.cursor.moveToLineStart(&self.rope);
+        try self.rope.insert(self.cursor.offset, "\n");
+        // Don't move cursor - we want to be on the new line above
+    }
+
+    pub fn backspace(self: *Editor) !void {
+        if (self.cursor.offset == 0) return;
+        self.cursor.moveLeft(&self.rope);
+        try self.rope.delete(self.cursor.offset, 1);
     }
 };
 
