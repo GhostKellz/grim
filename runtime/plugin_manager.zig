@@ -2,11 +2,52 @@ const std = @import("std");
 const runtime = @import("mod.zig");
 const host = @import("host");
 
+const GhostlangLoadedPlugin = struct {
+    runtime_plugin: runtime.Plugin,
+    host: host.Host,
+    compiled: host.Host.CompiledPlugin,
+    host_deinitialized: bool = false,
+};
+
+fn pluginStateFromContext(ctx: *runtime.PluginAPI.PluginContext) *GhostlangLoadedPlugin {
+    const raw = ctx.userData() orelse @panic("Ghostlang plugin context missing state");
+    return @as(*GhostlangLoadedPlugin, @ptrCast(@alignCast(raw)));
+}
+
+fn ghostlangShowMessageCallback(ctx_ptr: *anyopaque, message: []const u8) anyerror!void {
+    const plugin_ctx = @as(*runtime.PluginAPI.PluginContext, @ptrCast(@alignCast(ctx_ptr)));
+    try plugin_ctx.showMessage(message);
+}
+
+fn ghostlangPluginInit(ctx: *runtime.PluginAPI.PluginContext) anyerror!void {
+    var state = pluginStateFromContext(ctx);
+    const start_time = state.host.startExecution();
+    errdefer state.host.endExecution(start_time) catch {};
+
+    const callbacks = host.Host.ActionCallbacks{
+        .ctx = @as(*anyopaque, @ptrCast(ctx)),
+        .show_message = ghostlangShowMessageCallback,
+    };
+
+    try state.compiled.executeSetup(callbacks);
+    try state.host.endExecution(start_time);
+}
+
+fn ghostlangPluginDeinit(ctx: *runtime.PluginAPI.PluginContext) anyerror!void {
+    var state = pluginStateFromContext(ctx);
+    state.compiled.deinit();
+    if (!state.host_deinitialized) {
+        state.host.deinit();
+        state.host_deinitialized = true;
+    }
+}
+
 pub const PluginManager = struct {
     allocator: std.mem.Allocator,
     plugin_api: *runtime.PluginAPI,
     plugin_directories: [][]const u8,
     ghostlang_host: host.Host,
+    loaded_plugin_states: std.StringHashMap(*GhostlangLoadedPlugin),
 
     pub const Error = error{
         PluginDirectoryNotFound,
@@ -43,6 +84,7 @@ pub const PluginManager = struct {
         plugin_path: []const u8,
         script_content: []const u8,
         loaded: bool,
+        state: ?*GhostlangLoadedPlugin = null,
     };
 
     pub fn init(allocator: std.mem.Allocator, plugin_api: *runtime.PluginAPI, plugin_directories: [][]const u8) !PluginManager {
@@ -52,10 +94,16 @@ pub const PluginManager = struct {
             .plugin_api = plugin_api,
             .plugin_directories = plugin_directories,
             .ghostlang_host = ghostlang_host,
+            .loaded_plugin_states = std.StringHashMap(*GhostlangLoadedPlugin).init(allocator),
         };
     }
 
     pub fn deinit(self: *PluginManager) void {
+        var iter = self.loaded_plugin_states.iterator();
+        while (iter.next()) |entry| {
+            self.cleanupGhostlangState(entry.value_ptr.*);
+        }
+        self.loaded_plugin_states.deinit();
         self.ghostlang_host.deinit();
     }
 
@@ -157,21 +205,121 @@ pub const PluginManager = struct {
     }
 
     fn parsePluginManifest(self: *PluginManager, manifest_content: []const u8) !PluginManifest {
-        // Simple JSON parsing - in a real implementation, you'd use a proper JSON parser
-        _ = self;
-        _ = manifest_content;
+        const PermissionsDTO = struct {
+            file_system_access: ?bool = null,
+            network_access: ?bool = null,
+            system_calls: ?bool = null,
+            editor_full_access: ?bool = null,
+            allowed_directories: ?[]const []const u8 = null,
+            blocked_directories: ?[]const []const u8 = null,
+        };
 
-        // Placeholder implementation
-        return PluginManifest{
-            .id = "example-plugin",
-            .name = "Example Plugin",
-            .version = "1.0.0",
-            .author = "Unknown",
-            .description = "Example plugin",
-            .entry_point = "main.gza",
-            .dependencies = &.{},
+        const ManifestDTO = struct {
+            id: []const u8,
+            name: []const u8,
+            version: []const u8,
+            author: ?[]const u8 = null,
+            description: ?[]const u8 = null,
+            entry_point: []const u8,
+            dependencies: ?[]const []const u8 = null,
+            permissions: ?PermissionsDTO = null,
+        };
+
+        var parsed = try std.json.parseFromSlice(ManifestDTO, self.allocator, manifest_content, .{ .ignore_unknown_fields = true });
+        defer parsed.deinit();
+
+        const dto = parsed.value;
+
+        var manifest = PluginManifest{
+            .id = try self.allocator.dupe(u8, dto.id),
+            .name = try self.allocator.dupe(u8, dto.name),
+            .version = try self.allocator.dupe(u8, dto.version),
+            .author = try duplicateOptionalString(self.allocator, dto.author, "Unknown"),
+            .description = try duplicateOptionalString(self.allocator, dto.description, ""),
+            .entry_point = try self.allocator.dupe(u8, dto.entry_point),
+            .dependencies = if (dto.dependencies) |deps| try duplicateStringSlice(self.allocator, deps) else &.{},
             .permissions = .{},
         };
+
+        errdefer freeManifest(self.allocator, &manifest);
+
+        if (dto.permissions) |perms| {
+            manifest.permissions.file_system_access = perms.file_system_access orelse manifest.permissions.file_system_access;
+            manifest.permissions.network_access = perms.network_access orelse manifest.permissions.network_access;
+            manifest.permissions.system_calls = perms.system_calls orelse manifest.permissions.system_calls;
+            manifest.permissions.editor_full_access = perms.editor_full_access orelse manifest.permissions.editor_full_access;
+            manifest.permissions.allowed_directories = if (perms.allowed_directories) |dirs| try duplicateStringSlice(self.allocator, dirs) else manifest.permissions.allowed_directories;
+            manifest.permissions.blocked_directories = if (perms.blocked_directories) |dirs| try duplicateStringSlice(self.allocator, dirs) else manifest.permissions.blocked_directories;
+        }
+
+        try self.validatePermissions(&manifest.permissions);
+        return manifest;
+    }
+
+    fn duplicateOptionalString(allocator: std.mem.Allocator, value: ?[]const u8, default_value: []const u8) ![]const u8 {
+        if (value) |val| {
+            return try allocator.dupe(u8, val);
+        }
+        return try allocator.dupe(u8, default_value);
+    }
+
+    fn duplicateStringSlice(allocator: std.mem.Allocator, source: []const []const u8) ![][]const u8 {
+        if (source.len == 0) return &.{};
+        var dest = try allocator.alloc([]const u8, source.len);
+        var i: usize = 0;
+        errdefer {
+            while (i > 0) : (i -= 1) {
+                allocator.free(dest[i - 1]);
+            }
+            allocator.free(dest);
+        }
+        while (i < source.len) : (i += 1) {
+            dest[i] = try allocator.dupe(u8, source[i]);
+        }
+        return dest;
+    }
+
+    fn freeManifest(allocator: std.mem.Allocator, manifest: *PluginManifest) void {
+        allocator.free(manifest.id);
+        allocator.free(manifest.name);
+        allocator.free(manifest.version);
+        allocator.free(manifest.author);
+        allocator.free(manifest.description);
+        allocator.free(manifest.entry_point);
+
+        if (manifest.dependencies.len > 0) {
+            for (manifest.dependencies) |dep| allocator.free(dep);
+            allocator.free(manifest.dependencies);
+        }
+
+        if (manifest.permissions.allowed_directories.len > 0) {
+            for (manifest.permissions.allowed_directories) |dir| allocator.free(dir);
+            allocator.free(manifest.permissions.allowed_directories);
+        }
+
+        if (manifest.permissions.blocked_directories.len > 0) {
+            for (manifest.permissions.blocked_directories) |dir| allocator.free(dir);
+            allocator.free(manifest.permissions.blocked_directories);
+        }
+    }
+
+    fn validatePermissions(self: *PluginManager, permissions: *PluginManifest.PluginPermissions) !void {
+        _ = self;
+        const forbidden = &.{ "..", "~", "//" };
+        for (permissions.allowed_directories) |dir| {
+            for (forbidden) |marker| {
+                if (std.mem.indexOf(u8, dir, marker)) |_| {
+                    return Error.SecurityViolation;
+                }
+            }
+        }
+        for (permissions.blocked_directories) |dir| {
+            for (forbidden) |marker| {
+                if (std.mem.indexOf(u8, dir, marker)) |_| {
+                    return Error.SecurityViolation;
+                }
+            }
+        }
     }
 
     fn parseEmbeddedManifest(self: *PluginManager, script_content: []const u8) !PluginManifest {
@@ -238,23 +386,43 @@ pub const PluginManager = struct {
             .blocked_file_patterns = plugin_info.manifest.permissions.blocked_directories,
         };
 
-        // Initialize Ghostlang host with sandbox
-        self.ghostlang_host = try host.Host.initWithSandbox(self.allocator, sandbox_config);
+        var plugin_host = try host.Host.initWithSandbox(self.allocator, sandbox_config);
+        var host_cleanup = true;
+        defer if (host_cleanup) plugin_host.deinit();
 
-        // Load and execute plugin script
-        try self.ghostlang_host.loadConfig(plugin_info.plugin_path);
+        const compiled = plugin_host.compilePluginScript(plugin_info.script_content) catch |err| {
+            return err;
+        };
 
-        // TODO: Execute plugin script through Ghostlang VM
-        // This would involve:
-        // 1. Parsing the Ghostlang script
-        // 2. Setting up FFI bindings for plugin API functions
-        // 3. Executing the script in sandboxed environment
-        // 4. Registering plugin with the API
+        var state = try self.allocator.create(GhostlangLoadedPlugin);
+        errdefer self.cleanupGhostlangState(state);
 
-        // For now, create a dummy plugin
-        const plugin = try self.createDummyPlugin(plugin_info.manifest);
+        state.* = .{
+            .runtime_plugin = runtime.Plugin{
+                .id = plugin_info.manifest.id,
+                .name = plugin_info.manifest.name,
+                .version = plugin_info.manifest.version,
+                .author = plugin_info.manifest.author,
+                .description = plugin_info.manifest.description,
+                .context = undefined,
+                .user_data = null,
+                .init_fn = ghostlangPluginInit,
+                .deinit_fn = ghostlangPluginDeinit,
+                .activate_fn = null,
+                .deactivate_fn = null,
+            },
+            .host = plugin_host,
+            .compiled = compiled,
+            .host_deinitialized = false,
+        };
+        host_cleanup = false;
 
-        try self.plugin_api.loadPlugin(plugin);
+        state.runtime_plugin.user_data = state;
+
+        try self.plugin_api.loadPlugin(&state.runtime_plugin);
+
+        try self.loaded_plugin_states.put(plugin_info.manifest.id, state);
+        plugin_info.state = state;
         plugin_info.loaded = true;
 
         std.log.info("Loaded plugin: {s} v{s} from {s}", .{
@@ -264,35 +432,18 @@ pub const PluginManager = struct {
         });
     }
 
-    fn createDummyPlugin(self: *PluginManager, manifest: PluginManifest) !*runtime.Plugin {
-        const plugin = try self.allocator.create(runtime.Plugin);
-        plugin.* = runtime.Plugin{
-            .id = manifest.id,
-            .name = manifest.name,
-            .version = manifest.version,
-            .author = manifest.author,
-            .description = manifest.description,
-            .context = undefined, // Will be set by plugin system
-            .init_fn = dummyInitPlugin,
-            .deinit_fn = null,
-            .activate_fn = null,
-            .deactivate_fn = null,
-        };
-        return plugin;
-    }
-
-    fn dummyInitPlugin(ctx: *runtime.PluginContext) !void {
-        try ctx.showMessage("Dummy plugin loaded successfully");
-    }
-
     pub fn unloadPlugin(self: *PluginManager, plugin_id: []const u8) !void {
         try self.plugin_api.unloadPlugin(plugin_id);
+        if (self.loaded_plugin_states.fetchRemove(plugin_id)) |entry| {
+            self.cleanupGhostlangState(entry.value);
+        }
     }
 
     pub fn reloadPlugin(self: *PluginManager, plugin_info: *PluginInfo) !void {
         if (plugin_info.loaded) {
             try self.unloadPlugin(plugin_info.manifest.id);
             plugin_info.loaded = false;
+            plugin_info.state = null;
         }
 
         // Reload script content
@@ -303,10 +454,35 @@ pub const PluginManager = struct {
     }
 
     pub fn getPluginStats(self: *PluginManager) host.Host.ExecutionStats {
-        return self.ghostlang_host.getExecutionStats();
+        var aggregate = host.Host.ExecutionStats{};
+        var iter = self.loaded_plugin_states.iterator();
+        while (iter.next()) |entry| {
+            const state = entry.value_ptr.*;
+            const stats = state.host.getExecutionStats();
+            aggregate.execution_count += stats.execution_count;
+            aggregate.total_execution_time_ms += stats.total_execution_time_ms;
+            aggregate.peak_memory_usage = @max(aggregate.peak_memory_usage, stats.peak_memory_usage);
+            aggregate.file_operations_count += stats.file_operations_count;
+            aggregate.network_requests_count += stats.network_requests_count;
+            aggregate.sandbox_violations += stats.sandbox_violations;
+            aggregate.last_execution_time = stats.last_execution_time;
+        }
+        return aggregate;
     }
 
     pub fn resetStats(self: *PluginManager) void {
-        self.ghostlang_host.resetStats();
+        var iter = self.loaded_plugin_states.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.*.host.resetStats();
+        }
+    }
+
+    fn cleanupGhostlangState(self: *PluginManager, state: *GhostlangLoadedPlugin) void {
+        if (!state.host_deinitialized) {
+            state.compiled.deinit();
+            state.host.deinit();
+            state.host_deinitialized = true;
+        }
+        self.allocator.destroy(state);
     }
 };

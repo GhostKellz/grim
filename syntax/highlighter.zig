@@ -58,7 +58,11 @@ pub const SyntaxHighlighter = struct {
         const parser = self.parser orelse return Error.ParserNotInitialized;
 
         // Get rope content
-        const content = try rope.slice(.{ .start = 0, .end = rope.len() });
+        const content_slice = rope.slice(.{ .start = 0, .end = rope.len() }) catch |err| switch (err) {
+            error.OutOfBounds, error.InvalidRange => return Error.HighlightingFailed,
+            error.OutOfMemory => return error.OutOfMemory,
+        };
+        const content = try self.allocator.dupe(u8, content_slice);
         defer if (content.len > 0) self.allocator.free(content);
 
         // Check if content changed using simple hash
@@ -121,14 +125,14 @@ pub fn convertHighlightsToRanges(
     highlights: []const grove.GroveParser.Highlight,
     rope: *core.Rope,
 ) ![]HighlightRange {
-    var ranges = std.ArrayList(HighlightRange).init(allocator);
-    errdefer ranges.deinit();
+    var ranges = std.ArrayListUnmanaged(HighlightRange){};
+    errdefer ranges.deinit(allocator);
 
     for (highlights) |highlight| {
         const start_pos = byteOffsetToLineCol(rope, highlight.start);
         const end_pos = byteOffsetToLineCol(rope, highlight.end);
 
-        try ranges.append(.{
+        try ranges.append(allocator, .{
             .start_line = start_pos.line,
             .start_col = start_pos.col,
             .end_line = end_pos.line,
@@ -137,7 +141,49 @@ pub fn convertHighlightsToRanges(
         });
     }
 
-    return ranges.toOwnedSlice();
+    return ranges.toOwnedSlice(allocator);
+}
+
+test "ghostlang highlight smoke" {
+    const allocator = std.testing.allocator;
+
+    var highlighter = SyntaxHighlighter.init(allocator);
+    defer highlighter.deinit();
+
+    try highlighter.setLanguage("sample.gza");
+
+    var rope = try core.Rope.init(allocator);
+    defer rope.deinit();
+
+    const source = \\const message = "hello world"
+        \\fn main() {
+        \\    print(message)
+        \\}
+    ;
+
+    try rope.insert(0, source);
+
+    const highlights = try highlighter.highlight(&rope);
+    defer allocator.free(highlights);
+
+    var found_keyword = false;
+    var found_string = false;
+
+    for (highlights) |highlight| {
+        switch (highlight.type) {
+            .keyword => found_keyword = true,
+            .string_literal => found_string = true,
+            else => {},
+        }
+    }
+
+    try std.testing.expect(found_keyword);
+    try std.testing.expect(found_string);
+
+    const ranges = try convertHighlightsToRanges(allocator, highlights, &rope);
+    defer allocator.free(ranges);
+
+    try std.testing.expect(ranges.len >= highlights.len);
 }
 
 const LineCol = struct {

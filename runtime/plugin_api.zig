@@ -183,6 +183,7 @@ pub const PluginAPI = struct {
         plugin_id: []const u8,
         api: *PluginAPI,
         scratch_allocator: std.mem.Allocator,
+        user_data: ?*anyopaque = null,
 
         // Editor operations
         pub fn getCurrentBuffer(self: *PluginContext) !BufferId {
@@ -280,6 +281,14 @@ pub const PluginAPI = struct {
             std.fs.cwd().access(path, .{}) catch return false;
             return true;
         }
+
+        pub fn setUserData(self: *PluginContext, ptr: ?*anyopaque) void {
+            self.user_data = ptr;
+        }
+
+        pub fn userData(self: *PluginContext) ?*anyopaque {
+            return self.user_data;
+        }
     };
 
     pub const Plugin = struct {
@@ -289,6 +298,7 @@ pub const PluginAPI = struct {
         author: []const u8,
         description: []const u8,
         context: PluginContext,
+        user_data: ?*anyopaque = null,
 
         // Plugin lifecycle hooks
         init_fn: ?*const fn (ctx: *PluginContext) anyerror!void = null,
@@ -362,7 +372,11 @@ pub const PluginAPI = struct {
             .plugin_id = plugin.id,
             .api = self,
             .scratch_allocator = self.allocator,
+            .user_data = null,
         };
+        if (plugin.user_data) |ptr| {
+            plugin.context.setUserData(ptr);
+        }
 
         // Initialize plugin
         try plugin.init();
@@ -415,6 +429,7 @@ pub const PluginAPI = struct {
             .plugin_id = "system",
             .api = self,
             .scratch_allocator = self.allocator,
+            .user_data = null,
         };
         try self.event_handlers.emit(&temp_context, event_type, data);
     }
@@ -424,6 +439,7 @@ pub const PluginAPI = struct {
             .plugin_id = "system",
             .api = self,
             .scratch_allocator = self.allocator,
+            .user_data = null,
         };
         return try self.keystroke_handlers.handle(&temp_context, key_combination, mode);
     }

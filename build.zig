@@ -46,21 +46,24 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }) else null;
 
-    const syntax_mod = b.createModule(.{
-        .root_source_file = b.path("syntax/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = if (ghostlang_enabled and grove != null) &.{
-            .{ .name = "grove", .module = grove.?.module("grove") },
-        } else &.{},
-    });
-
     const core_mod = b.createModule(.{
         .root_source_file = b.path("core/mod.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "gcode", .module = gcode.module("gcode") },
+        },
+    });
+
+    const syntax_mod = b.createModule(.{
+        .root_source_file = b.path("syntax/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = if (ghostlang_enabled and grove != null) &.{
+            .{ .name = "grove", .module = grove.?.module("grove") },
+            .{ .name = "core", .module = core_mod },
+        } else &.{
+            .{ .name = "core", .module = core_mod },
         },
     });
 

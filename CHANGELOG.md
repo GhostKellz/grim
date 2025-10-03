@@ -30,7 +30,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Grove Zig-TreeSitter Integration
 - **Pure Zig Syntax Highlighting**: Grove integration as primary parser
-  - Support for 14+ languages: Zig, Rust, JavaScript, TypeScript, Python, C/C++, Go, HTML, CSS, Markdown, JSON, YAML, TOML
+  - Support for 14 grammars: JSON, Zig, Rust, Ghostlang, TypeScript, TSX, Bash, JavaScript, Python, Markdown, CMake, TOML, YAML, C
+  - Upgraded to tree-sitter 0.25.10 (ABI 15) runtime and grammar set
   - Fallback lexical analysis when Tree-sitter unavailable
   - Language auto-detection from file extensions
   - Highlight caching for improved performance
@@ -83,6 +84,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Dependencies Updated
 - **Phantom TUI**: Updated to production-ready version with feature flags
+- **Grove**: Synced to latest Ghostlang drop (tree-sitter 0.25.10, 14 grammars)
 - **Zig Compatibility**: Full compatibility with Zig 0.16.0-dev
 - **Build System**: Enhanced build configuration with proper module dependencies
 

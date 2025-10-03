@@ -49,8 +49,8 @@
             .hash = "flare-0.0.0-NK4JaX9eAQCgRuIiDBZr6uSz8D2DhSeeWswotvCbUeG_",
         },
         .grove = .{
-            .url = "https://github.com/ghostkellz/grove/archive/refs/heads/main.tar.gz",
-            .hash = "grove-0.0.0-rGFsN0MDNABGL_w5s6NKnWYwDHMcKtSiFo2bi5oC6lzk",
+            .url = "https://github.com/GhostKellz/grove/archive/refs/tags/v0.1.1.tar.gz",
+            .hash = "grove-0.1.1-rGFsN-2-igOnAldzwM-7f6JUgi2EJqrHV32j72ykIB8K",
         },
     },
     .paths = .{

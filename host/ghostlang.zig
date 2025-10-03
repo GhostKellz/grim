@@ -17,6 +17,8 @@ pub const Host = struct {
         MemoryLimitExceeded,
         UnauthorizedFileAccess,
         UnauthorizedNetworkAccess,
+        InvalidConfig,
+        InvalidScript,
     } || std.fs.Dir.OpenError || std.fs.File.OpenError || std.fs.File.ReadError || std.mem.Allocator.Error;
 
     pub const SandboxConfig = struct {
@@ -46,6 +48,45 @@ pub const Host = struct {
             self.* = .{};
         }
     };
+
+    pub const ActionCallbacks = struct {
+        ctx: *anyopaque,
+        show_message: *const fn (ctx: *anyopaque, message: []const u8) anyerror!void,
+    };
+
+    pub const CompiledPlugin = struct {
+        allocator: std.mem.Allocator,
+        setup_actions: []Action,
+
+        pub fn deinit(self: *CompiledPlugin) void {
+            const allocator = self.allocator;
+            for (self.setup_actions) |action| {
+                deinitAction(action, allocator);
+            }
+            if (self.setup_actions.len > 0) {
+                allocator.free(self.setup_actions);
+            }
+            self.setup_actions = &.{};
+        }
+
+        pub fn executeSetup(self: *const CompiledPlugin, callbacks: ActionCallbacks) Error!void {
+            for (self.setup_actions) |action| {
+                switch (action) {
+                    .show_message => |msg| try callbacks.show_message(callbacks.ctx, msg),
+                }
+            }
+        }
+    };
+
+    const Action = union(enum) {
+        show_message: []u8,
+    };
+
+    fn deinitAction(action: Action, allocator: std.mem.Allocator) void {
+        switch (action) {
+            .show_message => |msg| allocator.free(msg),
+        }
+    }
 
     const config_file_name = "init.gza";
     const max_config_size = 16 * 1024 * 1024; // 16 MiB safety limit
@@ -94,6 +135,193 @@ pub const Host = struct {
             return Error.SetupSymbolMissing;
         }
         self.setup_invoked = true;
+    }
+
+    pub fn compilePluginScript(self: *Host, script: []const u8) Error!CompiledPlugin {
+        const body = findFunctionBody(script, "setup") catch |err| switch (err) {
+            ParseError.FunctionNotFound => return Error.SetupSymbolMissing,
+            ParseError.InvalidSyntax => return Error.InvalidScript,
+            ParseError.UnsupportedStatement => return Error.InvalidScript,
+        };
+
+        var actions = std.ArrayListUnmanaged(Action){};
+        errdefer {
+            for (actions.items) |action| {
+                deinitAction(action, self.allocator);
+            }
+            actions.deinit(self.allocator);
+        }
+
+        parseSetupActions(self.allocator, body, &actions) catch |err| switch (err) {
+            ParseError.InvalidSyntax => return Error.InvalidScript,
+            ParseError.UnsupportedStatement => return Error.InvalidScript,
+            ParseError.FunctionNotFound => return Error.InvalidScript,
+        };
+
+        const owned_actions = try actions.toOwnedSlice(self.allocator);
+        return CompiledPlugin{
+            .allocator = self.allocator,
+            .setup_actions = owned_actions,
+        };
+    }
+
+    const ParseError = error{ FunctionNotFound, InvalidSyntax, UnsupportedStatement };
+
+    fn findFunctionBody(script: []const u8, name: []const u8) ParseError![]const u8 {
+        var i: usize = 0;
+        const bytes = script;
+        while (i < bytes.len) : (i += 1) {
+            if (bytes[i] == 'f' or bytes[i] == 'F') {
+                if (i > 0 and std.ascii.isAlphabetic(bytes[i - 1])) continue;
+                if (!startsWithKeyword(bytes[i..], "fn")) continue;
+                var cursor = i + 2;
+                cursor = skipWhitespace(bytes, cursor);
+                const name_start = cursor;
+                while (cursor < bytes.len and isIdentChar(bytes[cursor])) cursor += 1;
+                if (cursor == name_start) continue;
+                const candidate = bytes[name_start..cursor];
+                if (!std.mem.eql(u8, candidate, name)) continue;
+
+                cursor = skipWhitespace(bytes, cursor);
+                if (cursor >= bytes.len or bytes[cursor] != '(') return ParseError.InvalidSyntax;
+
+                var paren_depth: usize = 0;
+                while (cursor < bytes.len) : (cursor += 1) {
+                    const ch = bytes[cursor];
+                    if (ch == '(') {
+                        paren_depth += 1;
+                    } else if (ch == ')') {
+                        if (paren_depth == 0) return ParseError.InvalidSyntax;
+                        paren_depth -= 1;
+                        if (paren_depth == 0) {
+                            cursor += 1;
+                            break;
+                        }
+                    } else if (ch == '"') {
+                        cursor = skipString(bytes, cursor) catch return ParseError.InvalidSyntax;
+                    }
+                }
+
+                cursor = skipWhitespace(bytes, cursor);
+                if (cursor >= bytes.len or bytes[cursor] != '{') return ParseError.InvalidSyntax;
+                const body_start = cursor + 1;
+                var depth: isize = 1;
+                var k = body_start;
+                while (k < bytes.len) : (k += 1) {
+                    const ch = bytes[k];
+                    if (ch == '"') {
+                        k = skipString(bytes, k) catch return ParseError.InvalidSyntax;
+                        continue;
+                    }
+                    if (ch == '{') {
+                        depth += 1;
+                    } else if (ch == '}') {
+                        depth -= 1;
+                        if (depth == 0) {
+                            return bytes[body_start..k];
+                        }
+                    }
+                }
+                return ParseError.InvalidSyntax;
+            }
+        }
+        return ParseError.FunctionNotFound;
+    }
+
+    fn parseSetupActions(allocator: std.mem.Allocator, body: []const u8, actions: *std.ArrayListUnmanaged(Action)) ParseError!void {
+        var tokenizer = std.mem.tokenizeAny(u8, body, "\n;");
+        while (tokenizer.next()) |raw_line| {
+            var stmt = std.mem.trim(u8, raw_line, " \t\r");
+            if (stmt.len == 0) continue;
+
+            if (std.mem.indexOf(u8, stmt, "//")) |comment_idx| {
+                stmt = std.mem.trim(u8, stmt[0..comment_idx], " \t\r");
+                if (stmt.len == 0) continue;
+            }
+
+            const open_paren = std.mem.indexOfScalar(u8, stmt, '(') orelse return ParseError.InvalidSyntax;
+            const close_paren = std.mem.lastIndexOfScalar(u8, stmt, ')') orelse return ParseError.InvalidSyntax;
+            if (close_paren <= open_paren) return ParseError.InvalidSyntax;
+
+            const name_slice = std.mem.trim(u8, stmt[0..open_paren], " \t");
+            const args_slice = stmt[open_paren + 1 .. close_paren];
+
+            if (std.mem.eql(u8, name_slice, "print") or
+                std.mem.eql(u8, name_slice, "ctx.showMessage") or
+                std.mem.eql(u8, name_slice, "ctx.show_message"))
+            {
+                const message = parseStringLiteral(allocator, args_slice) catch |err| switch (err) {
+                    ParseError.InvalidSyntax => return ParseError.InvalidSyntax,
+                    else => return err,
+                };
+                try actions.append(allocator, .{ .show_message = message });
+            } else {
+                return ParseError.UnsupportedStatement;
+            }
+        }
+    }
+
+    fn parseStringLiteral(allocator: std.mem.Allocator, literal: []const u8) ParseError![]u8 {
+        var builder = std.ArrayListUnmanaged(u8){};
+        errdefer builder.deinit(allocator);
+
+        var i = skipWhitespace(literal, 0);
+        if (i >= literal.len or literal[i] != '"') return ParseError.InvalidSyntax;
+        i += 1;
+        while (i < literal.len) : (i += 1) {
+            const ch = literal[i];
+            if (ch == '"') {
+                const result = try builder.toOwnedSlice(allocator);
+                return result;
+            }
+            if (ch == '\\') {
+                if (i + 1 >= literal.len) return ParseError.InvalidSyntax;
+                const next = literal[i + 1];
+                switch (next) {
+                    '"' => try builder.append(allocator, '"'),
+                    '\\' => try builder.append(allocator, '\\'),
+                    'n' => try builder.append(allocator, '\n'),
+                    't' => try builder.append(allocator, '\t'),
+                    else => return ParseError.InvalidSyntax,
+                }
+                i += 1;
+            } else {
+                try builder.append(allocator, ch);
+            }
+        }
+        return ParseError.InvalidSyntax;
+    }
+
+    fn skipWhitespace(data: []const u8, start: usize) usize {
+        var idx = start;
+        while (idx < data.len and std.ascii.isWhitespace(data[idx])) : (idx += 1) {}
+        return idx;
+    }
+
+    fn isIdentChar(ch: u8) bool {
+        return std.ascii.isAlphabetic(ch) or std.ascii.isDigit(ch) or ch == '_';
+    }
+
+    fn startsWithKeyword(slice: []const u8, keyword: []const u8) bool {
+        if (slice.len < keyword.len) return false;
+        if (!std.mem.eql(u8, slice[0..keyword.len], keyword)) return false;
+        if (slice.len == keyword.len) return true;
+        return !isIdentChar(slice[keyword.len]);
+    }
+
+    fn skipString(data: []const u8, start: usize) ParseError!usize {
+        var idx = start + 1;
+        while (idx < data.len) : (idx += 1) {
+            const ch = data[idx];
+            if (ch == '\\') {
+                idx += 1; // Skip escape
+                continue;
+            }
+            if (ch == '"') {
+                return idx;
+            }
+        }
+        return ParseError.InvalidSyntax;
     }
 
     pub fn configPath(self: *const Host) ?[]const u8 {

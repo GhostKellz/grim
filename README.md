@@ -36,11 +36,22 @@ Our goal is simple:
 
 - 🔑 Modal editing with Vim motions  
 - 🪶 Rope-based buffer for huge files  :
-- 🌲 Tree-sitter highlighting and navigation  
+- 🌲 Tree-sitter 0.25.10 highlighting and navigation across 14 languages  
 - 📡 Built-in LSP client (hover, diagnostics, goto, completion)  
 - ⚡ Ghostlang configuration and plugins  
 - 🔌 Remote plugin protocol (any language over stdio/JSON)  
 - 📂 Fuzzy finder, quickfix list, registers, macros  
+
+### Supported languages (via Grove)
+
+Grim bundles Grove's latest tree-sitter toolchain. When you build with `-Dghostlang=true`, you get:
+
+- Zig, Rust, Go
+- JavaScript, TypeScript, TSX
+- Python, Bash, C, C++
+- JSON, TOML, YAML, Markdown
+- CMake, HTML, CSS
+- Ghostlang utilities (symbols, folding, text objects)
 
 ---
 
@@ -48,7 +59,7 @@ Our goal is simple:
 
 - [x] Rope buffer + undo/redo  
 - [x] Modal engine + keymaps  
-- [ ] Tree-sitter highlighting (Zig, Rust, JS, JSON, TOML)  
+- [x] Tree-sitter highlighting (14 Grove grammars + Ghostlang services)  
 - [ ] LSP client (Zig + Rust servers first)  
 - [ ] Ghostlang plugin runtime  
 - [ ] Fuzzy finder + file explorer  
@@ -62,12 +73,15 @@ Our goal is simple:
 ### Zig Integration
 ```bash
 zig fetch --save https://github.com/ghostkellz/grim/archive/refs/heads/main.tar.gz
+# Refresh dependencies (Grove, tree-sitter grammars)
+zig build --fetch
 ```
 ### Build from source
 ```bash
 git clone https://github.com/ghostkellz/grim.git
 cd grim
-zig build run
+# Optional: include Ghostlang + Grove (tree-sitter 0.25.10)
+zig build run -Dghostlang=true
 ```
 ---
 
