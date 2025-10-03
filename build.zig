@@ -38,6 +38,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const ghostlang = b.dependency("ghostlang", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     const syntax_mod = b.createModule(.{
         .root_source_file = b.path("syntax/mod.zig"),
@@ -71,6 +75,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "flare", .module = flare.module("flare") },
+            .{ .name = "ghostlang", .module = ghostlang.module("ghostlang") },
         },
     });
 
@@ -121,6 +126,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phantom", .module = phantom.module("phantom") },
             .{ .name = "gcode", .module = gcode.module("gcode") },
             .{ .name = "flare", .module = flare.module("flare") },
+            .{ .name = "ghostlang", .module = ghostlang.module("ghostlang") },
         },
     });
 

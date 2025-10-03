@@ -48,6 +48,10 @@
             .url = "https://github.com/ghostkellz/flare/archive/refs/heads/main.tar.gz",
             .hash = "flare-0.0.0-NK4JaX9eAQCgRuIiDBZr6uSz8D2DhSeeWswotvCbUeG_",
         },
+        .ghostlang = .{
+            .url = "https://github.com/ghostkellz/ghostlang/archive/refs/heads/main.tar.gz",
+            .hash = "ghostlang-0.0.0-_SzSPdp2AQCgjX9HfR8nZ-Ui1L3_TByHwoD18DU6WdTU",
+        },
     },
     .paths = .{
         "build.zig",

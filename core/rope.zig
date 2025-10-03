@@ -1,20 +1,21 @@
 const std = @import("std");
+const gcode = @import("gcode");
 
-/// Check if position is at a valid UTF-8 boundary
+/// Check if position is at a valid UTF-8 boundary using gcode
 fn isUtf8Boundary(data: []const u8, pos: usize) bool {
     if (pos == 0 or pos >= data.len) return true;
-    // UTF-8 continuation bytes start with 10xxxxxx
-    return (data[pos] & 0xC0) != 0x80;
+    return gcode.isValidUtf8Boundary(data, pos);
 }
 
-/// Find the nearest UTF-8 boundary at or before pos
+/// Find the nearest UTF-8 boundary at or before pos using gcode
 fn findUtf8BoundaryBefore(data: []const u8, pos: usize) usize {
     if (pos == 0 or pos >= data.len) return pos;
-    var i = pos;
-    while (i > 0 and !isUtf8Boundary(data, i)) {
-        i -= 1;
-    }
-    return i;
+    return gcode.findBoundaryBefore(data, pos);
+}
+
+/// Count grapheme clusters in a range for accurate cursor positioning
+fn countGraphemes(data: []const u8) usize {
+    return gcode.countGraphemes(data);
 }
 
 pub const Range = struct {
@@ -78,12 +79,11 @@ pub const Rope = struct {
         return self.length;
     }
 
-    pub fn insert(self: *Rope, pos: usize, bytes: []const u8) Error!void {
-        if (pos > self.length) return Error.OutOfBounds;
-        if (bytes.len == 0) return;
+    pub fn insert(self: *Rope, position: usize, bytes: []const u8) !void {
+        if (!std.unicode.utf8ValidateSlice(bytes)) return Error.InvalidRange;
 
         const piece_ptr = try self.createPieceCopy(bytes);
-        const index = try self.ensureCut(pos);
+        const index = try self.ensureCut(position);
         try self.pieces.insert(self.allocator, index, piece_ptr);
         self.length += bytes.len;
     }
@@ -221,7 +221,39 @@ pub const Rope = struct {
         const suffix_piece = try self.createPieceView(suffix_slice);
         try self.pieces.insert(self.allocator, index + 1, suffix_piece);
     }
+    
+    /// Move cursor by grapheme clusters for proper Unicode navigation
+    pub fn moveByGraphemes(self: *const Rope, from_pos: usize, count: isize) Error!usize {
+        if (count == 0) return from_pos;
+        
+        const slice_all = try self.slice(.{ .start = 0, .end = self.length });
+        return gcode.moveByGraphemes(slice_all, from_pos, count);
+    }
+    
+    /// Count visual columns accounting for tab width and unicode width
+    pub fn visualColumns(self: *const Rope, range: Range, tab_width: usize) Error!usize {
+        const data = try self.slice(range);
+        return gcode.visualWidth(data, tab_width);
+    }
+    
+    /// Find word boundaries for text object operations
+    pub fn findWordBoundary(self: *const Rope, pos: usize, forward: bool) Error!usize {
+        const slice_all = try self.slice(.{ .start = 0, .end = self.length });
+        return gcode.findWordBoundary(slice_all, pos, forward);
+    }
 };
+
+test "rope unicode support" {
+    const allocator = std.testing.allocator;
+    var rope = try Rope.init(allocator);
+    defer rope.deinit();
+
+    // Test with emoji and combining characters
+    try rope.insert(0, "Hello 👋🏽 world! café");
+    
+    const all_text = try rope.slice(.{ .start = 0, .end = rope.len() });
+    try std.testing.expectEqualStrings("Hello 👋🏽 world! café", all_text);
+}
 
 test "rope insert and slice" {
     const allocator = std.testing.allocator;

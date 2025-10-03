@@ -10,20 +10,34 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    // Initialize Simple TUI app
-    const SimpleTUI = @import("ui_tui").simple_tui.SimpleTUI;
-    var app = try SimpleTUI.init(allocator);
+    // Initialize Grim app
+    var app = try grim.ui.tui.App.init(allocator);
     defer app.deinit();
 
     // Load file if provided
     if (args.len > 1) {
-        app.loadFile(args[1]) catch |err| {
-            std.debug.print("Failed to load file {s}: {}\n", .{ args[1], err });
-            // Continue with empty buffer
+        // Load file content using more recent API  
+        const file = std.fs.cwd().openFile(args[1], .{}) catch |err| switch (err) {
+            error.FileNotFound => {
+                std.debug.print("File not found: {s}\n", .{args[1]});
+                return;
+            },
+            else => return err,
         };
+        defer file.close();
+        
+        const file_size = try file.getEndPos();
+        const file_content = try allocator.alloc(u8, file_size);
+        defer allocator.free(file_content);
+        
+        _ = try file.readAll(file_content);
+        
+        if (file_content.len > 0) {
+            try app.buffer.insert(0, file_content);
+        }
     } else {
         // Load a sample file for testing
-        try app.editor.rope.insert(0,
+        try app.buffer.insert(0,
             \\fn main() !void {
             \\    const std = @import("std");
             \\    std.debug.print("Hello, Grim!\n", .{});
@@ -39,14 +53,10 @@ pub fn main() !void {
         );
     }
 
-    std.debug.print("Starting Grim editor... Press Ctrl+Q to quit.\n", .{});
-    std.Thread.sleep(2 * std.time.ns_per_s); // Give user time to read
+    std.debug.print("Starting Grim editor... Press q to quit.\n", .{});
 
     // Run the TUI
-    app.run() catch |err| {
-        std.debug.print("TUI error: {}\n", .{err});
-        return;
-    };
+    try app.run();
 
     std.debug.print("Grim editor closed.\n", .{});
 }
