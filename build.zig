@@ -38,6 +38,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const ghostlang_dep = b.dependency("ghostlang", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Grove dependency for Ghostlang integration
     const ghostlang_enabled = b.option(bool, "ghostlang", "Enable Ghostlang (.gza) support via Grove") orelse false;
@@ -84,6 +88,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "flare", .module = flare.module("flare") },
+            .{ .name = "ghostlang", .module = ghostlang_dep.module("ghostlang") },
         },
     });
 

@@ -52,6 +52,10 @@
             .url = "https://github.com/GhostKellz/grove/archive/refs/tags/v0.1.1.tar.gz",
             .hash = "grove-0.1.1-rGFsN-2-igOnAldzwM-7f6JUgi2EJqrHV32j72ykIB8K",
         },
+        .ghostlang = .{
+            .url = "https://github.com/ghostkellz/ghostlang/archive/refs/heads/main.tar.gz",
+            .hash = "ghostlang-0.0.0-_SzSPQq8AQC-Wu_3KUPHB7bOmyCCxwIxR2KmhNNp0d6c",
+        },
     },
     .paths = .{
         "build.zig",

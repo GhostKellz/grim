@@ -55,6 +55,9 @@ pub const PluginAPI = struct {
 
         pub fn execute(self: *CommandRegistry, name: []const u8, ctx: *PluginContext, args: []const []const u8) !void {
             const command = self.commands.get(name) orelse return error.CommandNotFound;
+            const previous = ctx.current_command;
+            ctx.current_command = command.name;
+            defer ctx.current_command = previous;
             try command.handler(ctx, args);
         }
 
@@ -67,6 +70,25 @@ pub const PluginAPI = struct {
                 i += 1;
             }
             return result;
+        }
+
+        pub fn unregister(self: *CommandRegistry, allocator: std.mem.Allocator, plugin_id: []const u8) void {
+            var keys_to_remove = std.ArrayList([]const u8).init(allocator);
+            defer keys_to_remove.deinit();
+
+            var iterator = self.commands.iterator();
+            while (iterator.next()) |entry| {
+                if (std.mem.eql(u8, entry.value_ptr.plugin_id, plugin_id)) {
+                    keys_to_remove.append(entry.key_ptr.*) catch |err| {
+                        std.log.err("Failed to queue command removal for plugin {s}: {}", .{ plugin_id, err });
+                        break;
+                    };
+                }
+            }
+
+            for (keys_to_remove.items) |key| {
+                _ = self.commands.remove(key);
+            }
         }
     };
 
@@ -135,9 +157,36 @@ pub const PluginAPI = struct {
         pub fn emit(self: *EventHandlers, ctx: *PluginContext, event_type: EventType, data: EventData) !void {
             const handlers_list = self.handlers.get(event_type);
             for (handlers_list.items) |handler| {
-                handler.handler(ctx, data) catch |err| {
+                var target_ctx = ctx;
+                if (!std.mem.eql(u8, handler.plugin_id, ctx.plugin_id)) {
+                    if (ctx.api.loaded_plugins.get(handler.plugin_id)) |plugin| {
+                        target_ctx = &plugin.context;
+                    } else {
+                        std.log.warn("Event handler for plugin {s} skipped; plugin not loaded", .{handler.plugin_id});
+                        continue;
+                    }
+                }
+
+                const previous_event = target_ctx.current_event;
+                target_ctx.current_event = event_type;
+                defer target_ctx.current_event = previous_event;
+
+                handler.handler(target_ctx, data) catch |err| {
                     std.log.err("Event handler error in plugin {s}: {}", .{ handler.plugin_id, err });
                 };
+            }
+        }
+
+        pub fn unregister(self: *EventHandlers, plugin_id: []const u8) void {
+            for (std.meta.tags(EventType)) |event_type| {
+                var list = self.handlers.getPtr(event_type);
+                var i: usize = list.items.len;
+                while (i > 0) : (i -= 1) {
+                    const idx = i - 1;
+                    if (std.mem.eql(u8, list.items[idx].plugin_id, plugin_id)) {
+                        _ = list.orderedRemove(idx);
+                    }
+                }
             }
         }
     };
@@ -169,13 +218,39 @@ pub const PluginAPI = struct {
             for (self.handlers.items) |handler| {
                 if (std.mem.eql(u8, handler.key_combination, key_combination)) {
                     if (handler.mode == null or handler.mode.? == mode) {
-                        if (try handler.handler(ctx)) {
+                        var target_ctx = ctx;
+                        if (!std.mem.eql(u8, handler.plugin_id, ctx.plugin_id)) {
+                            if (ctx.api.loaded_plugins.get(handler.plugin_id)) |plugin| {
+                                target_ctx = &plugin.context;
+                            } else {
+                                continue;
+                            }
+                        }
+
+                        const previous_keystroke = target_ctx.current_keystroke;
+                        target_ctx.current_keystroke = .{
+                            .combination = handler.key_combination,
+                            .mode = handler.mode,
+                        };
+                        defer target_ctx.current_keystroke = previous_keystroke;
+
+                        if (try handler.handler(target_ctx)) {
                             return true; // Key was handled
                         }
                     }
                 }
             }
             return false; // Key not handled
+        }
+
+        pub fn unregister(self: *KeystrokeHandlers, plugin_id: []const u8) void {
+            var i: usize = self.handlers.items.len;
+            while (i > 0) : (i -= 1) {
+                const idx = i - 1;
+                if (std.mem.eql(u8, self.handlers.items[idx].plugin_id, plugin_id)) {
+                    _ = self.handlers.orderedRemove(idx);
+                }
+            }
         }
     };
 
@@ -184,6 +259,14 @@ pub const PluginAPI = struct {
         api: *PluginAPI,
         scratch_allocator: std.mem.Allocator,
         user_data: ?*anyopaque = null,
+        current_command: ?[]const u8 = null,
+        current_keystroke: ?KeystrokeInvocation = null,
+        current_event: ?EventType = null,
+
+        pub const KeystrokeInvocation = struct {
+            combination: []const u8,
+            mode: ?EditorContext.EditorMode,
+        };
 
         // Editor operations
         pub fn getCurrentBuffer(self: *PluginContext) !BufferId {
@@ -289,6 +372,18 @@ pub const PluginAPI = struct {
         pub fn userData(self: *PluginContext) ?*anyopaque {
             return self.user_data;
         }
+
+        pub fn currentCommand(self: *PluginContext) ?[]const u8 {
+            return self.current_command;
+        }
+
+        pub fn currentKeystroke(self: *PluginContext) ?KeystrokeInvocation {
+            return self.current_keystroke;
+        }
+
+        pub fn currentEvent(self: *PluginContext) ?EventType {
+            return self.current_event;
+        }
     };
 
     pub const Plugin = struct {
@@ -373,6 +468,9 @@ pub const PluginAPI = struct {
             .api = self,
             .scratch_allocator = self.allocator,
             .user_data = null,
+            .current_command = null,
+            .current_keystroke = null,
+            .current_event = null,
         };
         if (plugin.user_data) |ptr| {
             plugin.context.setUserData(ptr);
@@ -396,6 +494,8 @@ pub const PluginAPI = struct {
         // Deactivate and deinitialize plugin
         try plugin.deactivate();
         try plugin.deinit();
+
+        self.unregisterPluginResources(plugin_id);
 
         // Remove from loaded plugins
         _ = self.loaded_plugins.remove(plugin_id);
@@ -430,6 +530,9 @@ pub const PluginAPI = struct {
             .api = self,
             .scratch_allocator = self.allocator,
             .user_data = null,
+            .current_command = null,
+            .current_keystroke = null,
+            .current_event = null,
         };
         try self.event_handlers.emit(&temp_context, event_type, data);
     }
@@ -440,6 +543,9 @@ pub const PluginAPI = struct {
             .api = self,
             .scratch_allocator = self.allocator,
             .user_data = null,
+            .current_command = null,
+            .current_keystroke = null,
+            .current_event = null,
         };
         return try self.keystroke_handlers.handle(&temp_context, key_combination, mode);
     }
@@ -457,5 +563,11 @@ pub const PluginAPI = struct {
             i += 1;
         }
         return result;
+    }
+
+    pub fn unregisterPluginResources(self: *PluginAPI, plugin_id: []const u8) void {
+        self.command_registry.unregister(self.allocator, plugin_id);
+        self.event_handlers.unregister(plugin_id);
+        self.keystroke_handlers.unregister(plugin_id);
     }
 };

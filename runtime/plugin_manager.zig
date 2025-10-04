@@ -3,11 +3,166 @@ const runtime = @import("mod.zig");
 const host = @import("host");
 
 const GhostlangLoadedPlugin = struct {
+    const Self = @This();
+
     runtime_plugin: runtime.Plugin,
     host: host.Host,
     compiled: host.Host.CompiledPlugin,
+    allocator: std.mem.Allocator,
+    command_bindings: std.ArrayList(CommandBinding),
+    keymap_bindings: std.ArrayList(KeymapBinding),
+    event_bindings: std.ArrayList(EventBinding),
     host_deinitialized: bool = false,
+
+    const CommandBinding = struct {
+        name: []u8,
+        handler: []u8,
+        description: ?[]u8,
+
+        fn deinit(self: *CommandBinding, allocator: std.mem.Allocator) void {
+            allocator.free(self.name);
+            allocator.free(self.handler);
+            if (self.description) |desc| allocator.free(desc);
+        }
+    };
+
+    const KeymapBinding = struct {
+        keys: []u8,
+        handler: []u8,
+        mode: ?runtime.PluginAPI.EditorContext.EditorMode,
+        description: ?[]u8,
+
+        fn deinit(self: *KeymapBinding, allocator: std.mem.Allocator) void {
+            allocator.free(self.keys);
+            allocator.free(self.handler);
+            if (self.description) |desc| allocator.free(desc);
+        }
+    };
+
+    const EventBinding = struct {
+        event_type: runtime.PluginAPI.EventType,
+        handler: []u8,
+
+        fn deinit(self: *EventBinding, allocator: std.mem.Allocator) void {
+            allocator.free(self.handler);
+        }
+    };
+
+    fn deinitBindings(self: *Self) void {
+        self.clearBindings();
+        self.command_bindings.deinit();
+        self.keymap_bindings.deinit();
+        self.event_bindings.deinit();
+    }
+
+    fn appendCommandBinding(self: *Self, binding: CommandBinding) !*CommandBinding {
+        try self.command_bindings.append(binding);
+        return &self.command_bindings.items[self.command_bindings.items.len - 1];
+    }
+
+    fn appendKeymapBinding(self: *Self, binding: KeymapBinding) !*KeymapBinding {
+        try self.keymap_bindings.append(binding);
+        return &self.keymap_bindings.items[self.keymap_bindings.items.len - 1];
+    }
+
+    fn appendEventBinding(self: *Self, binding: EventBinding) !*EventBinding {
+        try self.event_bindings.append(binding);
+        return &self.event_bindings.items[self.event_bindings.items.len - 1];
+    }
+
+    fn clearBindings(self: *Self) void {
+        for (self.command_bindings.items) |*binding| {
+            binding.deinit(self.allocator);
+        }
+        self.command_bindings.clearRetainingCapacity();
+
+        for (self.keymap_bindings.items) |*binding| {
+            binding.deinit(self.allocator);
+        }
+        self.keymap_bindings.clearRetainingCapacity();
+
+        for (self.event_bindings.items) |*binding| {
+            binding.deinit(self.allocator);
+        }
+        self.event_bindings.clearRetainingCapacity();
+    }
+
+    fn findCommandBinding(self: *Self, name: []const u8) ?*const CommandBinding {
+        for (self.command_bindings.items) |*binding| {
+            if (std.mem.eql(u8, binding.name, name)) {
+                return binding;
+            }
+        }
+        return null;
+    }
+
+    fn findMutableCommandBinding(self: *Self, name: []const u8) ?*CommandBinding {
+        for (self.command_bindings.items) |*binding| {
+            if (std.mem.eql(u8, binding.name, name)) {
+                return binding;
+            }
+        }
+        return null;
+    }
+
+    fn findKeymapBinding(self: *Self, keys: []const u8, mode: ?runtime.PluginAPI.EditorContext.EditorMode) ?*const KeymapBinding {
+        for (self.keymap_bindings.items) |*binding| {
+            if (!std.mem.eql(u8, binding.keys, keys)) continue;
+            if (binding.mode == mode) {
+                return binding;
+            }
+        }
+        return null;
+    }
+
+    fn findMutableKeymapBinding(self: *Self, keys: []const u8, mode: ?runtime.PluginAPI.EditorContext.EditorMode) ?*KeymapBinding {
+        for (self.keymap_bindings.items) |*binding| {
+            if (!std.mem.eql(u8, binding.keys, keys)) continue;
+            if (binding.mode == mode) {
+                return binding;
+            }
+        }
+        return null;
+    }
+
+    fn findEventBinding(self: *Self, event_type: runtime.PluginAPI.EventType, handler: []const u8) ?*const EventBinding {
+        for (self.event_bindings.items) |*binding| {
+            if (binding.event_type == event_type and std.mem.eql(u8, binding.handler, handler)) {
+                return binding;
+            }
+        }
+        return null;
+    }
+
+    fn findMutableEventBinding(self: *Self, event_type: runtime.PluginAPI.EventType, handler: []const u8) ?*EventBinding {
+        for (self.event_bindings.items) |*binding| {
+            if (binding.event_type == event_type and std.mem.eql(u8, binding.handler, handler)) {
+                return binding;
+            }
+        }
+        return null;
+    }
 };
+
+fn dupOptionalSlice(allocator: std.mem.Allocator, value: ?[]const u8) !?[]u8 {
+    if (value) |slice| {
+        if (slice.len == 0) return null;
+        return try allocator.dupe(u8, slice);
+    }
+    return null;
+}
+
+fn parseEditorMode(value: []const u8) ?runtime.PluginAPI.EditorContext.EditorMode {
+    if (std.ascii.eqlIgnoreCase(value, "normal")) return .normal;
+    if (std.ascii.eqlIgnoreCase(value, "insert")) return .insert;
+    if (std.ascii.eqlIgnoreCase(value, "visual")) return .visual;
+    if (std.ascii.eqlIgnoreCase(value, "command")) return .command;
+    return null;
+}
+
+fn parseEventType(value: []const u8) ?runtime.PluginAPI.EventType {
+    return std.meta.stringToEnum(runtime.PluginAPI.EventType, value);
+}
 
 fn pluginStateFromContext(ctx: *runtime.PluginAPI.PluginContext) *GhostlangLoadedPlugin {
     const raw = ctx.userData() orelse @panic("Ghostlang plugin context missing state");
@@ -19,18 +174,238 @@ fn ghostlangShowMessageCallback(ctx_ptr: *anyopaque, message: []const u8) anyerr
     try plugin_ctx.showMessage(message);
 }
 
+fn ghostlangRegisterCommandCallback(ctx_ptr: *anyopaque, action: *const host.Host.CompiledPlugin.CommandAction) anyerror!void {
+    const plugin_ctx = @as(*runtime.PluginAPI.PluginContext, @ptrCast(@alignCast(ctx_ptr)));
+    var state = pluginStateFromContext(plugin_ctx);
+
+    const name_copy = try state.allocator.dupe(u8, action.name);
+    var name_owned = true;
+    errdefer if (name_owned) state.allocator.free(name_copy);
+
+    const handler_copy = try state.allocator.dupe(u8, action.handler);
+    var handler_owned = true;
+    errdefer if (handler_owned) state.allocator.free(handler_copy);
+
+    const description_copy = try dupOptionalSlice(state.allocator, action.description);
+    var description_owned = description_copy != null;
+    errdefer if (description_owned) state.allocator.free(description_copy.?);
+
+    if (state.findMutableCommandBinding(action.name)) |binding| {
+        const description_slice: []const u8 = if (description_copy) |desc| desc else "";
+        try plugin_ctx.api.registerCommand(.{
+            .name = name_copy,
+            .description = description_slice,
+            .handler = ghostlangCommandHandler,
+            .plugin_id = plugin_ctx.plugin_id,
+        });
+
+        state.allocator.free(binding.name);
+        state.allocator.free(binding.handler);
+        if (binding.description) |desc| state.allocator.free(desc);
+
+        binding.name = name_copy;
+        binding.handler = handler_copy;
+        binding.description = description_copy;
+
+        name_owned = false;
+        handler_owned = false;
+        description_owned = false;
+        return;
+    }
+
+    const new_binding = GhostlangLoadedPlugin.CommandBinding{
+        .name = name_copy,
+        .handler = handler_copy,
+        .description = description_copy,
+    };
+
+    try state.appendCommandBinding(new_binding);
+    const binding_ptr = &state.command_bindings.items[state.command_bindings.items.len - 1];
+
+    name_owned = false;
+    handler_owned = false;
+    description_owned = false;
+
+    const description_slice: []const u8 = if (binding_ptr.description) |desc| desc else "";
+    plugin_ctx.api.registerCommand(.{
+        .name = binding_ptr.name,
+        .description = description_slice,
+        .handler = ghostlangCommandHandler,
+        .plugin_id = plugin_ctx.plugin_id,
+    }) catch |err| {
+        const removed = state.command_bindings.pop();
+        removed.deinit(state.allocator);
+        return err;
+    };
+}
+
+fn ghostlangCommandHandler(ctx: *runtime.PluginAPI.PluginContext, args: []const []const u8) anyerror!void {
+    _ = args;
+    const state = pluginStateFromContext(ctx);
+    const command_name = ctx.currentCommand() orelse {
+        std.log.warn("Command handler invoked without command context for plugin {s}", .{ctx.plugin_id});
+        return;
+    };
+
+    const binding = state.findCommandBinding(command_name) orelse {
+        std.log.warn("No command binding found for {s} in plugin {s}", .{ command_name, ctx.plugin_id });
+        return;
+    };
+
+    try state.compiled.callVoid(binding.handler);
+}
+
+fn ghostlangRegisterKeymapCallback(ctx_ptr: *anyopaque, action: *const host.Host.CompiledPlugin.KeymapAction) anyerror!void {
+    const plugin_ctx = @as(*runtime.PluginAPI.PluginContext, @ptrCast(@alignCast(ctx_ptr)));
+    var state = pluginStateFromContext(plugin_ctx);
+
+    const mode = if (action.mode) |mode_str| blk: {
+        const parsed = parseEditorMode(mode_str) orelse {
+            std.log.warn("Unknown editor mode '{s}' for keymap in plugin {s}", .{ mode_str, plugin_ctx.plugin_id });
+            break :blk null;
+        };
+        break :blk parsed;
+    } else null;
+
+    const keys_copy = try state.allocator.dupe(u8, action.keys);
+    var keys_owned = true;
+    errdefer if (keys_owned) state.allocator.free(keys_copy);
+
+    const handler_copy = try state.allocator.dupe(u8, action.handler);
+    var handler_owned = true;
+    errdefer if (handler_owned) state.allocator.free(handler_copy);
+
+    const description_copy = try dupOptionalSlice(state.allocator, action.description);
+    var description_owned = description_copy != null;
+    errdefer if (description_owned) state.allocator.free(description_copy.?);
+
+    if (state.findMutableKeymapBinding(action.keys, mode)) |binding| {
+        const description_slice: []const u8 = if (description_copy) |desc| desc else "";
+        try plugin_ctx.api.registerKeystrokeHandler(.{
+            .key_combination = keys_copy,
+            .mode = mode,
+            .handler = ghostlangKeystrokeHandler,
+            .description = description_slice,
+            .plugin_id = plugin_ctx.plugin_id,
+        });
+
+        state.allocator.free(binding.keys);
+        state.allocator.free(binding.handler);
+        if (binding.description) |desc| state.allocator.free(desc);
+
+        binding.keys = keys_copy;
+        binding.handler = handler_copy;
+        binding.mode = mode;
+        binding.description = description_copy;
+
+        keys_owned = false;
+        handler_owned = false;
+        description_owned = false;
+        return;
+    }
+
+    const new_binding = GhostlangLoadedPlugin.KeymapBinding{
+        .keys = keys_copy,
+        .handler = handler_copy,
+        .mode = mode,
+        .description = description_copy,
+    };
+
+    try state.appendKeymapBinding(new_binding);
+    const binding_ptr = &state.keymap_bindings.items[state.keymap_bindings.items.len - 1];
+
+    keys_owned = false;
+    handler_owned = false;
+    description_owned = false;
+
+    const description_slice: []const u8 = if (binding_ptr.description) |desc| desc else "";
+    plugin_ctx.api.registerKeystrokeHandler(.{
+        .key_combination = binding_ptr.keys,
+        .mode = binding_ptr.mode,
+        .handler = ghostlangKeystrokeHandler,
+        .description = description_slice,
+        .plugin_id = plugin_ctx.plugin_id,
+    }) catch |err| {
+        const removed = state.keymap_bindings.pop();
+        removed.deinit(state.allocator);
+        return err;
+    };
+}
+
+fn ghostlangKeystrokeHandler(ctx: *runtime.PluginAPI.PluginContext) anyerror!bool {
+    const state = pluginStateFromContext(ctx);
+    const invocation = ctx.currentKeystroke() orelse return false;
+    const binding = state.findKeymapBinding(invocation.combination, invocation.mode) orelse return false;
+    return try state.compiled.callBool(binding.handler);
+}
+
+fn ghostlangRegisterEventHandlerCallback(ctx_ptr: *anyopaque, action: *const host.Host.CompiledPlugin.EventAction) anyerror!void {
+    const plugin_ctx = @as(*runtime.PluginAPI.PluginContext, @ptrCast(@alignCast(ctx_ptr)));
+    var state = pluginStateFromContext(plugin_ctx);
+
+    const event_type = parseEventType(action.event) orelse {
+        std.log.warn("Unknown event type '{s}' for plugin {s}", .{ action.event, plugin_ctx.plugin_id });
+        return;
+    };
+
+    const handler_copy = try state.allocator.dupe(u8, action.handler);
+    var handler_owned = true;
+    errdefer if (handler_owned) state.allocator.free(handler_copy);
+
+    if (state.findMutableEventBinding(event_type, action.handler)) |binding| {
+        // Already registered; update handler binding if needed.
+        state.allocator.free(binding.handler);
+        binding.handler = handler_copy;
+        handler_owned = false;
+        return;
+    }
+
+    const new_binding = GhostlangLoadedPlugin.EventBinding{
+        .event_type = event_type,
+        .handler = handler_copy,
+    };
+
+    try state.appendEventBinding(new_binding);
+    handler_owned = false;
+
+    plugin_ctx.api.registerEventHandler(.{
+        .event_type = event_type,
+        .handler = ghostlangEventHandler,
+        .plugin_id = plugin_ctx.plugin_id,
+    }) catch |err| {
+        const removed = state.event_bindings.pop();
+        removed.deinit(state.allocator);
+        return err;
+    };
+}
+
+fn ghostlangEventHandler(ctx: *runtime.PluginAPI.PluginContext, data: runtime.PluginAPI.EventData) anyerror!void {
+    _ = data;
+    const state = pluginStateFromContext(ctx);
+    const event_type = ctx.currentEvent() orelse return;
+
+    for (state.event_bindings.items) |binding| {
+        if (binding.event_type == event_type) {
+            try state.compiled.callVoid(binding.handler);
+        }
+    }
+}
+
 fn ghostlangPluginInit(ctx: *runtime.PluginAPI.PluginContext) anyerror!void {
     var state = pluginStateFromContext(ctx);
-    const start_time = state.host.startExecution();
-    errdefer state.host.endExecution(start_time) catch {};
+
+    ctx.api.unregisterPluginResources(ctx.plugin_id);
+    state.clearBindings();
 
     const callbacks = host.Host.ActionCallbacks{
         .ctx = @as(*anyopaque, @ptrCast(ctx)),
         .show_message = ghostlangShowMessageCallback,
+        .register_command = ghostlangRegisterCommandCallback,
+        .register_keymap = ghostlangRegisterKeymapCallback,
+        .register_event_handler = ghostlangRegisterEventHandlerCallback,
     };
 
     try state.compiled.executeSetup(callbacks);
-    try state.host.endExecution(start_time);
 }
 
 fn ghostlangPluginDeinit(ctx: *runtime.PluginAPI.PluginContext) anyerror!void {
@@ -413,8 +788,13 @@ pub const PluginManager = struct {
             },
             .host = plugin_host,
             .compiled = compiled,
+            .allocator = self.allocator,
+            .command_bindings = std.ArrayList(GhostlangLoadedPlugin.CommandBinding).init(self.allocator),
+            .keymap_bindings = std.ArrayList(GhostlangLoadedPlugin.KeymapBinding).init(self.allocator),
+            .event_bindings = std.ArrayList(GhostlangLoadedPlugin.EventBinding).init(self.allocator),
             .host_deinitialized = false,
         };
+        state.compiled.host = &state.host;
         host_cleanup = false;
 
         state.runtime_plugin.user_data = state;
@@ -483,6 +863,7 @@ pub const PluginManager = struct {
             state.host.deinit();
             state.host_deinitialized = true;
         }
+        state.deinitBindings();
         self.allocator.destroy(state);
     }
 };

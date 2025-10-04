@@ -1,6 +1,95 @@
 const std = @import("std");
+const ghostlang = @import("ghostlang");
+
+threadlocal var active_host: ?*Host = null;
+
+fn builtinShowMessage(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
+    if (active_host) |host| {
+        host.handleShowMessageBuiltin(args);
+    }
+    return .{ .nil = {} };
+}
+
+fn getMandatoryStringArg(host: *Host, args: []const ghostlang.ScriptValue, idx: usize) ?[]const u8 {
+    if (idx >= args.len) {
+        host.recordScriptError(Host.Error.InvalidScript);
+        return null;
+    }
+    const value = args[idx];
+    if (value != .string) {
+        host.recordScriptError(Host.Error.InvalidScript);
+        return null;
+    }
+    return value.string;
+}
+
+fn getOptionalStringArg(host: *Host, args: []const ghostlang.ScriptValue, idx: usize) ?[]const u8 {
+    if (idx >= args.len) return null;
+    const value = args[idx];
+    if (value == .string) {
+        return value.string;
+    }
+    host.recordScriptError(Host.Error.InvalidScript);
+    return null;
+}
+
+fn builtinRegisterCommand(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
+    const host = active_host orelse return .{ .nil = {} };
+    const plugin = host.active_plugin orelse {
+        host.recordScriptError(Host.Error.InvalidScript);
+        return .{ .nil = {} };
+    };
+
+    const name = getMandatoryStringArg(host, args, 0) orelse return .{ .nil = {} };
+    const handler = getMandatoryStringArg(host, args, 1) orelse return .{ .nil = {} };
+    const description = getOptionalStringArg(host, args, 2);
+
+    plugin.appendRegisterCommand(name, handler, description) catch |err| switch (err) {
+        error.OutOfMemory => host.recordScriptError(Host.Error.MemoryLimitExceeded),
+    };
+
+    return .{ .nil = {} };
+}
+
+fn builtinRegisterKeymap(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
+    const host = active_host orelse return .{ .nil = {} };
+    const plugin = host.active_plugin orelse {
+        host.recordScriptError(Host.Error.InvalidScript);
+        return .{ .nil = {} };
+    };
+
+    const keys = getMandatoryStringArg(host, args, 0) orelse return .{ .nil = {} };
+    const handler = getMandatoryStringArg(host, args, 1) orelse return .{ .nil = {} };
+    const mode = getOptionalStringArg(host, args, 2);
+    const description = getOptionalStringArg(host, args, 3);
+
+    plugin.appendRegisterKeymap(keys, handler, mode, description) catch |err| switch (err) {
+        error.OutOfMemory => host.recordScriptError(Host.Error.MemoryLimitExceeded),
+    };
+
+    return .{ .nil = {} };
+}
+
+fn builtinRegisterEventHandler(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
+    const host = active_host orelse return .{ .nil = {} };
+    const plugin = host.active_plugin orelse {
+        host.recordScriptError(Host.Error.InvalidScript);
+        return .{ .nil = {} };
+    };
+
+    const event = getMandatoryStringArg(host, args, 0) orelse return .{ .nil = {} };
+    const handler = getMandatoryStringArg(host, args, 1) orelse return .{ .nil = {} };
+
+    plugin.appendRegisterEventHandler(event, handler) catch |err| switch (err) {
+        error.OutOfMemory => host.recordScriptError(Host.Error.MemoryLimitExceeded),
+    };
+
+    return .{ .nil = {} };
+}
 
 pub const Host = struct {
+    const Self = @This();
+
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
     config_dir: ?[]const u8,
@@ -8,6 +97,11 @@ pub const Host = struct {
     setup_invoked: bool,
     sandbox_config: SandboxConfig,
     execution_stats: ExecutionStats,
+    engine: ?*ghostlang.ScriptEngine,
+    config_script: ?*ghostlang.Script,
+    active_plugin: ?*Self.CompiledPlugin,
+    pending_error: ?Error,
+    builtins_registered: bool,
 
     pub const Error = error{
         ConfigNotLoaded,
@@ -49,42 +143,286 @@ pub const Host = struct {
         }
     };
 
-    pub const ActionCallbacks = struct {
-        ctx: *anyopaque,
-        show_message: *const fn (ctx: *anyopaque, message: []const u8) anyerror!void,
+    const CommandAction = struct {
+        name: []u8,
+        handler: []u8,
+        description: ?[]u8,
     };
 
-    pub const CompiledPlugin = struct {
-        allocator: std.mem.Allocator,
-        setup_actions: []Action,
+    const KeymapAction = struct {
+        keys: []u8,
+        handler: []u8,
+        mode: ?[]u8,
+        description: ?[]u8,
+    };
 
-        pub fn deinit(self: *CompiledPlugin) void {
-            const allocator = self.allocator;
-            for (self.setup_actions) |action| {
-                deinitAction(action, allocator);
-            }
-            if (self.setup_actions.len > 0) {
-                allocator.free(self.setup_actions);
-            }
-            self.setup_actions = &.{};
-        }
-
-        pub fn executeSetup(self: *const CompiledPlugin, callbacks: ActionCallbacks) Error!void {
-            for (self.setup_actions) |action| {
-                switch (action) {
-                    .show_message => |msg| try callbacks.show_message(callbacks.ctx, msg),
-                }
-            }
-        }
+    const EventAction = struct {
+        event: []u8,
+        handler: []u8,
     };
 
     const Action = union(enum) {
         show_message: []u8,
+        register_command: CommandAction,
+        register_keymap: KeymapAction,
+        register_event_handler: EventAction,
+    };
+
+    pub const ActionCallbacks = struct {
+        ctx: *anyopaque,
+        show_message: *const fn (ctx: *anyopaque, message: []const u8) anyerror!void,
+        register_command: ?*const fn (ctx: *anyopaque, action: *const CommandAction) anyerror!void = null,
+        register_keymap: ?*const fn (ctx: *anyopaque, action: *const KeymapAction) anyerror!void = null,
+        register_event_handler: ?*const fn (ctx: *anyopaque, action: *const EventAction) anyerror!void = null,
+    };
+
+    pub const CompiledPlugin = struct {
+        allocator: std.mem.Allocator,
+        host: *Host,
+        script: *ghostlang.Script,
+        actions: std.ArrayList(Action),
+
+        pub fn deinit(self: *CompiledPlugin) void {
+            self.clearActions();
+            self.actions.deinit();
+            self.script.deinit();
+            self.allocator.destroy(self.script);
+        }
+
+        pub fn executeSetup(self: *CompiledPlugin, callbacks: ActionCallbacks) Error!void {
+            const engine = try self.host.ensureEngine();
+            try self.host.ensureHostBuiltins(engine);
+
+            self.clearActions();
+
+            const start_time = self.host.startExecution();
+            var end_called = false;
+            defer if (!end_called) self.host.endExecution(start_time) catch {};
+
+            self.host.pending_error = null;
+            const prev_host = active_host;
+            active_host = self.host;
+            defer active_host = prev_host;
+
+            const prev_plugin = self.host.active_plugin;
+            self.host.active_plugin = self;
+            defer self.host.active_plugin = prev_plugin;
+
+            _ = self.script.run() catch |err| {
+                return self.host.mapExecutionError(err);
+            };
+
+            if (self.host.pending_error) |err| {
+                self.host.pending_error = null;
+                return err;
+            }
+
+            var idx: usize = 0;
+            while (idx < self.actions.items.len) : (idx += 1) {
+                const action_ptr = &self.actions.items[idx];
+                switch (action_ptr.*) {
+                    .show_message => |msg| try callbacks.show_message(callbacks.ctx, msg),
+                    .register_command => |*cmd| {
+                        if (callbacks.register_command) |cb| {
+                            try cb(callbacks.ctx, cmd);
+                        }
+                    },
+                    .register_keymap => |*km| {
+                        if (callbacks.register_keymap) |cb| {
+                            try cb(callbacks.ctx, km);
+                        }
+                    },
+                    .register_event_handler => |*ev| {
+                        if (callbacks.register_event_handler) |cb| {
+                            try cb(callbacks.ctx, ev);
+                        }
+                    },
+                }
+            }
+
+            try self.host.endExecution(start_time);
+            end_called = true;
+            self.host.setup_invoked = true;
+        }
+
+        fn appendShowMessage(self: *CompiledPlugin, message: []const u8) !void {
+            const copy = try self.allocator.dupe(u8, message);
+            errdefer self.allocator.free(copy);
+            try self.actions.append(.{ .show_message = copy });
+        }
+
+        fn appendRegisterCommand(
+            self: *CompiledPlugin,
+            name: []const u8,
+            handler: []const u8,
+            description: ?[]const u8,
+        ) !void {
+            const name_copy = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(name_copy);
+            const handler_copy = try self.allocator.dupe(u8, handler);
+            errdefer self.allocator.free(handler_copy);
+
+            var description_copy: ?[]u8 = null;
+            if (description) |desc| {
+                if (desc.len > 0) {
+                    description_copy = try self.allocator.dupe(u8, desc);
+                }
+            }
+            errdefer if (description_copy) |desc| self.allocator.free(desc);
+
+            try self.actions.append(.{ .register_command = .{
+                .name = name_copy,
+                .handler = handler_copy,
+                .description = description_copy,
+            } });
+        }
+
+        fn appendRegisterKeymap(
+            self: *CompiledPlugin,
+            keys: []const u8,
+            handler: []const u8,
+            mode: ?[]const u8,
+            description: ?[]const u8,
+        ) !void {
+            const keys_copy = try self.allocator.dupe(u8, keys);
+            errdefer self.allocator.free(keys_copy);
+            const handler_copy = try self.allocator.dupe(u8, handler);
+            errdefer self.allocator.free(handler_copy);
+
+            var mode_copy: ?[]u8 = null;
+            if (mode) |m| {
+                if (m.len > 0) {
+                    mode_copy = try self.allocator.dupe(u8, m);
+                }
+            }
+            errdefer if (mode_copy) |m| self.allocator.free(m);
+
+            var description_copy: ?[]u8 = null;
+            if (description) |desc| {
+                if (desc.len > 0) {
+                    description_copy = try self.allocator.dupe(u8, desc);
+                }
+            }
+            errdefer if (description_copy) |desc| self.allocator.free(desc);
+
+            try self.actions.append(.{ .register_keymap = .{
+                .keys = keys_copy,
+                .handler = handler_copy,
+                .mode = mode_copy,
+                .description = description_copy,
+            } });
+        }
+
+        fn appendRegisterEventHandler(
+            self: *CompiledPlugin,
+            event: []const u8,
+            handler: []const u8,
+        ) !void {
+            const event_copy = try self.allocator.dupe(u8, event);
+            errdefer self.allocator.free(event_copy);
+            const handler_copy = try self.allocator.dupe(u8, handler);
+            errdefer self.allocator.free(handler_copy);
+
+            try self.actions.append(.{ .register_event_handler = .{
+                .event = event_copy,
+                .handler = handler_copy,
+            } });
+        }
+
+        pub fn callVoid(self: *CompiledPlugin, function_name: []const u8) Host.Error!void {
+            const engine = self.script.engine;
+            try self.host.ensureHostBuiltins(engine);
+
+            const start_time = self.host.startExecution();
+            var end_called = false;
+            defer if (!end_called) self.host.endExecution(start_time) catch {};
+
+            self.host.pending_error = null;
+            const prev_host = active_host;
+            active_host = self.host;
+            defer active_host = prev_host;
+
+            const prev_plugin = self.host.active_plugin;
+            self.host.active_plugin = self;
+            defer self.host.active_plugin = prev_plugin;
+
+            var result = engine.call(function_name, .{}) catch |err| {
+                return self.host.mapExecutionError(err);
+            };
+            defer result.deinit(engine.tracked_allocator);
+
+            if (self.host.pending_error) |err| {
+                self.host.pending_error = null;
+                return err;
+            }
+
+            try self.host.endExecution(start_time);
+            end_called = true;
+        }
+
+        pub fn callBool(self: *CompiledPlugin, function_name: []const u8) Host.Error!bool {
+            const engine = self.script.engine;
+            try self.host.ensureHostBuiltins(engine);
+
+            const start_time = self.host.startExecution();
+            var end_called = false;
+            defer if (!end_called) self.host.endExecution(start_time) catch {};
+
+            self.host.pending_error = null;
+            const prev_host = active_host;
+            active_host = self.host;
+            defer active_host = prev_host;
+
+            const prev_plugin = self.host.active_plugin;
+            self.host.active_plugin = self;
+            defer self.host.active_plugin = prev_plugin;
+
+            var result = engine.call(function_name, .{}) catch |err| {
+                return self.host.mapExecutionError(err);
+            };
+            defer result.deinit(engine.tracked_allocator);
+
+            if (self.host.pending_error) |err| {
+                self.host.pending_error = null;
+                return err;
+            }
+
+            const handled = switch (result) {
+                .boolean => |flag| flag,
+                else => false,
+            };
+
+            try self.host.endExecution(start_time);
+            end_called = true;
+            return handled;
+        }
+
+        fn clearActions(self: *CompiledPlugin) void {
+            for (self.actions.items) |action| {
+                deinitAction(action, self.allocator);
+            }
+            self.actions.clearRetainingCapacity();
+        }
     };
 
     fn deinitAction(action: Action, allocator: std.mem.Allocator) void {
         switch (action) {
             .show_message => |msg| allocator.free(msg),
+            .register_command => |cmd| {
+                allocator.free(cmd.name);
+                allocator.free(cmd.handler);
+                if (cmd.description) |desc| allocator.free(desc);
+            },
+            .register_keymap => |km| {
+                allocator.free(km.keys);
+                allocator.free(km.handler);
+                if (km.mode) |mode| allocator.free(mode);
+                if (km.description) |desc| allocator.free(desc);
+            },
+            .register_event_handler => |ev| {
+                allocator.free(ev.event);
+                allocator.free(ev.handler);
+            },
         }
     }
 
@@ -106,10 +444,21 @@ pub const Host = struct {
             .setup_invoked = false,
             .sandbox_config = sandbox_config,
             .execution_stats = .{},
+            .engine = null,
+            .config_script = null,
+            .active_plugin = null,
+            .pending_error = null,
+            .builtins_registered = false,
         };
     }
 
     pub fn deinit(self: *Host) void {
+        self.releaseConfigScript();
+        if (self.engine) |engine| {
+            engine.deinit();
+            self.allocator.destroy(engine);
+            self.engine = null;
+        }
         self.arena.deinit();
         self.* = undefined;
     }
@@ -127,202 +476,88 @@ pub const Host = struct {
         self.config_source = source_buffer;
         self.config_dir = dir_copy;
         self.setup_invoked = false;
+
+        const engine = try self.ensureEngine();
+        self.releaseConfigScript();
+
+        const script_ptr = self.allocator.create(ghostlang.Script) catch |err| {
+            return self.mapAllocatorError(err);
+        };
+        var destroy_script_ptr = true;
+        errdefer if (destroy_script_ptr) self.allocator.destroy(script_ptr);
+
+        script_ptr.* = engine.loadScript(source_buffer) catch |err| {
+            return self.mapExecutionError(err);
+        };
+
+        self.config_script = script_ptr;
+        destroy_script_ptr = false;
+        self.pending_error = null;
     }
 
     pub fn callSetup(self: *Host) Error!void {
-        const config_buffer = self.config_source orelse return Error.ConfigNotLoaded;
-        if (!containsSetupDeclaration(config_buffer)) {
-            return Error.SetupSymbolMissing;
+        _ = try self.ensureEngine();
+        const script_ptr = self.config_script orelse return Error.ConfigNotLoaded;
+
+        const start_time = self.startExecution();
+        var end_called = false;
+        defer if (!end_called) self.endExecution(start_time) catch {};
+
+        self.pending_error = null;
+        const prev_host = active_host;
+        active_host = self;
+        defer active_host = prev_host;
+
+        const prev_plugin = self.active_plugin;
+        self.active_plugin = null;
+        defer self.active_plugin = prev_plugin;
+
+        _ = script_ptr.run() catch |err| {
+            return self.mapExecutionError(err);
+        };
+
+        if (self.pending_error) |err| {
+            self.pending_error = null;
+            return err;
         }
+
+        try self.endExecution(start_time);
+        end_called = true;
         self.setup_invoked = true;
     }
 
-    pub fn compilePluginScript(self: *Host, script: []const u8) Error!CompiledPlugin {
-        const body = findFunctionBody(script, "setup") catch |err| switch (err) {
-            ParseError.FunctionNotFound => return Error.SetupSymbolMissing,
-            ParseError.InvalidSyntax => return Error.InvalidScript,
-            ParseError.UnsupportedStatement => return Error.InvalidScript,
+    pub fn compilePluginScript(self: *Host, script_source: []const u8) Error!CompiledPlugin {
+        const engine = try self.ensureEngine();
+        self.pending_error = null;
+
+        var actions = std.ArrayList(Action).init(self.allocator);
+        var actions_valid = true;
+        errdefer if (actions_valid) actions.deinit();
+
+        const script_ptr = self.allocator.create(ghostlang.Script) catch |err| {
+            return self.mapAllocatorError(err);
         };
+        var destroy_script_ptr = true;
+        errdefer if (destroy_script_ptr) self.allocator.destroy(script_ptr);
 
-        var actions = std.ArrayListUnmanaged(Action){};
-        errdefer {
-            for (actions.items) |action| {
-                deinitAction(action, self.allocator);
-            }
-            actions.deinit(self.allocator);
-        }
-
-        parseSetupActions(self.allocator, body, &actions) catch |err| switch (err) {
-            ParseError.InvalidSyntax => return Error.InvalidScript,
-            ParseError.UnsupportedStatement => return Error.InvalidScript,
-            ParseError.FunctionNotFound => return Error.InvalidScript,
+        script_ptr.* = engine.loadScript(script_source) catch |err| {
+            return self.mapExecutionError(err);
         };
+        var deinit_script = true;
+        errdefer if (deinit_script) script_ptr.deinit();
 
-        const owned_actions = try actions.toOwnedSlice(self.allocator);
+        actions_valid = false;
+        destroy_script_ptr = false;
+        deinit_script = false;
+
         return CompiledPlugin{
             .allocator = self.allocator,
-            .setup_actions = owned_actions,
+            .host = self,
+            .script = script_ptr,
+            .actions = actions,
         };
     }
 
-    const ParseError = error{ FunctionNotFound, InvalidSyntax, UnsupportedStatement };
-
-    fn findFunctionBody(script: []const u8, name: []const u8) ParseError![]const u8 {
-        var i: usize = 0;
-        const bytes = script;
-        while (i < bytes.len) : (i += 1) {
-            if (bytes[i] == 'f' or bytes[i] == 'F') {
-                if (i > 0 and std.ascii.isAlphabetic(bytes[i - 1])) continue;
-                if (!startsWithKeyword(bytes[i..], "fn")) continue;
-                var cursor = i + 2;
-                cursor = skipWhitespace(bytes, cursor);
-                const name_start = cursor;
-                while (cursor < bytes.len and isIdentChar(bytes[cursor])) cursor += 1;
-                if (cursor == name_start) continue;
-                const candidate = bytes[name_start..cursor];
-                if (!std.mem.eql(u8, candidate, name)) continue;
-
-                cursor = skipWhitespace(bytes, cursor);
-                if (cursor >= bytes.len or bytes[cursor] != '(') return ParseError.InvalidSyntax;
-
-                var paren_depth: usize = 0;
-                while (cursor < bytes.len) : (cursor += 1) {
-                    const ch = bytes[cursor];
-                    if (ch == '(') {
-                        paren_depth += 1;
-                    } else if (ch == ')') {
-                        if (paren_depth == 0) return ParseError.InvalidSyntax;
-                        paren_depth -= 1;
-                        if (paren_depth == 0) {
-                            cursor += 1;
-                            break;
-                        }
-                    } else if (ch == '"') {
-                        cursor = skipString(bytes, cursor) catch return ParseError.InvalidSyntax;
-                    }
-                }
-
-                cursor = skipWhitespace(bytes, cursor);
-                if (cursor >= bytes.len or bytes[cursor] != '{') return ParseError.InvalidSyntax;
-                const body_start = cursor + 1;
-                var depth: isize = 1;
-                var k = body_start;
-                while (k < bytes.len) : (k += 1) {
-                    const ch = bytes[k];
-                    if (ch == '"') {
-                        k = skipString(bytes, k) catch return ParseError.InvalidSyntax;
-                        continue;
-                    }
-                    if (ch == '{') {
-                        depth += 1;
-                    } else if (ch == '}') {
-                        depth -= 1;
-                        if (depth == 0) {
-                            return bytes[body_start..k];
-                        }
-                    }
-                }
-                return ParseError.InvalidSyntax;
-            }
-        }
-        return ParseError.FunctionNotFound;
-    }
-
-    fn parseSetupActions(allocator: std.mem.Allocator, body: []const u8, actions: *std.ArrayListUnmanaged(Action)) ParseError!void {
-        var tokenizer = std.mem.tokenizeAny(u8, body, "\n;");
-        while (tokenizer.next()) |raw_line| {
-            var stmt = std.mem.trim(u8, raw_line, " \t\r");
-            if (stmt.len == 0) continue;
-
-            if (std.mem.indexOf(u8, stmt, "//")) |comment_idx| {
-                stmt = std.mem.trim(u8, stmt[0..comment_idx], " \t\r");
-                if (stmt.len == 0) continue;
-            }
-
-            const open_paren = std.mem.indexOfScalar(u8, stmt, '(') orelse return ParseError.InvalidSyntax;
-            const close_paren = std.mem.lastIndexOfScalar(u8, stmt, ')') orelse return ParseError.InvalidSyntax;
-            if (close_paren <= open_paren) return ParseError.InvalidSyntax;
-
-            const name_slice = std.mem.trim(u8, stmt[0..open_paren], " \t");
-            const args_slice = stmt[open_paren + 1 .. close_paren];
-
-            if (std.mem.eql(u8, name_slice, "print") or
-                std.mem.eql(u8, name_slice, "ctx.showMessage") or
-                std.mem.eql(u8, name_slice, "ctx.show_message"))
-            {
-                const message = parseStringLiteral(allocator, args_slice) catch |err| switch (err) {
-                    ParseError.InvalidSyntax => return ParseError.InvalidSyntax,
-                    else => return err,
-                };
-                try actions.append(allocator, .{ .show_message = message });
-            } else {
-                return ParseError.UnsupportedStatement;
-            }
-        }
-    }
-
-    fn parseStringLiteral(allocator: std.mem.Allocator, literal: []const u8) ParseError![]u8 {
-        var builder = std.ArrayListUnmanaged(u8){};
-        errdefer builder.deinit(allocator);
-
-        var i = skipWhitespace(literal, 0);
-        if (i >= literal.len or literal[i] != '"') return ParseError.InvalidSyntax;
-        i += 1;
-        while (i < literal.len) : (i += 1) {
-            const ch = literal[i];
-            if (ch == '"') {
-                const result = try builder.toOwnedSlice(allocator);
-                return result;
-            }
-            if (ch == '\\') {
-                if (i + 1 >= literal.len) return ParseError.InvalidSyntax;
-                const next = literal[i + 1];
-                switch (next) {
-                    '"' => try builder.append(allocator, '"'),
-                    '\\' => try builder.append(allocator, '\\'),
-                    'n' => try builder.append(allocator, '\n'),
-                    't' => try builder.append(allocator, '\t'),
-                    else => return ParseError.InvalidSyntax,
-                }
-                i += 1;
-            } else {
-                try builder.append(allocator, ch);
-            }
-        }
-        return ParseError.InvalidSyntax;
-    }
-
-    fn skipWhitespace(data: []const u8, start: usize) usize {
-        var idx = start;
-        while (idx < data.len and std.ascii.isWhitespace(data[idx])) : (idx += 1) {}
-        return idx;
-    }
-
-    fn isIdentChar(ch: u8) bool {
-        return std.ascii.isAlphabetic(ch) or std.ascii.isDigit(ch) or ch == '_';
-    }
-
-    fn startsWithKeyword(slice: []const u8, keyword: []const u8) bool {
-        if (slice.len < keyword.len) return false;
-        if (!std.mem.eql(u8, slice[0..keyword.len], keyword)) return false;
-        if (slice.len == keyword.len) return true;
-        return !isIdentChar(slice[keyword.len]);
-    }
-
-    fn skipString(data: []const u8, start: usize) ParseError!usize {
-        var idx = start + 1;
-        while (idx < data.len) : (idx += 1) {
-            const ch = data[idx];
-            if (ch == '\\') {
-                idx += 1; // Skip escape
-                continue;
-            }
-            if (ch == '"') {
-                return idx;
-            }
-        }
-        return ParseError.InvalidSyntax;
-    }
 
     pub fn configPath(self: *const Host) ?[]const u8 {
         return self.config_dir;
@@ -336,12 +571,83 @@ pub const Host = struct {
         return self.setup_invoked;
     }
 
+    fn releaseConfigScript(self: *Host) void {
+        if (self.config_script) |script_ptr| {
+            script_ptr.deinit();
+            self.allocator.destroy(script_ptr);
+            self.config_script = null;
+        }
+    }
+
     fn resetArena(self: *Host) void {
+        self.releaseConfigScript();
         self.arena.deinit();
         self.arena = std.heap.ArenaAllocator.init(self.allocator);
         self.config_dir = null;
         self.config_source = null;
         self.setup_invoked = false;
+    }
+
+    fn ensureEngine(self: *Host) Error!*ghostlang.ScriptEngine {
+        if (self.engine) |engine| return engine;
+
+        const engine_ptr = self.allocator.create(ghostlang.ScriptEngine) catch |err| {
+            return self.mapAllocatorError(err);
+        };
+        var destroy_engine_ptr = true;
+        errdefer if (destroy_engine_ptr) self.allocator.destroy(engine_ptr);
+
+        const config = ghostlang.EngineConfig{
+            .allocator = self.allocator,
+            .memory_limit = self.sandbox_config.max_memory_bytes,
+            .execution_timeout_ms = self.sandbox_config.max_execution_time_ms,
+            .allow_io = self.sandbox_config.enable_filesystem_access,
+            .allow_syscalls = self.sandbox_config.enable_system_calls,
+        };
+
+        engine_ptr.* = ghostlang.ScriptEngine.create(config) catch |err| {
+            return self.mapAllocatorError(err);
+        };
+
+        self.engine = engine_ptr;
+        self.builtins_registered = false;
+        try self.ensureHostBuiltins(engine_ptr);
+
+        destroy_engine_ptr = false;
+        return engine_ptr;
+    }
+
+    fn ensureHostBuiltins(self: *Host, engine: *ghostlang.ScriptEngine) Error!void {
+        if (self.builtins_registered) return;
+        try self.registerBuiltin(engine, "showMessage", builtinShowMessage);
+        try self.registerBuiltin(engine, "show_message", builtinShowMessage);
+        try self.registerBuiltin(engine, "registerCommand", builtinRegisterCommand);
+        try self.registerBuiltin(engine, "register_command", builtinRegisterCommand);
+        try self.registerBuiltin(engine, "registerKeymap", builtinRegisterKeymap);
+        try self.registerBuiltin(engine, "register_keymap", builtinRegisterKeymap);
+        try self.registerBuiltin(engine, "registerEventHandler", builtinRegisterEventHandler);
+        try self.registerBuiltin(engine, "register_event_handler", builtinRegisterEventHandler);
+        self.builtins_registered = true;
+    }
+
+    fn registerBuiltin(
+        self: *Host,
+        engine: *ghostlang.ScriptEngine,
+        name: []const u8,
+        func: *const fn (args: []const ghostlang.ScriptValue) ghostlang.ScriptValue,
+    ) Error!void {
+        engine.registerFunction(name, func) catch |err| {
+            return self.mapExecutionError(err);
+        };
+    }
+
+    fn handleShowMessageBuiltin(self: *Host, args: []const ghostlang.ScriptValue) void {
+        if (args.len == 0) return;
+        if (args[0] != .string) return;
+        const plugin = self.active_plugin orelse return;
+        plugin.appendShowMessage(args[0].string) catch |err| switch (err) {
+            error.OutOfMemory => self.recordScriptError(Error.MemoryLimitExceeded),
+        };
     }
 
     pub fn validateFileAccess(self: *Host, file_path: []const u8) Error!void {
@@ -429,6 +735,41 @@ pub const Host = struct {
         self.execution_stats.reset();
     }
 
+    fn mapExecutionError(self: *Host, err: ghostlang.ExecutionError) Error {
+        _ = self;
+        return switch (err) {
+            .MemoryLimitExceeded => Error.MemoryLimitExceeded,
+            .ExecutionTimeout => Error.ExecutionTimeout,
+            .IONotAllowed => Error.UnauthorizedFileAccess,
+            .SyscallNotAllowed => Error.SandboxViolation,
+            .SecurityViolation => Error.SandboxViolation,
+            .ParseError => Error.InvalidScript,
+            .TypeError => Error.InvalidScript,
+            .FunctionNotFound => Error.InvalidScript,
+            .NotAFunction => Error.InvalidScript,
+            .UndefinedVariable => Error.InvalidScript,
+            .ScopeUnderflow => Error.InvalidScript,
+            .InvalidFunctionName => Error.InvalidScript,
+            .InvalidGlobalName => Error.InvalidScript,
+            .GlobalNotFound => Error.InvalidScript,
+            .UnsupportedArgumentType => Error.InvalidScript,
+            .OutOfMemory => Error.MemoryLimitExceeded,
+        };
+    }
+
+    fn mapAllocatorError(self: *Host, err: std.mem.Allocator.Error) Error {
+        _ = self;
+        return switch (err) {
+            error.OutOfMemory => Error.MemoryLimitExceeded,
+        };
+    }
+
+    fn recordScriptError(self: *Host, err: Error) void {
+        if (self.pending_error == null) {
+            self.pending_error = err;
+        }
+    }
+
     fn matchesPattern(path: []const u8, pattern: []const u8) bool {
         // Simple glob pattern matching - supports * wildcard at end
         if (std.mem.endsWith(u8, pattern, "*")) {
@@ -438,31 +779,9 @@ pub const Host = struct {
         return std.mem.eql(u8, path, pattern);
     }
 
-    fn containsSetupDeclaration(buffer: []const u8) bool {
-        const delimiters = " \t\r\n(){};,";
-        var tokenizer = std.mem.tokenizeAny(u8, buffer, delimiters);
-        var prev: ?[]const u8 = null;
-        var prev2: ?[]const u8 = null;
-
-        while (tokenizer.next()) |token| {
-            if (std.mem.eql(u8, token, "setup")) {
-                if (prev) |p| {
-                    if (std.mem.eql(u8, p, "fn")) return true;
-                    if (prev2) |p2| {
-                        if (std.mem.eql(u8, p2, "pub") and std.mem.eql(u8, p, "fn")) {
-                            return true;
-                        }
-                    }
-                }
-            }
-            prev2 = prev;
-            prev = token;
-        }
-        return false;
-    }
 };
 
-test "host loads config and detects setup" {
+test "host loads config and executes script" {
     const allocator = std.testing.allocator;
     var host = try Host.init(allocator);
     defer host.deinit();
@@ -470,7 +789,7 @@ test "host loads config and detects setup" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile("init.gza", "fn setup() { return 1; }");
+    try tmp.dir.writeFile("init.gza", "var x = 5; x + 7;");
 
     try host.loadConfig(tmp.path);
     try std.testing.expect(host.configSource() != null);
@@ -479,7 +798,7 @@ test "host loads config and detects setup" {
     try std.testing.expect(host.setupInvoked());
 }
 
-test "call setup without declaration fails" {
+test "load config with invalid script fails" {
     const allocator = std.testing.allocator;
     var host = try Host.init(allocator);
     defer host.deinit();
@@ -487,10 +806,8 @@ test "call setup without declaration fails" {
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
 
-    try tmp.dir.writeFile("init.gza", "fn other() {}");
-    try host.loadConfig(tmp.path);
-
-    try std.testing.expectError(Host.Error.SetupSymbolMissing, host.callSetup());
+    try tmp.dir.writeFile("init.gza", "var broken = ");
+    try std.testing.expectError(Host.Error.InvalidScript, host.loadConfig(tmp.path));
 }
 
 test "calling setup before loading config errors" {
@@ -499,6 +816,48 @@ test "calling setup before loading config errors" {
     defer host.deinit();
 
     try std.testing.expectError(Host.Error.ConfigNotLoaded, host.callSetup());
+}
+
+test "plugin script showMessage action executes" {
+    const allocator = std.testing.allocator;
+    var host = try Host.init(allocator);
+    defer host.deinit();
+
+    const plugin_source = "showMessage(\"hello from plugin\")";
+    var compiled = try host.compilePluginScript(plugin_source);
+    defer compiled.deinit();
+
+    const CallbackCtx = struct {
+        const Self = @This();
+
+        allocator: std.mem.Allocator,
+        message: ?[]u8 = null,
+
+        fn capture(self: *Self, msg: []const u8) !void {
+            if (self.message) |existing| {
+                self.allocator.free(existing);
+            }
+            self.message = try self.allocator.dupe(u8, msg);
+        }
+    };
+
+    const ShowMessageShim = struct {
+        fn call(ctx_ptr: *anyopaque, message: []const u8) anyerror!void {
+            const ctx = @as(*CallbackCtx, @ptrCast(@alignCast(ctx_ptr)));
+            try ctx.capture(message);
+        }
+    };
+
+    var ctx = CallbackCtx{ .allocator = allocator };
+    defer if (ctx.message) |msg| allocator.free(msg);
+
+    const callbacks = Host.ActionCallbacks{
+        .ctx = @as(*anyopaque, @ptrCast(&ctx)),
+        .show_message = ShowMessageShim.call,
+    };
+
+    try compiled.executeSetup(callbacks);
+    try std.testing.expect(ctx.message != null);
 }
 
 test "sandbox config validates file access" {
