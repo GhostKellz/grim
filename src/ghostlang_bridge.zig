@@ -1,6 +1,8 @@
 const std = @import("std");
 const core = @import("../core/mod.zig");
 const syntax = @import("../syntax/mod.zig");
+const ui_tui = @import("../ui-tui/mod.zig");
+const Theme = ui_tui.Theme;
 
 /// Ghostlang FFI Bridge - Exposes Grim's Zig APIs to Ghostlang
 /// This is Option 1: Direct Zig bindings for maximum performance
@@ -11,6 +13,8 @@ pub const GhostlangBridge = struct {
     harpoon: ?*core.Harpoon,
     features: ?*syntax.Features,
     zap: ?*core.ZapIntegration,
+    theme: ?*Theme,
+    theme_name: ?[]const u8,
 
     pub fn init(allocator: std.mem.Allocator) GhostlangBridge {
         return .{
@@ -20,6 +24,8 @@ pub const GhostlangBridge = struct {
             .harpoon = null,
             .features = null,
             .zap = null,
+            .theme = null,
+            .theme_name = null,
         };
     }
 
@@ -39,6 +45,12 @@ pub const GhostlangBridge = struct {
         if (self.zap) |z| {
             z.deinit();
             self.allocator.destroy(z);
+        }
+        if (self.theme) |t| {
+            self.allocator.destroy(t);
+        }
+        if (self.theme_name) |name| {
+            self.allocator.free(name);
         }
         _ = self.features;
     }
@@ -540,5 +552,186 @@ pub const GhostlangBridge = struct {
 
         const result = bridge.allocator.dupeZ(u8, issues) catch return "";
         return result.ptr;
+    }
+
+    // ========================================================================
+    // THEME API
+    // ========================================================================
+
+    /// Load default theme (ghost-hacker-blue)
+    pub export fn grim_theme_load_default(bridge: *GhostlangBridge) callconv(.C) bool {
+        // Clean up existing theme
+        if (bridge.theme) |t| {
+            bridge.allocator.destroy(t);
+        }
+        if (bridge.theme_name) |name| {
+            bridge.allocator.free(name);
+        }
+
+        const theme = bridge.allocator.create(Theme) catch return false;
+        theme.* = Theme.loadDefault(bridge.allocator) catch {
+            bridge.allocator.destroy(theme);
+            return false;
+        };
+
+        bridge.theme = theme;
+        bridge.theme_name = bridge.allocator.dupe(u8, "ghost-hacker-blue") catch null;
+        return true;
+    }
+
+    /// Load theme from file
+    pub export fn grim_theme_load(
+        bridge: *GhostlangBridge,
+        theme_name: [*:0]const u8,
+    ) callconv(.C) bool {
+        // Clean up existing theme
+        if (bridge.theme) |t| {
+            bridge.allocator.destroy(t);
+        }
+        if (bridge.theme_name) |name| {
+            bridge.allocator.free(name);
+        }
+
+        const name_slice = std.mem.span(theme_name);
+
+        // Try multiple paths
+        const paths = [_][]const u8{
+            "themes/{s}.toml",
+            "/usr/share/grim/themes/{s}.toml",
+            "/usr/local/share/grim/themes/{s}.toml",
+        };
+
+        var theme_loaded = false;
+        for (paths) |path_fmt| {
+            const path = std.fmt.allocPrint(bridge.allocator, path_fmt, .{name_slice}) catch continue;
+            defer bridge.allocator.free(path);
+
+            if (Theme.loadFromFile(bridge.allocator, path)) |loaded_theme| {
+                const theme = bridge.allocator.create(Theme) catch return false;
+                theme.* = loaded_theme;
+                bridge.theme = theme;
+                bridge.theme_name = bridge.allocator.dupe(u8, name_slice) catch null;
+                theme_loaded = true;
+                break;
+            } else |_| {
+                continue;
+            }
+        }
+
+        return theme_loaded;
+    }
+
+    /// Get current theme name
+    pub export fn grim_theme_get_name(bridge: *GhostlangBridge) callconv(.C) [*:0]const u8 {
+        if (bridge.theme_name) |name| {
+            const result = bridge.allocator.dupeZ(u8, name) catch return "";
+            return result.ptr;
+        }
+        return "default";
+    }
+
+    /// Get theme color as hex string (#RRGGBB)
+    pub export fn grim_theme_get_color(
+        bridge: *GhostlangBridge,
+        color_name: [*:0]const u8,
+    ) callconv(.C) [*:0]const u8 {
+        if (bridge.theme == null) return "#c8d3f5"; // Default foreground
+
+        const name_slice = std.mem.span(color_name);
+        const theme = bridge.theme.?;
+
+        // Map color names to theme fields
+        const color = if (std.mem.eql(u8, name_slice, "foreground"))
+            theme.foreground
+        else if (std.mem.eql(u8, name_slice, "background"))
+            theme.background
+        else if (std.mem.eql(u8, name_slice, "cursor"))
+            theme.cursor
+        else if (std.mem.eql(u8, name_slice, "selection"))
+            theme.selection
+        else if (std.mem.eql(u8, name_slice, "keyword"))
+            theme.keyword
+        else if (std.mem.eql(u8, name_slice, "string"))
+            theme.string_literal
+        else if (std.mem.eql(u8, name_slice, "number"))
+            theme.number_literal
+        else if (std.mem.eql(u8, name_slice, "comment"))
+            theme.comment
+        else if (std.mem.eql(u8, name_slice, "function"))
+            theme.function_name
+        else if (std.mem.eql(u8, name_slice, "type"))
+            theme.type_name
+        else if (std.mem.eql(u8, name_slice, "variable"))
+            theme.variable
+        else if (std.mem.eql(u8, name_slice, "operator"))
+            theme.operator
+        else if (std.mem.eql(u8, name_slice, "line_number"))
+            theme.line_number
+        else if (std.mem.eql(u8, name_slice, "status_bar_bg"))
+            theme.status_bar_bg
+        else if (std.mem.eql(u8, name_slice, "status_bar_fg"))
+            theme.status_bar_fg
+        else
+            theme.foreground; // Fallback
+
+        // Convert RGB to hex string
+        const hex = std.fmt.allocPrint(
+            bridge.allocator,
+            "#{x:0>2}{x:0>2}{x:0>2}",
+            .{ color.r, color.g, color.b },
+        ) catch return "#c8d3f5";
+
+        const result = bridge.allocator.dupeZ(u8, hex) catch {
+            bridge.allocator.free(hex);
+            return "#c8d3f5";
+        };
+        bridge.allocator.free(hex);
+        return result.ptr;
+    }
+
+    /// Get theme info as JSON
+    pub export fn grim_theme_get_info(bridge: *GhostlangBridge) callconv(.C) [*:0]const u8 {
+        if (bridge.theme == null) {
+            return "{\"loaded\":false}";
+        }
+
+        const name = if (bridge.theme_name) |n| n else "unknown";
+
+        // Build JSON response
+        const json = std.fmt.allocPrint(
+            bridge.allocator,
+            "{{\"loaded\":true,\"name\":\"{s}\",\"foreground\":\"#{x:0>2}{x:0>2}{x:0>2}\",\"background\":\"#{x:0>2}{x:0>2}{x:0>2}\"}}",
+            .{
+                name,
+                bridge.theme.?.foreground.r,
+                bridge.theme.?.foreground.g,
+                bridge.theme.?.foreground.b,
+                bridge.theme.?.background.r,
+                bridge.theme.?.background.g,
+                bridge.theme.?.background.b,
+            },
+        ) catch return "{\"loaded\":false}";
+
+        const result = bridge.allocator.dupeZ(u8, json) catch {
+            bridge.allocator.free(json);
+            return "{\"loaded\":false}";
+        };
+        bridge.allocator.free(json);
+        return result.ptr;
+    }
+
+    /// Check if theme is loaded
+    pub export fn grim_theme_is_loaded(bridge: *GhostlangBridge) callconv(.C) bool {
+        return bridge.theme != null;
+    }
+
+    /// Reload current theme
+    pub export fn grim_theme_reload(bridge: *GhostlangBridge) callconv(.C) bool {
+        if (bridge.theme_name) |name| {
+            const name_z = bridge.allocator.dupeZ(u8, name) catch return false;
+            defer bridge.allocator.free(name_z);
+            return grim_theme_load(bridge, name_z.ptr);
+        }
+        return grim_theme_load_default(bridge);
     }
 };
