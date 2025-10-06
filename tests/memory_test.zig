@@ -44,7 +44,7 @@ fn testRopeMemory(allocator: std.mem.Allocator) !void {
         var rope = try grim.core.Rope.init(allocator);
         defer rope.deinit();
 
-        const test_content = "Hello, World!\n".** (TEST_FILE_SIZE_SMALL / 14);
+        const test_content = "Hello, World!\n" ** (TEST_FILE_SIZE_SMALL / 14);
         try rope.insert(0, test_content[0..TEST_FILE_SIZE_SMALL]);
 
         const end_mem = try getCurrentMemoryUsage();

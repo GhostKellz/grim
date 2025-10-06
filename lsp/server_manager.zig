@@ -187,6 +187,29 @@ pub const ServerManager = struct {
         return try self.autoSpawn(filename);
     }
 
+    /// Poll all active servers for responses (non-blocking)
+    /// Call this in the main event loop to process LSP responses
+    pub fn pollAll(self: *ServerManager) void {
+        var iterator = self.servers.iterator();
+        while (iterator.next()) |entry| {
+            const server = entry.value_ptr.*;
+            if (!server.active) continue;
+
+            // Non-blocking poll - if no data, continues to next server
+            server.client.poll() catch |err| {
+                // Log errors but don't crash
+                std.log.debug("LSP poll error for {s}: {}", .{ server.name, err });
+            };
+        }
+    }
+
+    /// Poll a specific server by name
+    pub fn poll(self: *ServerManager, name: []const u8) !void {
+        const server = self.servers.get(name) orelse return Error.ServerNotFound;
+        if (!server.active) return;
+        try server.client.poll();
+    }
+
     // Helper functions for process I/O
     fn processRead(ctx: *anyopaque, buffer: []u8) TransportError!usize {
         const process: *std.process.Child = @ptrCast(@alignCast(ctx));
