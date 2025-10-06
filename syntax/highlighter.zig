@@ -5,13 +5,18 @@ const core = @import("core");
 pub const SyntaxHighlighter = struct {
     allocator: std.mem.Allocator,
     parser: ?*grove.GroveParser,
-    current_language: grove.GroveParser.Language,
+    current_language: grove.GroveParser.LangType,
     cached_highlights: []grove.GroveParser.Highlight,
     last_parse_hash: u64,
 
     pub const Error = error{
         ParserNotInitialized,
         HighlightingFailed,
+        ParserUnavailable,
+        LanguageNotSet,
+        LanguageUnsupported,
+        InputTooLarge,
+        ParseFailed,
     } || grove.GroveParser.Error || std.mem.Allocator.Error;
 
     pub fn init(allocator: std.mem.Allocator) SyntaxHighlighter {
@@ -78,7 +83,7 @@ pub const SyntaxHighlighter = struct {
         }
 
         // Parse content
-        try parser.parse(content);
+        _ = try parser.parse(content);
 
         // Get highlights
         const highlights = try parser.getHighlights(self.allocator);

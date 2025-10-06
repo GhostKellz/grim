@@ -34,13 +34,17 @@ Our goal is simple:
 
 ## Features
 
-- 🔑 Modal editing with Vim motions  
-- 🪶 Rope-based buffer for huge files  :
-- 🌲 Tree-sitter 0.25.10 highlighting and navigation across 14 languages  
-- 📡 Built-in LSP client (hover, diagnostics, goto, completion)  
-- ⚡ Ghostlang configuration and plugins  
-- 🔌 Remote plugin protocol (any language over stdio/JSON)  
-- 📂 Fuzzy finder, quickfix list, registers, macros  
+- 🔑 Modal editing with Vim motions
+- 🪶 Rope-based buffer for huge files
+- 🌲 Tree-sitter 0.25.10 highlighting and navigation across 14 languages
+- 🎯 **Jump to definition** (`gd`) - Fast tree-sitter-based code navigation
+- 🔄 **Symbol rename** - Rename symbols within current file
+- 🎨 **Dynamic theme system** - Customizable color schemes (dark/light themes)
+- 📡 Built-in LSP client (hover, diagnostics, goto, completion)
+- ⚡ Ghostlang configuration and plugins
+- 🔌 Remote plugin protocol (any language over stdio/JSON)
+- 📂 Fuzzy finder, quickfix list, registers, macros
+- ⚙️ **Graceful fallbacks** - Syntax highlighting works even without tree-sitter  
 
 ### Supported languages (via Grove)
 
@@ -57,13 +61,17 @@ Grim bundles Grove's latest tree-sitter toolchain. When you build with `-Dghostl
 
 ## Roadmap
 
-- [x] Rope buffer + undo/redo  
-- [x] Modal engine + keymaps  
-- [x] Tree-sitter highlighting (14 Grove grammars + Ghostlang services)  
-- [ ] LSP client (Zig + Rust servers first)  
-- [ ] Ghostlang plugin runtime  
-- [ ] Fuzzy finder + file explorer  
-- [ ] Multi-cursor and macro improvements  
+- [x] Rope buffer + undo/redo
+- [x] Modal engine + keymaps
+- [x] Tree-sitter highlighting (14 Grove grammars + Ghostlang services)
+- [x] **Jump to definition** (tree-sitter-based, works across all grammars)
+- [x] **Multi-key sequences** (`gd`, `gg`, `dd`, `yy`)
+- [x] **Dynamic theme system** (RGB → ANSI 256, dark/light themes)
+- [x] **Fallback tokenizer** (graceful degradation when parser unavailable)
+- [ ] LSP client async integration (infrastructure complete)
+- [ ] Ghostlang plugin runtime
+- [ ] Fuzzy finder + file explorer
+- [ ] Multi-cursor and macro improvements
 - [ ] DAP debugging support  
 
 ---

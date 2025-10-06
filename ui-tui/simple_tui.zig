@@ -3,24 +3,7 @@ const syntax = @import("syntax");
 const lsp = @import("lsp");
 const core = @import("core");
 const Editor = @import("editor.zig").Editor;
-
-const HighlightPalette = struct {
-    fn sequence(highlight_type: syntax.HighlightType) []const u8 {
-        return switch (highlight_type) {
-            .keyword => "\x1B[38;5;199m",
-            .string_literal => "\x1B[38;5;114m",
-            .number_literal => "\x1B[38;5;208m",
-            .comment => "\x1B[38;5;102m",
-            .function_name => "\x1B[38;5;81m",
-            .type_name => "\x1B[38;5;140m",
-            .variable => "\x1B[38;5;252m",
-            .operator => "\x1B[38;5;173m",
-            .punctuation => "\x1B[38;5;244m",
-            .@"error" => "\x1B[48;5;52;38;5;231m",
-            .none => "",
-        };
-    }
-};
+const Theme = @import("theme.zig").Theme;
 
 pub const SimpleTUI = struct {
     allocator: std.mem.Allocator,
@@ -50,6 +33,8 @@ pub const SimpleTUI = struct {
     // Incremental selection
     selection_start: ?usize,
     selection_end: ?usize,
+    // Theme
+    theme: Theme,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
         const self = try allocator.create(SimpleTUI);
@@ -76,6 +61,7 @@ pub const SimpleTUI = struct {
             .fold_regions = &.{},
             .selection_start = null,
             .selection_end = null,
+            .theme = Theme.defaultDark(),
         };
         return self;
     }
@@ -439,8 +425,13 @@ pub const SimpleTUI = struct {
 
             // Line numbers
             var line_buf: [16]u8 = undefined;
-            const line_str = try std.fmt.bufPrint(&line_buf, "{d:4} ", .{logical_line + 1});
+            const line_str = try std.fmt.bufPrint(&line_buf, "{d:4}", .{logical_line + 1});
             try self.stdout.writeAll(line_str);
+
+            // Fold indicators
+            const fold_indicator = self.getFoldIndicator(logical_line);
+            try self.stdout.writeAll(fold_indicator);
+            try self.stdout.writeAll(" ");
 
             if (content_width > 0) {
                 try self.renderHighlightedLine(line_slice, logical_line, content_width);
@@ -1039,7 +1030,9 @@ pub const SimpleTUI = struct {
             if (run_type) |ht| {
                 if (!color_active or active_type != ht) {
                     if (color_active) try self.resetColor();
-                    try self.stdout.writeAll(HighlightPalette.sequence(ht));
+                    var buf: [32]u8 = undefined;
+                    const seq = try self.theme.getHighlightSequence(ht, &buf);
+                    try self.stdout.writeAll(seq);
                     color_active = true;
                     active_type = ht;
                 }
@@ -1064,5 +1057,15 @@ pub const SimpleTUI = struct {
         while (written < max_width) : (written += 1) {
             try self.stdout.writeAll(" ");
         }
+    }
+
+    fn getFoldIndicator(self: *SimpleTUI, line_num: usize) []const u8 {
+        // Check if this line starts a fold region
+        for (self.editor.fold_regions) |region| {
+            if (region.start_line == line_num) {
+                return if (region.folded) "▶" else "▼";
+            }
+        }
+        return " ";
     }
 };

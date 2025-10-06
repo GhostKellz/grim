@@ -244,6 +244,10 @@ pub const EditorLSP = struct {
                 .command = &[_][]const u8{"clangd"},
                 .root_uri = "file:///data/projects/grim",
             },
+            .ghostlang => .{
+                .command = &[_][]const u8{"ghostlang-lsp"},
+                .root_uri = "file:///data/projects/grim",
+            },
             else => null,
         };
     }

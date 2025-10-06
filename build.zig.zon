@@ -50,7 +50,7 @@
         },
         .grove = .{
             .url = "https://github.com/ghostkellz/grove/archive/main.tar.gz",
-            .hash = "grove-0.1.1-rGFsN9PW5QR4WwwmhcNzjg3mxdCUMwhaVH8kAAvpJKs9",
+            .hash = "grove-0.1.1-rGFsN-7i5QRbQ9rp3VYzTUg5ReKWu9c3MCCMqTmwVWu6",
         },
         .ghostlang = .{
             .url = "https://github.com/ghostkellz/ghostlang/archive/refs/heads/main.tar.gz",

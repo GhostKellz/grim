@@ -9,6 +9,18 @@ pub const Editor = struct {
     cursor: Position,
     highlighter: syntax.SyntaxHighlighter,
     current_filename: ?[]const u8,
+    features: syntax.Features,
+    fold_regions: []syntax.Features.FoldRegion,
+    selection_start: ?usize,
+    selection_end: ?usize,
+    // Multi-cursor support
+    cursors: std.ArrayList(Position),
+    multi_cursor_mode: bool,
+    // Key sequence tracking
+    pending_key: ?u21,
+    // Rename state
+    rename_buffer: ?[]u8,
+    rename_active: bool,
 
     pub const Mode = enum {
         normal,
@@ -88,6 +100,19 @@ pub const Editor = struct {
         delete_line,
         yank_line,
         paste_after,
+        toggle_fold,
+        fold_all,
+        unfold_all,
+        expand_selection,
+        shrink_selection,
+        update_folds,
+        add_cursor_below,
+        add_cursor_above,
+        add_cursor_at_next_match,
+        remove_last_cursor,
+        toggle_multi_cursor,
+        jump_to_definition,
+        rename_symbol,
     };
 
     pub const Error = error{
@@ -105,15 +130,31 @@ pub const Editor = struct {
             .cursor = .{},
             .highlighter = syntax.SyntaxHighlighter.init(allocator),
             .current_filename = null,
+            .features = syntax.Features.init(allocator),
+            .fold_regions = &.{},
+            .selection_start = null,
+            .selection_end = null,
+            .cursors = .empty,
+            .multi_cursor_mode = false,
+            .pending_key = null,
+            .rename_buffer = null,
+            .rename_active = false,
         };
     }
 
     pub fn deinit(self: *Editor) void {
         self.rope.deinit();
         self.highlighter.deinit();
+        if (self.fold_regions.len > 0) {
+            self.allocator.free(self.fold_regions);
+        }
         if (self.current_filename) |filename| {
             self.allocator.free(filename);
         }
+        if (self.rename_buffer) |buf| {
+            self.allocator.free(buf);
+        }
+        self.cursors.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -134,6 +175,12 @@ pub const Editor = struct {
         }
         self.current_filename = try self.allocator.dupe(u8, path);
         try self.highlighter.setLanguage(path);
+
+        // Set parser for tree-sitter features and update fold regions
+        if (self.highlighter.parser) |parser| {
+            self.features.setParser(parser);
+            try self.updateFoldRegions();
+        }
     }
 
     pub fn saveFile(self: *Editor, path: []const u8) !void {
@@ -199,11 +246,57 @@ pub const Editor = struct {
             .delete_line => try self.deleteCurrentLine(),
             .yank_line => {}, // TODO: Implement yank
             .paste_after => {}, // TODO: Implement paste
+            .toggle_fold => try self.toggleFoldAtCursor(),
+            .fold_all => self.foldAll(),
+            .unfold_all => self.unfoldAll(),
+            .expand_selection => try self.expandSelection(),
+            .shrink_selection => try self.shrinkSelection(),
+            .update_folds => try self.updateFoldRegions(),
+            .add_cursor_below => try self.addCursorBelow(),
+            .add_cursor_above => try self.addCursorAbove(),
+            .add_cursor_at_next_match => try self.addCursorAtNextMatch(),
+            .remove_last_cursor => self.removeLastCursor(),
+            .toggle_multi_cursor => self.toggleMultiCursor(),
+            .jump_to_definition => try self.jumpToDefinition(),
+            .rename_symbol => {
+                // Rename requires UI interaction - set flag for TUI to handle
+                self.rename_active = true;
+            },
         }
     }
 
     fn commandForNormalKey(self: *Editor, key: u21) ?Command {
-        _ = self;
+        // Handle two-key sequences
+        if (self.pending_key) |pending| {
+            defer self.pending_key = null;
+
+            // Handle 'g' sequences
+            if (pending == 'g') {
+                return switch (key) {
+                    'g' => .move_file_start,
+                    'd' => .jump_to_definition,
+                    else => null,
+                };
+            }
+
+            // Handle 'd' sequences (dd for delete line)
+            if (pending == 'd') {
+                return switch (key) {
+                    'd' => .delete_line,
+                    else => null,
+                };
+            }
+
+            // Handle 'y' sequences (yy for yank line)
+            if (pending == 'y') {
+                return switch (key) {
+                    'y' => .yank_line,
+                    else => null,
+                };
+            }
+        }
+
+        // Single-key commands
         return switch (key) {
             'h' => .move_left,
             'j' => .move_down,
@@ -213,16 +306,29 @@ pub const Editor = struct {
             'b' => .move_word_backward,
             '0' => .move_line_start,
             '$' => .move_line_end,
-            'g' => null, // TODO: Handle gg
+            'g' => blk: {
+                self.pending_key = 'g';
+                break :blk null;
+            },
             'G' => .move_file_end,
             'i' => .enter_insert,
             'a' => .enter_insert_after,
             'v' => .enter_visual,
             ':' => .enter_command,
             'x' => .delete_char,
-            'd' => null, // TODO: Handle dd
-            'y' => null, // TODO: Handle yy
+            'd' => blk: {
+                self.pending_key = 'd';
+                break :blk null;
+            },
+            'y' => blk: {
+                self.pending_key = 'y';
+                break :blk null;
+            },
             'p' => .paste_after,
+            'z' => .toggle_fold, // TODO: Handle za, zR, zM properly
+            'Z' => .fold_all, // Fold all regions
+            '=' => .expand_selection, // Expand selection (Alt+= in full implementation)
+            '-' => .shrink_selection, // Shrink selection (Alt+- in full implementation)
             0x1B => .escape_to_normal,
             else => null,
         };
@@ -414,6 +520,359 @@ pub const Editor = struct {
         if (self.cursor.offset == 0) return;
         self.cursor.moveLeft(&self.rope);
         try self.rope.delete(self.cursor.offset, 1);
+    }
+
+    // Folding methods
+    fn updateFoldRegions(self: *Editor) !void {
+        if (self.fold_regions.len > 0) {
+            self.allocator.free(self.fold_regions);
+        }
+
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        defer if (content.len > 0) self.allocator.free(content);
+
+        self.fold_regions = try self.features.getFoldRegions(content);
+    }
+
+    fn getCurrentLine(self: *const Editor) usize {
+        const content = self.rope.slice(.{ .start = 0, .end = self.cursor.offset }) catch return 0;
+        defer if (content.len > 0) std.heap.page_allocator.free(content);
+
+        var line: usize = 0;
+        for (content) |ch| {
+            if (ch == '\n') line += 1;
+        }
+        return line;
+    }
+
+    fn toggleFoldAtCursor(self: *Editor) !void {
+        const current_line = self.getCurrentLine();
+
+        for (self.fold_regions) |*region| {
+            if (region.start_line <= current_line and current_line <= region.end_line) {
+                region.folded = !region.folded;
+                return;
+            }
+        }
+    }
+
+    fn foldAll(self: *Editor) void {
+        for (self.fold_regions) |*region| {
+            region.folded = true;
+        }
+    }
+
+    fn unfoldAll(self: *Editor) void {
+        for (self.fold_regions) |*region| {
+            region.folded = false;
+        }
+    }
+
+    // Jump to definition using tree-sitter
+    // TODO: Add LSP fallback - see ui-tui/editor_lsp.zig for LSP integration
+    // Future: Try LSP first (requires async handling), fall back to tree-sitter
+    fn jumpToDefinition(self: *Editor) !void {
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        defer if (content.len > 0) self.allocator.free(content);
+
+        if (try self.features.findDefinition(content, self.cursor.offset)) |def| {
+            self.cursor.offset = def.start_byte;
+        }
+    }
+
+    // Rename symbol at cursor
+    // Uses tree-sitter to find all occurrences in current file
+    // TODO: Add LSP support for cross-file rename
+    fn renameSymbol(self: *Editor, new_name: []const u8) !void {
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        defer if (content.len > 0) self.allocator.free(content);
+
+        // Get the identifier at cursor
+        const identifier = self.features.getIdentifierAtPosition(content, self.cursor.offset) orelse return;
+
+        // Find all occurrences of this identifier
+        var occurrences = std.ArrayList(struct { start: usize, end: usize }).init(self.allocator);
+        defer occurrences.deinit();
+
+        // Simple text-based search for now (tree-sitter-based would be more accurate)
+        var i: usize = 0;
+        while (i < content.len) {
+            if (i + identifier.len <= content.len and
+                std.mem.eql(u8, content[i..i + identifier.len], identifier))
+            {
+                // Check word boundaries
+                const is_start_boundary = i == 0 or !isIdentifierChar(content[i - 1]);
+                const is_end_boundary = i + identifier.len >= content.len or !isIdentifierChar(content[i + identifier.len]);
+
+                if (is_start_boundary and is_end_boundary) {
+                    try occurrences.append(.{.start = i, .end = i + identifier.len });
+                }
+                i += identifier.len;
+            } else {
+                i += 1;
+            }
+        }
+
+        // Replace occurrences in reverse order to maintain offsets
+        var j: usize = occurrences.items.len;
+        while (j > 0) {
+            j -= 1;
+            const occ = occurrences.items[j];
+
+            // Delete old name
+            var k: usize = occ.start;
+            while (k < occ.end) : (k += 1) {
+                try self.rope.delete(occ.start);
+            }
+
+            // Insert new name
+            try self.rope.insert(occ.start, new_name);
+        }
+
+        // Update cursor if needed
+        if (occurrences.items.len > 0) {
+            // Stay at first occurrence
+            self.cursor.offset = occurrences.items[0].start;
+        }
+    }
+
+    fn isIdentifierChar(ch: u8) bool {
+        return (ch >= 'a' and ch <= 'z') or
+               (ch >= 'A' and ch <= 'Z') or
+               (ch >= '0' and ch <= '9') or
+               ch == '_';
+    }
+
+    // Selection methods
+    fn expandSelection(self: *Editor) !void {
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        defer if (content.len > 0) self.allocator.free(content);
+
+        const current_start = self.selection_start orelse self.cursor.offset;
+        const current_end = self.selection_end orelse self.cursor.offset;
+
+        if (self.features.expandSelection(content, current_start, current_end)) |range| {
+            self.selection_start = range.start_byte;
+            self.selection_end = range.end_byte;
+            self.cursor.offset = range.end_byte;
+        } else |_| {
+            // No larger selection available
+        }
+    }
+
+    fn shrinkSelection(self: *Editor) !void {
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        defer if (content.len > 0) self.allocator.free(content);
+
+        const current_start = self.selection_start orelse self.cursor.offset;
+        const current_end = self.selection_end orelse self.cursor.offset;
+
+        if (self.features.shrinkSelection(content, current_start, current_end)) |range| {
+            self.selection_start = range.start_byte;
+            self.selection_end = range.end_byte;
+            self.cursor.offset = range.end_byte;
+        } else |_| {
+            // No smaller selection available
+            self.selection_start = null;
+            self.selection_end = null;
+        }
+    }
+
+    // Accessor for fold regions (for TUI rendering)
+    pub fn getFoldRegions(self: *const Editor) []const syntax.Features.FoldRegion {
+        return self.fold_regions;
+    }
+
+    pub fn getSelection(self: *const Editor) ?struct { start: usize, end: usize } {
+        if (self.selection_start) |start| {
+            if (self.selection_end) |end| {
+                return .{ .start = start, .end = end };
+            }
+        }
+        return null;
+    }
+
+    // Bracket matching
+    pub fn findMatchingBracket(self: *const Editor) ?usize {
+        if (self.cursor.offset >= self.rope.len()) return null;
+
+        const content = self.rope.slice(.{ .start = 0, .end = self.rope.len() }) catch return null;
+        defer if (content.len > 0) self.allocator.free(content);
+
+        const cursor_pos = self.cursor.offset;
+        if (cursor_pos >= content.len) return null;
+
+        const char_at_cursor = content[cursor_pos];
+
+        // Check if cursor is on a bracket
+        const bracket_pairs = [_]struct { open: u8, close: u8 }{
+            .{ .open = '(', .close = ')' },
+            .{ .open = '[', .close = ']' },
+            .{ .open = '{', .close = '}' },
+            .{ .open = '<', .close = '>' },
+        };
+
+        for (bracket_pairs) |pair| {
+            if (char_at_cursor == pair.open) {
+                return self.findClosingBracket(content, cursor_pos, pair.open, pair.close);
+            } else if (char_at_cursor == pair.close) {
+                return self.findOpeningBracket(content, cursor_pos, pair.open, pair.close);
+            }
+        }
+
+        return null;
+    }
+
+    fn findClosingBracket(self: *const Editor, content: []const u8, start: usize, open: u8, close: u8) ?usize {
+        _ = self;
+        var depth: i32 = 1;
+        var i = start + 1;
+
+        while (i < content.len) : (i += 1) {
+            if (content[i] == open) {
+                depth += 1;
+            } else if (content[i] == close) {
+                depth -= 1;
+                if (depth == 0) return i;
+            }
+        }
+
+        return null;
+    }
+
+    fn findOpeningBracket(self: *const Editor, content: []const u8, start: usize, open: u8, close: u8) ?usize {
+        _ = self;
+        var depth: i32 = 1;
+        var i: usize = start;
+
+        while (i > 0) {
+            i -= 1;
+            if (content[i] == close) {
+                depth += 1;
+            } else if (content[i] == open) {
+                depth -= 1;
+                if (depth == 0) return i;
+            }
+        }
+
+        return null;
+    }
+
+    // Multi-cursor operations
+    fn addCursorBelow(self: *Editor) !void {
+        const current_line = self.getCurrentLine();
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        defer if (content.len > 0) self.allocator.free(content);
+
+        // Find the start of the next line
+        var line: usize = 0;
+        var offset: usize = 0;
+        while (offset < content.len and line <= current_line + 1) {
+            if (content[offset] == '\n') {
+                line += 1;
+                if (line == current_line + 1) {
+                    const new_pos = Position{ .offset = offset + 1 };
+                    try self.cursors.append(new_pos);
+                    self.multi_cursor_mode = true;
+                    return;
+                }
+            }
+            offset += 1;
+        }
+    }
+
+    fn addCursorAbove(self: *Editor) !void {
+        if (self.getCurrentLine() == 0) return;
+
+        const current_line = self.getCurrentLine();
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        defer if (content.len > 0) self.allocator.free(content);
+
+        // Find the start of the previous line
+        var line: usize = 0;
+        var offset: usize = 0;
+        var prev_line_start: usize = 0;
+
+        while (offset < content.len) {
+            if (content[offset] == '\n') {
+                line += 1;
+                if (line == current_line) {
+                    const new_pos = Position{ .offset = prev_line_start };
+                    try self.cursors.append(new_pos);
+                    self.multi_cursor_mode = true;
+                    return;
+                }
+                prev_line_start = offset + 1;
+            }
+            offset += 1;
+        }
+    }
+
+    fn addCursorAtNextMatch(self: *Editor) !void {
+        // Find the word at cursor and add cursor at next occurrence
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        defer if (content.len > 0) self.allocator.free(content);
+
+        const word = self.getWordAtCursor(content) orelse return;
+
+        // Find next occurrence after current cursor
+        const search_start = self.cursor.offset + 1;
+        if (std.mem.indexOf(u8, content[search_start..], word)) |rel_pos| {
+            const abs_pos = search_start + rel_pos;
+            const new_pos = Position{ .offset = abs_pos };
+            try self.cursors.append(new_pos);
+            self.multi_cursor_mode = true;
+        }
+    }
+
+    fn getWordAtCursor(self: *const Editor, content: []const u8) ?[]const u8 {
+        if (self.cursor.offset >= content.len) return null;
+
+        var start = self.cursor.offset;
+        var end = self.cursor.offset;
+
+        // Find word start
+        while (start > 0 and isWordChar(content[start - 1])) {
+            start -= 1;
+        }
+
+        // Find word end
+        while (end < content.len and isWordChar(content[end])) {
+            end += 1;
+        }
+
+        if (start == end) return null;
+        return content[start..end];
+    }
+
+    fn isWordChar(ch: u8) bool {
+        return (ch >= 'a' and ch <= 'z') or
+               (ch >= 'A' and ch <= 'Z') or
+               (ch >= '0' and ch <= '9') or
+               ch == '_';
+    }
+
+    fn removeLastCursor(self: *Editor) void {
+        if (self.cursors.items.len > 0) {
+            _ = self.cursors.pop();
+            if (self.cursors.items.len == 0) {
+                self.multi_cursor_mode = false;
+            }
+        }
+    }
+
+    fn toggleMultiCursor(self: *Editor) void {
+        self.multi_cursor_mode = !self.multi_cursor_mode;
+        if (!self.multi_cursor_mode) {
+            self.cursors.clearRetainingCapacity();
+        }
+    }
+
+    pub fn getCursors(self: *const Editor) []const Position {
+        if (self.multi_cursor_mode and self.cursors.items.len > 0) {
+            return self.cursors.items;
+        }
+        return &.{};
     }
 };
 

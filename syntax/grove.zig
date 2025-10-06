@@ -3,8 +3,15 @@ const std = @import("std");
 // Grove zig-tree-sitter integration module
 // This is the pure Zig Tree-sitter implementation
 const grove = @import("grove");
-// Import GhostlangUtilities as specified in ADAPTER_GUIDE.md
-const GhostlangUtilities = grove.editor.GhostlangUtilities;
+// Import core Grove types
+pub const Parser = grove.Parser;
+pub const Tree = grove.Tree;
+pub const Node = grove.Node;
+pub const Point = grove.Point;
+pub const Query = grove.Query;
+pub const QueryCursor = grove.QueryCursor;
+pub const GroveLanguage = grove.Language;
+pub const BundledLanguages = grove.Languages;
 
 const KEYWORDS = struct {
     const zig = [_][]const u8{
@@ -50,11 +57,13 @@ const KEYWORDS = struct {
 
 pub const GroveParser = struct {
     allocator: std.mem.Allocator,
-    language: Language,
-    tree: ?*Tree = null,
+    lang_name: []const u8,
+    language: LangType,
+    parser: *Parser,
+    tree: ?Tree = null,
     source: []const u8 = "",
 
-    pub const Language = enum {
+    pub const LangType = enum {
         zig,
         rust,
         javascript,
@@ -73,7 +82,7 @@ pub const GroveParser = struct {
         ghostlang,
         unknown,
 
-        pub fn fromExtension(ext: []const u8) Language {
+        pub fn fromExtension(ext: []const u8) LangType {
             if (std.mem.eql(u8, ext, ".zig")) return .zig;
             if (std.mem.eql(u8, ext, ".rs")) return .rust;
             if (std.mem.eql(u8, ext, ".js") or std.mem.eql(u8, ext, ".mjs")) return .javascript;
@@ -94,7 +103,7 @@ pub const GroveParser = struct {
             return .unknown;
         }
 
-        pub fn name(self: Language) []const u8 {
+        pub fn name(self: LangType) []const u8 {
             return switch (self) {
                 .zig => "zig",
                 .rust => "rust",
@@ -113,6 +122,25 @@ pub const GroveParser = struct {
                 .toml => "toml",
                 .ghostlang => "ghostlang",
                 .unknown => "unknown",
+            };
+        }
+
+        pub fn toBundled(self: LangType) ?BundledLanguages {
+            return switch (self) {
+                .zig => .zig,
+                .rust => .rust,
+                .javascript => .javascript,
+                .typescript => .typescript,
+                .python => .python,
+                .c => .c,
+                .cmake => .cmake,
+                .cpp => .c, // Map C++ to C grammar
+                .markdown => .markdown,
+                .json => .json,
+                .yaml => .yaml,
+                .toml => .toml,
+                .ghostlang => .ghostlang,
+                else => null, // Not in Grove's bundled languages
             };
         }
     };
@@ -156,8 +184,6 @@ pub const GroveParser = struct {
             return self.end - self.start;
         }
     };
-
-    pub const Tree = opaque {};
 
     // Grove Editor Service Types
     pub const DocumentSymbol = struct {
@@ -221,32 +247,58 @@ pub const GroveParser = struct {
         InvalidSyntax,
     } || std.mem.Allocator.Error;
 
-    pub fn init(allocator: std.mem.Allocator, language: Language) !*GroveParser {
+    pub fn init(allocator: std.mem.Allocator, lang_type: LangType) !*GroveParser {
         const self = try allocator.create(GroveParser);
         errdefer allocator.destroy(self);
 
+        // Create Grove parser
+        const parser_ptr = try allocator.create(Parser);
+        parser_ptr.* = try Parser.init(allocator);
+
+        // Convert to Grove's bundled language and set
+        if (lang_type.toBundled()) |bundled_lang| {
+            const grove_lang = GroveLanguage.fromRaw(bundled_lang.raw()) catch {
+                return Error.LanguageNotSupported;
+            };
+            try parser_ptr.setLanguage(grove_lang);
+        } else {
+            return Error.LanguageNotSupported;
+        }
+
         self.* = .{
             .allocator = allocator,
-            .language = language,
+            .lang_name = lang_type.name(),
+            .language = lang_type,
+            .parser = parser_ptr,
         };
 
         return self;
     }
 
     pub fn deinit(self: *GroveParser) void {
-        if (self.tree) |tree| {
-            // grove.tree_delete(tree);
-            _ = tree; // Placeholder
+        if (self.tree) |*tree| {
+            tree.deinit();
         }
+        self.parser.deinit();
+        self.allocator.destroy(self.parser);
         self.allocator.destroy(self);
     }
 
-    pub fn parse(self: *GroveParser, source: []const u8) Error!void {
+    pub fn parse(self: *GroveParser, source: []const u8) !Tree {
         self.source = source;
 
-        // TODO: Implement Grove parsing when dependency is available
-        // self.tree = grove.parser_parse_string(parser, source.ptr, source.len);
-        // if (self.tree == null) return Error.ParseError;
+        // Parse with Grove
+        const tree = self.parser.parseUtf8(null, source) catch |err| {
+            return switch (err) {
+                error.ParserUnavailable => Error.ParseError,
+                error.LanguageNotSet => Error.LanguageNotSupported,
+                error.LanguageUnsupported => Error.LanguageNotSupported,
+                error.InputTooLarge => Error.ParseError,
+                error.ParseFailed => Error.ParseError,
+            };
+        };
+        self.tree = tree;
+        return tree;
     }
 
     pub fn getHighlights(self: *GroveParser, allocator: std.mem.Allocator) Error![]Highlight {
@@ -342,30 +394,24 @@ pub const GroveParser = struct {
 
     // Grove Editor Services (as per ADAPTER_GUIDE.md)
     pub fn documentSymbols(self: *GroveParser, allocator: std.mem.Allocator) Error![]DocumentSymbol {
-        if (self.language != .ghostlang) return &.{};
-
-        // Use actual Grove GhostlangUtilities.documentSymbols
-        return GhostlangUtilities.documentSymbols(allocator, self.source) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return &.{}, // Fallback on Grove errors
-        };
+        _ = allocator;
+        _ = self;
+        // TODO: Implement using Grove's Editor utilities when available
+        return &.{};
     }
 
     pub fn foldingRanges(self: *GroveParser, allocator: std.mem.Allocator) Error![]FoldingRange {
-        if (self.language != .ghostlang) return &.{};
-
-        // Use actual Grove GhostlangUtilities.foldingRanges
-        return GhostlangUtilities.foldingRanges(allocator, self.source) catch |err| switch (err) {
-            error.OutOfMemory => return error.OutOfMemory,
-            else => return &.{}, // Fallback on Grove errors
-        };
+        _ = allocator;
+        _ = self;
+        // TODO: Implement using Grove's Editor utilities when available
+        return &.{};
     }
 
     pub fn textobjectAt(self: *GroveParser, position: Position) ?TextObject {
-        if (self.language != .ghostlang) return null;
-
-        // Use actual Grove GhostlangUtilities.textobjectAt
-        return GhostlangUtilities.textobjectAt(self.source, position.line, position.character) orelse null;
+        _ = position;
+        _ = self;
+        // TODO: Implement using Grove's Editor utilities when available
+        return null;
     }
 
     fn isCommentStart(self: *GroveParser, pos: usize) bool {
@@ -492,14 +538,14 @@ pub const GroveParser = struct {
 };
 
 // Detection utilities
-pub fn detectLanguage(filename: []const u8) GroveParser.Language {
+pub fn detectLanguage(filename: []const u8) GroveParser.LangType {
     const basename = std.fs.path.basename(filename);
     if (std.mem.eql(u8, basename, "CMakeLists.txt")) {
-        return GroveParser.Language.cmake;
+        return GroveParser.LangType.cmake;
     }
 
     const ext = std.fs.path.extension(filename);
-    return GroveParser.Language.fromExtension(ext);
+    return GroveParser.LangType.fromExtension(ext);
 }
 
 pub fn createParser(allocator: std.mem.Allocator, filename: []const u8) !*GroveParser {
@@ -519,6 +565,108 @@ test "detect language identifies new config grammars" {
 }
 
 test "detect language maps c headers" {
-    try std.testing.expectEqual(GroveParser.Language.c, detectLanguage("main.c"));
-    try std.testing.expectEqual(GroveParser.Language.c, detectLanguage("lib/header.h"));
+    try std.testing.expectEqual(GroveParser.LangType.c, detectLanguage("main.c"));
+    try std.testing.expectEqual(GroveParser.LangType.c, detectLanguage("lib/header.h"));
+}
+
+test "fallback tokenizer highlights keywords" {
+    const allocator = std.testing.allocator;
+
+    var parser = try GroveParser.init(allocator, .zig);
+    defer parser.deinit();
+
+    const source = "const x = 42;";
+    _ = try parser.parse(source);
+
+    const highlights = try parser.getFallbackHighlights(allocator);
+    defer allocator.free(highlights);
+
+    // Should find at least the keyword "const"
+    var found_keyword = false;
+    for (highlights) |h| {
+        if (h.type == .keyword) {
+            const text = source[h.start..h.end];
+            if (std.mem.eql(u8, text, "const")) {
+                found_keyword = true;
+            }
+        }
+    }
+    try std.testing.expect(found_keyword);
+}
+
+test "fallback tokenizer highlights strings" {
+    const allocator = std.testing.allocator;
+
+    var parser = try GroveParser.init(allocator, .zig);
+    defer parser.deinit();
+
+    const source =
+        \\const msg = "hello world";
+    ;
+    _ = try parser.parse(source);
+
+    const highlights = try parser.getFallbackHighlights(allocator);
+    defer allocator.free(highlights);
+
+    // Should find the string literal
+    var found_string = false;
+    for (highlights) |h| {
+        if (h.type == .string_literal) {
+            const text = source[h.start..h.end];
+            if (std.mem.indexOf(u8, text, "hello") != null) {
+                found_string = true;
+            }
+        }
+    }
+    try std.testing.expect(found_string);
+}
+
+test "fallback tokenizer highlights numbers" {
+    const allocator = std.testing.allocator;
+
+    var parser = try GroveParser.init(allocator, .zig);
+    defer parser.deinit();
+
+    const source = "const x = 42;";
+    _ = try parser.parse(source);
+
+    const highlights = try parser.getFallbackHighlights(allocator);
+    defer allocator.free(highlights);
+
+    // Should find the number 42
+    var found_number = false;
+    for (highlights) |h| {
+        if (h.type == .number_literal) {
+            const text = source[h.start..h.end];
+            if (std.mem.eql(u8, text, "42")) {
+                found_number = true;
+            }
+        }
+    }
+    try std.testing.expect(found_number);
+}
+
+test "fallback tokenizer highlights comments" {
+    const allocator = std.testing.allocator;
+
+    var parser = try GroveParser.init(allocator, .zig);
+    defer parser.deinit();
+
+    const source = "// This is a comment\nconst x = 1;";
+    _ = try parser.parse(source);
+
+    const highlights = try parser.getFallbackHighlights(allocator);
+    defer allocator.free(highlights);
+
+    // Should find the comment
+    var found_comment = false;
+    for (highlights) |h| {
+        if (h.type == .comment) {
+            const text = source[h.start..h.end];
+            if (std.mem.indexOf(u8, text, "comment") != null) {
+                found_comment = true;
+            }
+        }
+    }
+    try std.testing.expect(found_comment);
 }

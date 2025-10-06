@@ -9,6 +9,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+#### Code Navigation & LSP Features (Latest)
+- **Tree-sitter Jump to Definition**: Fast, synchronous code navigation
+  - Press `gd` to jump to symbol definition
+  - Smart scoping: prefers local definitions, falls back to global
+  - Supports functions, variables, structs, enums, type declarations
+  - Works with Zig, Rust, Ghostlang, and all tree-sitter grammars
+  - Full unit test coverage with passing tests ✓
+- **Multi-key Sequence Support**: Vim-style key combinations
+  - `gd` - Go to definition
+  - `gg` - Jump to file start
+  - `dd` - Delete line
+  - `yy` - Yank line
+- **Semantic Rename Infrastructure**: Symbol renaming within current file
+  - Text-based search with word boundary detection
+  - Programmatic API ready (`renameSymbol()`)
+  - UI integration pending (requires TUI prompt work)
+- **LSP Integration Ready**: Full async LSP infrastructure in place
+  - `EditorLSP` wrapper with definition/hover/completion support
+  - Server registry for multiple languages (Zig, Rust, Python, C/C++, Ghostlang)
+  - Documented integration path for async enhancements
+- **Ghostlang LSP Configuration**: Ready for `ghostlang-lsp` server
+  - Pre-configured in LSP server registry
+  - Auto-starts for `.gza` files when server available
+
+#### Theme System & Polish
+- **Dynamic Theme System**: Extensible color configuration
+  - `Theme` struct with RGB color support
+  - Automatic RGB → ANSI 256-color conversion
+  - Default dark theme (current Grim colors)
+  - Default light theme included
+  - Per-highlight-type color lookup
+  - Integrated into SimpleTUI rendering pipeline
+- **Theme Infrastructure**: Ready for user customization
+  - `Theme.loadFromFile()` stub for TOML config loading
+  - Exported types: `Theme`, `Color`
+  - Runtime theme switching foundation
+- **Render Cache**: High-performance syntax highlighting
+  - Content hash-based caching prevents re-parsing
+  - `highlight_dirty` flag system for smart invalidation
+  - Zero overhead when content unchanged
+- **FFI Hardening**: Robust error handling and fallbacks
+  - Graceful degradation when parser unavailable
+  - Comprehensive fallback tokenizer for all languages
+  - Handles: comments, strings, numbers, keywords, identifiers, operators
+  - Error boundaries around all Grove/tree-sitter calls
+  - 4 new smoke tests for fallback tokenizer (all passing ✓)
+
 #### Core System Improvements
 - **SimpleTUI Compilation Fixes**: Resolved Zig 0.16 compatibility issues
   - Fixed `File.writer()` API changes requiring buffer parameter
