@@ -71,6 +71,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const lsp_mod = b.createModule(.{
+        .root_source_file = b.path("lsp/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zsync", .module = zsync.module("zsync") },
+        },
+    });
+
     const ui_tui_mod = b.createModule(.{
         .root_source_file = b.path("ui-tui/mod.zig"),
         .target = target,
@@ -79,6 +88,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phantom", .module = phantom.module("phantom") },
             .{ .name = "core", .module = core_mod },
             .{ .name = "syntax", .module = syntax_mod },
+            .{ .name = "lsp", .module = lsp_mod },
         },
     });
 
@@ -89,15 +99,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "flare", .module = flare.module("flare") },
             .{ .name = "ghostlang", .module = ghostlang_dep.module("ghostlang") },
-        },
-    });
-
-    const lsp_mod = b.createModule(.{
-        .root_source_file = b.path("lsp/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "zsync", .module = zsync.module("zsync") },
         },
     });
 
@@ -183,6 +184,20 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
+
+    // Test ghostls integration
+    const test_ghostls = b.addExecutable(.{
+        .name = "test_ghostls",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test_ghostls.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "lsp", .module = lsp_mod },
+            },
+        }),
+    });
+    b.installArtifact(test_ghostls);
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

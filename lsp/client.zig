@@ -13,6 +13,35 @@ pub const DiagnosticsSink = struct {
     logFn: DiagnosticsLogFn,
 };
 
+pub const HoverResponse = struct {
+    request_id: u32,
+    contents: []const u8, // Markdown content
+};
+
+pub const DefinitionResponse = struct {
+    request_id: u32,
+    uri: []const u8,
+    line: u32,
+    character: u32,
+};
+
+pub const ResponseCallback = struct {
+    ctx: *anyopaque,
+    onHover: ?*const fn (ctx: *anyopaque, response: HoverResponse) void,
+    onDefinition: ?*const fn (ctx: *anyopaque, response: DefinitionResponse) void,
+};
+
+pub const PendingRequest = struct {
+    id: u32,
+    kind: RequestKind,
+
+    pub const RequestKind = enum {
+        hover,
+        definition,
+        completion,
+    };
+};
+
 pub const Transport = struct {
     ctx: *anyopaque,
     readFn: *const fn (ctx: *anyopaque, buffer: []u8) TransportError!usize,
@@ -26,6 +55,8 @@ pub const Client = struct {
     pending_initialize: ?u32,
     initialized: bool,
     diagnostics_sink: ?DiagnosticsSink,
+    response_callback: ?ResponseCallback,
+    pending_requests: std.ArrayList(PendingRequest),
 
     pub const Error = TransportError || std.mem.Allocator.Error || error{
         ProtocolError,
@@ -41,10 +72,13 @@ pub const Client = struct {
             .pending_initialize = null,
             .initialized = false,
             .diagnostics_sink = null,
+            .response_callback = null,
+            .pending_requests = .empty,
         };
     }
 
     pub fn deinit(self: *Client) void {
+        self.pending_requests.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -52,8 +86,18 @@ pub const Client = struct {
         self.diagnostics_sink = sink;
     }
 
+    pub fn setResponseCallback(self: *Client, callback: ResponseCallback) void {
+        self.response_callback = callback;
+    }
+
     pub fn isInitialized(self: *const Client) bool {
         return self.initialized;
+    }
+
+    fn jsonStringify(self: *Client, value: anytype) Error![]u8 {
+        return std.json.Stringify.valueAlloc(self.allocator, value, .{}) catch |err| switch (err) {
+            error.OutOfMemory => error.OutOfMemory,
+        };
     }
 
     pub fn sendInitialize(self: *Client, root_uri: []const u8) Error!u32 {
@@ -78,12 +122,216 @@ pub const Client = struct {
             .params = .{ .rootUri = root_uri },
         };
 
-        const body = try std.json.stringifyAlloc(self.allocator, request, .{});
+        const body = try self.jsonStringify(request);
         defer self.allocator.free(body);
 
         try self.writeMessage(body);
 
         self.pending_initialize = id;
+        return id;
+    }
+
+    pub fn sendDidOpen(self: *Client, uri: []const u8, language_id: []const u8, text: []const u8) Error!void {
+        const Notification = struct {
+            jsonrpc: []const u8 = "2.0",
+            method: []const u8 = "textDocument/didOpen",
+            params: Params,
+
+            const Params = struct {
+                textDocument: TextDocument,
+
+                const TextDocument = struct {
+                    uri: []const u8,
+                    languageId: []const u8,
+                    version: u32 = 1,
+                    text: []const u8,
+                };
+            };
+        };
+
+        const notification = Notification{
+            .params = .{
+                .textDocument = .{
+                    .uri = uri,
+                    .languageId = language_id,
+                    .text = text,
+                },
+            },
+        };
+
+        const body = try self.jsonStringify(notification);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+    }
+
+    pub fn sendDidChange(self: *Client, uri: []const u8, version: u32, text: []const u8) Error!void {
+        const Notification = struct {
+            jsonrpc: []const u8 = "2.0",
+            method: []const u8 = "textDocument/didChange",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct {
+                    uri: []const u8,
+                    version: u32,
+                },
+                contentChanges: []const ContentChange,
+
+                const ContentChange = struct {
+                    text: []const u8,
+                };
+            };
+        };
+
+        const changes = [_]Notification.Params.ContentChange{.{ .text = text }};
+
+        const notification = Notification{
+            .params = .{
+                .textDocument = .{
+                    .uri = uri,
+                    .version = version,
+                },
+                .contentChanges = &changes,
+            },
+        };
+
+        const body = try self.jsonStringify(notification);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+    }
+
+    pub fn sendDidSave(self: *Client, uri: []const u8, text: ?[]const u8) Error!void {
+        const Notification = struct {
+            jsonrpc: []const u8 = "2.0",
+            method: []const u8 = "textDocument/didSave",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+                text: ?[]const u8 = null,
+            };
+        };
+
+        const notification = Notification{
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .text = text,
+            },
+        };
+
+        const body = try self.jsonStringify(notification);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+    }
+
+    pub fn requestCompletion(self: *Client, uri: []const u8, line: u32, character: u32) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/completion",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+                position: struct { line: u32, character: u32 },
+            };
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .position = .{ .line = line, .character = character },
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        return id;
+    }
+
+    pub fn requestHover(self: *Client, uri: []const u8, line: u32, character: u32) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/hover",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+                position: struct { line: u32, character: u32 },
+            };
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .position = .{ .line = line, .character = character },
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        // Track pending request for response handling
+        try self.pending_requests.append(self.allocator, .{
+            .id = id,
+            .kind = .hover,
+        });
+
+        return id;
+    }
+
+    pub fn requestDefinition(self: *Client, uri: []const u8, line: u32, character: u32) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/definition",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+                position: struct { line: u32, character: u32 },
+            };
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .position = .{ .line = line, .character = character },
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        // Track pending request for response handling
+        try self.pending_requests.append(self.allocator, .{
+            .id = id,
+            .kind = .definition,
+        });
+
         return id;
     }
 
@@ -111,8 +359,8 @@ pub const Client = struct {
     }
 
     fn readMessage(self: *Client) Error![]u8 {
-        var line_buffer = std.ArrayList(u8).init(self.allocator);
-        defer line_buffer.deinit();
+        var line_buffer: std.ArrayList(u8) = .empty;
+        defer line_buffer.deinit(self.allocator);
 
         var content_length: ?usize = null;
 
@@ -148,7 +396,7 @@ pub const Client = struct {
             if (n == 0) return TransportError.EndOfStream;
             const b = byte[0];
             if (b == '\n') break;
-            try buffer.append(b);
+            try buffer.append(self.allocator, b);
         }
         if (buffer.items.len > 0 and buffer.items[buffer.items.len - 1] == '\r') {
             buffer.items.len -= 1;
@@ -165,36 +413,142 @@ pub const Client = struct {
     }
 
     fn handlePayload(self: *Client, payload: []const u8) Error!void {
-        var parser = std.json.Parser.init(self.allocator, .{});
-        defer parser.deinit();
-        var tree = try parser.parse(payload);
-        defer tree.deinit();
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, payload, .{}) catch {
+            return error.InvalidMessage;
+        };
+        defer parsed.deinit();
 
-        const root = tree.root orelse return error.InvalidMessage;
-        if (root.* != .object) return error.InvalidMessage;
+        const root = parsed.value;
+        if (root != .object) return error.InvalidMessage;
 
         const object = root.object;
 
+        // Handle responses (have "id" field)
         if (object.get("id")) |id_node| {
-            if (id_node.* == .integer) {
+            if (id_node == .integer) {
+                const response_id: u32 = @intCast(id_node.integer);
+
+                // Check for initialize response
                 if (self.pending_initialize) |expected| {
-                    if (id_node.integer == expected) {
+                    if (response_id == expected) {
                         self.pending_initialize = null;
                         self.initialized = true;
+                        return;
                     }
+                }
+
+                // Check for hover/definition/completion responses
+                if (object.get("result")) |result_node| {
+                    try self.handleResponse(response_id, result_node);
                 }
             }
         }
 
         if (object.get("method")) |method_node| {
-            if (method_node.* == .string) {
+            if (method_node == .string) {
                 if (std.mem.eql(u8, method_node.string, "textDocument/publishDiagnostics")) {
                     if (object.get("params")) |params_node| {
-                        if (params_node.* == .object) {
+                        if (params_node == .object) {
                             try self.logDiagnostics(params_node.object);
                         }
                     }
                 }
+            }
+        }
+    }
+
+    fn handleResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        // Find the pending request
+        var request_kind: ?PendingRequest.RequestKind = null;
+        for (self.pending_requests.items, 0..) |req, i| {
+            if (req.id == id) {
+                request_kind = req.kind;
+                _ = self.pending_requests.swapRemove(i);
+                break;
+            }
+        }
+
+        if (request_kind == null) return; // Unknown request
+
+        switch (request_kind.?) {
+            .hover => try self.handleHoverResponse(id, result),
+            .definition => try self.handleDefinitionResponse(id, result),
+            .completion => {}, // TODO
+        }
+    }
+
+    fn handleHoverResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        const callback = self.response_callback orelse return;
+        if (callback.onHover == null) return;
+
+        // Parse hover response
+        // LSP hover result: { contents: string | MarkupContent }
+        var contents: []const u8 = "";
+
+        if (result == .object) {
+            if (result.object.get("contents")) |contents_node| {
+                if (contents_node == .string) {
+                    contents = contents_node.string;
+                } else if (contents_node == .object) {
+                    // MarkupContent: { kind: "markdown"|"plaintext", value: string }
+                    if (contents_node.object.get("value")) |value_node| {
+                        if (value_node == .string) {
+                            contents = value_node.string;
+                        }
+                    }
+                }
+            }
+        } else if (result == .string) {
+            contents = result.string;
+        }
+
+        const response = HoverResponse{
+            .request_id = id,
+            .contents = contents,
+        };
+
+        callback.onHover.?(callback.ctx, response);
+    }
+
+    fn handleDefinitionResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        const callback = self.response_callback orelse return;
+        if (callback.onDefinition == null) return;
+
+        // Parse definition response
+        // LSP definition result: Location | Location[] | null
+        if (result == .array and result.array.items.len > 0) {
+            const location = result.array.items[0];
+            if (location == .object) {
+                var uri: []const u8 = "";
+                var line: u32 = 0;
+                var character: u32 = 0;
+
+                if (location.object.get("uri")) |uri_node| {
+                    if (uri_node == .string) uri = uri_node.string;
+                }
+                if (location.object.get("range")) |range_node| {
+                    if (range_node == .object) {
+                        if (range_node.object.get("start")) |start_node| {
+                            if (start_node == .object) {
+                                if (start_node.object.get("line")) |line_node| {
+                                    if (line_node == .integer) line = @intCast(line_node.integer);
+                                }
+                                if (start_node.object.get("character")) |char_node| {
+                                    if (char_node == .integer) character = @intCast(char_node.integer);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                const response = DefinitionResponse{
+                    .request_id = id,
+                    .uri = uri,
+                    .line = line,
+                    .character = character,
+                };
+
+                callback.onDefinition.?(callback.ctx, response);
             }
         }
     }
@@ -205,13 +559,13 @@ pub const Client = struct {
         var count: usize = 0;
 
         if (params.get("uri")) |uri_node| {
-            if (uri_node.* == .string) {
+            if (uri_node == .string) {
                 uri_slice = uri_node.string;
             }
         }
 
         if (params.get("diagnostics")) |diag_node| {
-            if (diag_node.* == .array) {
+            if (diag_node == .array) {
                 count = diag_node.array.items.len;
             }
         }

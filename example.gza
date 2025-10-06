@@ -1,0 +1,13 @@
+// Ghostlang example for testing LSP
+const greeting = "Hello from Ghostlang!"
+const version = "0.1.0"
+
+fn greet(name: string) -> string {
+    return greeting + " " + name
+}
+
+fn main() {
+    const result = greet("Grim Editor")
+    print(result)
+    print("Version: " + version)
+}

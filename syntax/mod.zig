@@ -1,6 +1,7 @@
 pub const treesitter = @import("treesitter.zig");
 pub const grove = @import("grove.zig");
 pub const highlighter = @import("highlighter.zig");
+pub const features = @import("features.zig");
 
 // Use Grove as primary parser, Tree-sitter as fallback
 pub const Parser = grove.GroveParser;
@@ -14,6 +15,11 @@ pub const createParser = grove.createParser;
 pub const SyntaxHighlighter = highlighter.SyntaxHighlighter;
 pub const HighlightRange = highlighter.HighlightRange;
 pub const convertHighlightsToRanges = highlighter.convertHighlightsToRanges;
+
+// Advanced features: folding and incremental selection
+pub const Features = features.Features;
+pub const FoldRegion = features.Features.FoldRegion;
+pub const SelectionRange = features.Features.SelectionRange;
 
 // Legacy Tree-sitter support
 pub const TreeSitterParser = treesitter.Parser;

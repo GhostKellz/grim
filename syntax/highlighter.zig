@@ -55,7 +55,10 @@ pub const SyntaxHighlighter = struct {
     }
 
     pub fn highlight(self: *SyntaxHighlighter, rope: *core.Rope) Error![]grove.GroveParser.Highlight {
-        const parser = self.parser orelse return Error.ParserNotInitialized;
+        // If no parser, return empty highlights (graceful degradation)
+        const parser = self.parser orelse {
+            return try self.allocator.alloc(grove.GroveParser.Highlight, 0);
+        };
 
         // Get rope content
         const content_slice = rope.slice(.{ .start = 0, .end = rope.len() }) catch |err| switch (err) {
@@ -155,7 +158,8 @@ test "ghostlang highlight smoke" {
     var rope = try core.Rope.init(allocator);
     defer rope.deinit();
 
-    const source = \\const message = "hello world"
+    const source = 
+        \\const message = "hello world"
         \\fn main() {
         \\    print(message)
         \\}

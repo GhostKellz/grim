@@ -1,0 +1,6 @@
+// Simple Ghostlang test file
+const message = "Hello from Ghostlang!"
+
+fn main() {
+    print(message)
+}
