@@ -43,12 +43,11 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Grove dependency for Ghostlang integration
-    const ghostlang_enabled = b.option(bool, "ghostlang", "Enable Ghostlang (.gza) support via Grove") orelse false;
-    const grove = if (ghostlang_enabled) b.dependency("grove", .{
+    // Grove dependency - now always enabled as it's core to syntax highlighting
+    const grove = b.dependency("grove", .{
         .target = target,
         .optimize = optimize,
-    }) else null;
+    });
 
     const core_mod = b.createModule(.{
         .root_source_file = b.path("core/mod.zig"),
@@ -63,10 +62,8 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("syntax/mod.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = if (ghostlang_enabled and grove != null) &.{
-            .{ .name = "grove", .module = grove.?.module("grove") },
-            .{ .name = "core", .module = core_mod },
-        } else &.{
+        .imports = &.{
+            .{ .name = "grove", .module = grove.module("grove") },
             .{ .name = "core", .module = core_mod },
         },
     });
