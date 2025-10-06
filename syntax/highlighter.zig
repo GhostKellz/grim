@@ -163,7 +163,7 @@ test "ghostlang highlight smoke" {
     var rope = try core.Rope.init(allocator);
     defer rope.deinit();
 
-    const source = 
+    const source =
         \\const message = "hello world"
         \\fn main() {
         \\    print(message)

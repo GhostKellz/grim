@@ -288,7 +288,8 @@ pub const FileManager = struct {
                     std.mem.eql(u8, entry.name, "node_modules") or
                     std.mem.eql(u8, entry.name, "target") or
                     std.mem.eql(u8, entry.name, "build") or
-                    std.mem.eql(u8, entry.name, "zig-cache")) {
+                    std.mem.eql(u8, entry.name, "zig-cache"))
+                {
                     allocator.free(full_path);
                     continue;
                 }
@@ -311,12 +312,12 @@ pub const FileManager = struct {
         _ = self;
         const ext = std.fs.path.extension(path);
         const text_extensions = [_][]const u8{
-            ".zig", ".rs", ".c", ".cpp", ".h", ".hpp", ".cc",
-            ".js", ".ts", ".jsx", ".tsx", ".py", ".java", ".go",
-            ".txt", ".md", ".json", ".toml", ".yaml", ".yml",
-            ".html", ".css", ".scss", ".xml", ".sh", ".bash",
-            ".vim", ".lua", ".rb", ".php", ".sql", ".csv",
-            ".log", ".ini", ".conf", ".cfg",
+            ".zig", ".rs",   ".c",    ".cpp",  ".h",    ".hpp",  ".cc",
+            ".js",  ".ts",   ".jsx",  ".tsx",  ".py",   ".java", ".go",
+            ".txt", ".md",   ".json", ".toml", ".yaml", ".yml",  ".html",
+            ".css", ".scss", ".xml",  ".sh",   ".bash", ".vim",  ".lua",
+            ".rb",  ".php",  ".sql",  ".csv",  ".log",  ".ini",  ".conf",
+            ".cfg",
         };
 
         for (text_extensions) |text_ext| {

@@ -35,7 +35,7 @@ fn benchmarkColdStart(allocator: std.mem.Allocator) !void {
         editor.deinit();
 
         if (i % 10 == 0) {
-            std.debug.print("  Iteration {}: {}μs\n", .{i, elapsed / std.time.ns_per_us});
+            std.debug.print("  Iteration {}: {}μs\n", .{ i, elapsed / std.time.ns_per_us });
         }
     }
 
@@ -175,9 +175,7 @@ fn benchmarkSearchPerformance(allocator: std.mem.Allocator) !void {
     }
 
     // Test search performance
-    const search_queries = [_][]const u8{
-        "module_1", "test", "src", ".zig", "xyz", "500", "main"
-    };
+    const search_queries = [_][]const u8{ "module_1", "test", "src", ".zig", "xyz", "500", "main" };
 
     for (search_queries) |query| {
         var timer = try std.time.Timer.start();
@@ -198,9 +196,7 @@ fn benchmarkSearchPerformance(allocator: std.mem.Allocator) !void {
         }
 
         const elapsed = timer.read();
-        std.debug.print("  Search '{s}': {}ms ({} matches)\n", .{
-            query, elapsed / std.time.ns_per_ms, matches.items.len
-        });
+        std.debug.print("  Search '{s}': {}ms ({} matches)\n", .{ query, elapsed / std.time.ns_per_ms, matches.items.len });
     }
 
     std.debug.print("  ✓ Search benchmarks completed\n\n");

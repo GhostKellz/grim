@@ -79,17 +79,17 @@ pub const Theme = struct {
     pub fn defaultDark() Theme {
         return .{
             // Syntax (matching current HighlightPalette)
-            .keyword = .{ .r = 255, .g = 0, .b = 135 },           // Pink/Magenta
-            .string_literal = .{ .r = 135, .g = 215, .b = 95 },   // Green
-            .number_literal = .{ .r = 255, .g = 135, .b = 0 },    // Orange
-            .comment = .{ .r = 135, .g = 135, .b = 135 },         // Gray
-            .function_name = .{ .r = 95, .g = 215, .b = 255 },    // Cyan
-            .type_name = .{ .r = 175, .g = 95, .b = 215 },        // Purple
-            .variable = .{ .r = 215, .g = 215, .b = 215 },        // Light gray
-            .operator = .{ .r = 215, .g = 135, .b = 95 },         // Brown
-            .punctuation = .{ .r = 135, .g = 135, .b = 135 },     // Gray
-            .error_bg = .{ .r = 95, .g = 0, .b = 0 },             // Dark red
-            .error_fg = .{ .r = 255, .g = 255, .b = 255 },        // White
+            .keyword = .{ .r = 255, .g = 0, .b = 135 }, // Pink/Magenta
+            .string_literal = .{ .r = 135, .g = 215, .b = 95 }, // Green
+            .number_literal = .{ .r = 255, .g = 135, .b = 0 }, // Orange
+            .comment = .{ .r = 135, .g = 135, .b = 135 }, // Gray
+            .function_name = .{ .r = 95, .g = 215, .b = 255 }, // Cyan
+            .type_name = .{ .r = 175, .g = 95, .b = 215 }, // Purple
+            .variable = .{ .r = 215, .g = 215, .b = 215 }, // Light gray
+            .operator = .{ .r = 215, .g = 135, .b = 95 }, // Brown
+            .punctuation = .{ .r = 135, .g = 135, .b = 135 }, // Gray
+            .error_bg = .{ .r = 95, .g = 0, .b = 0 }, // Dark red
+            .error_fg = .{ .r = 255, .g = 255, .b = 255 }, // White
 
             // UI
             .background = .{ .r = 0, .g = 0, .b = 0 },

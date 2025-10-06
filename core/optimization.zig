@@ -3,7 +3,6 @@ const Rope = @import("rope.zig").Rope;
 
 /// Performance optimization utilities for Grim core systems
 pub const Optimization = struct {
-
     /// Rope optimization parameters
     pub const RopeConfig = struct {
         // Minimum piece size before merging small adjacent pieces
@@ -128,9 +127,9 @@ pub const Optimization = struct {
         pools: std.EnumArray(PoolType, Pool),
 
         const PoolType = enum {
-            small_buffers,   // <= 256 bytes
-            medium_buffers,  // <= 4KB
-            large_buffers,   // <= 64KB
+            small_buffers, // <= 256 bytes
+            medium_buffers, // <= 4KB
+            large_buffers, // <= 64KB
         };
 
         const Pool = struct {
@@ -280,10 +279,7 @@ pub const Optimization = struct {
                 const min_ms = @as(f64, @floatFromInt(metric.min_time)) / std.time.ns_per_ms;
                 const max_ms = @as(f64, @floatFromInt(metric.max_time)) / std.time.ns_per_ms;
 
-                try result.writer().print(
-                    "  {s}: {d} calls, avg: {d:.2}ms, min: {d:.2}ms, max: {d:.2}ms\n",
-                    .{ entry.key_ptr.*, metric.count, avg_ms, min_ms, max_ms }
-                );
+                try result.writer().print("  {s}: {d} calls, avg: {d:.2}ms, min: {d:.2}ms, max: {d:.2}ms\n", .{ entry.key_ptr.*, metric.count, avg_ms, min_ms, max_ms });
             }
 
             return result.toOwnedSlice();

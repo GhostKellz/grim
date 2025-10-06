@@ -51,7 +51,7 @@ fn runRopePerformanceTests(allocator: std.mem.Allocator) !void {
         defer rope.deinit();
 
         // Prepare rope with substantial content
-        const text = "The quick brown fox jumps over the lazy dog.\n".** 2000; // ~90KB
+        const text = "The quick brown fox jumps over the lazy dog.\n" ** 2000; // ~90KB
         try rope.insert(0, text);
 
         const iterations = 10000;
@@ -115,7 +115,7 @@ fn runRopePerformanceTests(allocator: std.mem.Allocator) !void {
         var rope = try core.Rope.init(allocator);
         defer rope.deinit();
 
-        const text_chunk = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ".** 10; // ~570 bytes
+        const text_chunk = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. " ** 10; // ~570 bytes
         const initial_chunks = 100;
 
         // Insert many chunks
@@ -146,12 +146,12 @@ fn runSyntaxHighlightingTests(allocator: std.mem.Allocator) !void {
         .{
             .name = "Small Zig file",
             .content =
-                \\const std = @import("std");
-                \\
-                \\pub fn main() !void {
-                \\    const x: u32 = 42;
-                \\    std.debug.print("Hello: {}\n", .{x});
-                \\}
+            \\const std = @import("std");
+            \\
+            \\pub fn main() !void {
+            \\    const x: u32 = 42;
+            \\    std.debug.print("Hello: {}\n", .{x});
+            \\}
             ,
             .language = .zig,
         },
@@ -171,7 +171,7 @@ fn runSyntaxHighlightingTests(allocator: std.mem.Allocator) !void {
                 \\    y: f64,
                 \\}
                 \\
-            ).** 50, // Repeat to make it larger
+            ) ** 50, // Repeat to make it larger
             .language = .rust,
         },
         .{
@@ -201,7 +201,7 @@ fn runSyntaxHighlightingTests(allocator: std.mem.Allocator) !void {
                 \\const calc = new Calculator();
                 \\console.log(calc.add(5).multiply(2).result);
                 \\
-            ).** 200, // ~10KB
+            ) ** 200, // ~10KB
             .language = .javascript,
         },
     };
@@ -310,7 +310,7 @@ fn runMemoryTests(allocator: std.mem.Allocator) !void {
         var rope = try core.Rope.init(allocator);
         defer rope.deinit();
 
-        const initial_content = "Hello, World!\n".** 1000; // ~14KB
+        const initial_content = "Hello, World!\n" ** 1000; // ~14KB
         try rope.insert(0, initial_content);
 
         std.log.info("Rope memory test - initial size: {d} bytes", .{rope.len()});
@@ -347,7 +347,7 @@ fn runMemoryTests(allocator: std.mem.Allocator) !void {
             \\    std.debug.print("10! = {}\n", .{result});
             \\}
             \\
-        ).** 1000; // ~32KB repeated content
+        ) ** 1000; // ~32KB repeated content
 
         var highlighter = syntax.SyntaxHighlighter.init(allocator);
         defer highlighter.deinit();

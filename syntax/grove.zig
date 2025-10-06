@@ -15,42 +15,41 @@ pub const BundledLanguages = grove.Languages;
 
 const KEYWORDS = struct {
     const zig = [_][]const u8{
-        "const", "var", "fn", "pub", "if", "else", "while", "for", "switch",
-        "try", "catch", "return", "struct", "enum", "union", "error", "comptime",
+        "const", "var",   "fn",     "pub",    "if",   "else",  "while", "for",      "switch",
+        "try",   "catch", "return", "struct", "enum", "union", "error", "comptime",
     };
     const rust = [_][]const u8{
-        "fn", "let", "mut", "const", "if", "else", "while", "for", "loop",
-        "match", "return", "struct", "enum", "impl", "trait", "pub", "use",
+        "fn",    "let",    "mut",    "const", "if",   "else",  "while", "for", "loop",
+        "match", "return", "struct", "enum",  "impl", "trait", "pub",   "use",
     };
     const js_ts = [_][]const u8{
-        "function", "const", "let", "var", "if", "else", "while", "for", "return",
-        "class", "extends", "import", "export", "async", "await",
+        "function", "const",   "let",    "var",    "if",    "else",  "while", "for", "return",
+        "class",    "extends", "import", "export", "async", "await",
     };
     const python = [_][]const u8{
-        "def", "class", "if", "else", "elif", "while", "for", "return", "import",
-        "from", "try", "except", "finally", "with", "async", "await",
+        "def",  "class", "if",     "else",    "elif", "while", "for",   "return", "import",
+        "from", "try",   "except", "finally", "with", "async", "await",
     };
     const yaml = [_][]const u8{
-        "true", "false", "null", "yes", "no", "on", "off",
-        "anchor", "alias", "map", "seq", "scalar",
+        "true",   "false", "null", "yes", "no",     "on", "off",
+        "anchor", "alias", "map",  "seq", "scalar",
     };
     const toml = [_][]const u8{
-        "true", "false", "datetime", "table", "inline", "array",
-        "integer", "float", "boolean", "string",
+        "true",    "false", "datetime", "table",  "inline", "array",
+        "integer", "float", "boolean",  "string",
     };
     const c = [_][]const u8{
-        "int", "char", "float", "double", "void", "if", "else", "while", "for",
-        "return", "struct", "typedef", "const", "static", "extern",
+        "int",    "char",   "float",   "double", "void",   "if",     "else", "while", "for",
+        "return", "struct", "typedef", "const",  "static", "extern",
     };
     const cmake = [_][]const u8{
-        "function", "macro", "endfunction", "endmacro", "if", "elseif", "endif",
-        "foreach", "endforeach", "while", "endwhile", "set", "set_property",
-        "add_executable", "add_library", "target_link_libraries", "find_package",
-        "include", "project", "cmake_minimum_required",
+        "function",    "macro",                 "endfunction",  "endmacro", "if",      "elseif",                 "endif",
+        "foreach",     "endforeach",            "while",        "endwhile", "set",     "set_property",           "add_executable",
+        "add_library", "target_link_libraries", "find_package", "include",  "project", "cmake_minimum_required",
     };
     const go = [_][]const u8{
-        "func", "var", "const", "if", "else", "for", "range", "return", "struct",
-        "interface", "map", "chan", "go", "defer", "package", "import",
+        "func",      "var", "const", "if", "else",  "for",     "range",  "return", "struct",
+        "interface", "map", "chan",  "go", "defer", "package", "import",
     };
     const none = [_][]const u8{};
 };
@@ -311,8 +310,8 @@ pub const GroveParser = struct {
 
     // Fallback highlighting using simple lexical analysis
     fn getFallbackHighlights(self: *GroveParser, allocator: std.mem.Allocator) Error![]Highlight {
-    var highlights = std.ArrayListUnmanaged(Highlight){};
-    errdefer highlights.deinit(allocator);
+        var highlights = std.ArrayListUnmanaged(Highlight){};
+        errdefer highlights.deinit(allocator);
 
         var i: usize = 0;
         while (i < self.source.len) {
@@ -327,7 +326,7 @@ pub const GroveParser = struct {
             // Comments
             if (self.isCommentStart(i)) {
                 const end = self.findCommentEnd(i);
-                    try highlights.append(allocator, .{
+                try highlights.append(allocator, .{
                     .start = i,
                     .end = end,
                     .type = .comment,
@@ -339,7 +338,7 @@ pub const GroveParser = struct {
             // String literals
             if (char == '"' or char == '\'' or char == '`') {
                 const end = self.findStringEnd(i, char);
-                    try highlights.append(allocator, .{
+                try highlights.append(allocator, .{
                     .start = i,
                     .end = end,
                     .type = .string_literal,
@@ -351,7 +350,7 @@ pub const GroveParser = struct {
             // Numbers
             if (std.ascii.isDigit(char)) {
                 const end = self.findNumberEnd(i);
-                    try highlights.append(allocator, .{
+                try highlights.append(allocator, .{
                     .start = i,
                     .end = end,
                     .type = .number_literal,
@@ -367,7 +366,7 @@ pub const GroveParser = struct {
                 const highlight_type = self.classifyWord(word);
 
                 if (highlight_type != .none) {
-                        try highlights.append(allocator, .{
+                    try highlights.append(allocator, .{
                         .start = i,
                         .end = end,
                         .type = highlight_type,
@@ -379,7 +378,7 @@ pub const GroveParser = struct {
 
             // Operators and punctuation
             if (self.isOperatorOrPunctuation(char)) {
-                    try highlights.append(allocator, .{
+                try highlights.append(allocator, .{
                     .start = i,
                     .end = i + 1,
                     .type = if (self.isOperator(char)) .operator else .punctuation,
@@ -418,8 +417,7 @@ pub const GroveParser = struct {
         if (pos >= self.source.len) return false;
 
         return switch (self.language) {
-            .zig, .c, .cpp, .rust, .javascript, .typescript =>
-                pos + 1 < self.source.len and
+            .zig, .c, .cpp, .rust, .javascript, .typescript => pos + 1 < self.source.len and
                 self.source[pos] == '/' and
                 self.source[pos + 1] == '/',
             .python, .yaml, .toml, .cmake => self.source[pos] == '#',

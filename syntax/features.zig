@@ -434,9 +434,9 @@ pub const Features = struct {
 
     fn isIdentifierChar(ch: u8) bool {
         return (ch >= 'a' and ch <= 'z') or
-               (ch >= 'A' and ch <= 'Z') or
-               (ch >= '0' and ch <= '9') or
-               ch == '_';
+            (ch >= 'A' and ch <= 'Z') or
+            (ch >= '0' and ch <= '9') or
+            ch == '_';
     }
 
     fn collectDefinitions(

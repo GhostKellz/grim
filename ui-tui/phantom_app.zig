@@ -80,7 +80,8 @@ pub const GrimApp = struct {
             // Draw cursor
             const cursor_pos = self.getCursorPosition();
             if (cursor_pos.y >= self.viewport_offset and
-                cursor_pos.y < self.viewport_offset + bounds.height) {
+                cursor_pos.y < self.viewport_offset + bounds.height)
+            {
                 const screen_y = cursor_pos.y - self.viewport_offset;
                 const cursor_x = bounds.x + 5 + cursor_pos.x;
 
@@ -198,11 +199,9 @@ pub const GrimApp = struct {
 
         // Create status bar
         self.status_bar = try phantom.widgets.Text.init(allocator, "");
-        self.status_bar.widget.setStyle(
-            phantom.Style.default()
-                .withBg(phantom.Color.dark_gray)
-                .withFg(phantom.Color.white)
-        );
+        self.status_bar.widget.setStyle(phantom.Style.default()
+            .withBg(phantom.Color.dark_gray)
+            .withFg(phantom.Color.white));
 
         // Create command line (hidden by default)
         self.command_line = try phantom.widgets.Input.init(allocator, .{

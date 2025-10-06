@@ -558,7 +558,6 @@ pub const Host = struct {
         };
     }
 
-
     pub fn configPath(self: *const Host) ?[]const u8 {
         return self.config_dir;
     }
@@ -773,12 +772,11 @@ pub const Host = struct {
     fn matchesPattern(path: []const u8, pattern: []const u8) bool {
         // Simple glob pattern matching - supports * wildcard at end
         if (std.mem.endsWith(u8, pattern, "*")) {
-            const prefix = pattern[0..pattern.len - 1];
+            const prefix = pattern[0 .. pattern.len - 1];
             return std.mem.startsWith(u8, path, prefix);
         }
         return std.mem.eql(u8, path, pattern);
     }
-
 };
 
 test "host loads config and executes script" {
@@ -863,8 +861,8 @@ test "plugin script showMessage action executes" {
 test "sandbox config validates file access" {
     const allocator = std.testing.allocator;
     const sandbox_config = Host.SandboxConfig{
-        .blocked_file_patterns = &.{"/etc/*", "/sys/*"},
-        .allowed_file_patterns = &.{"/home/*", "/tmp/*"},
+        .blocked_file_patterns = &.{ "/etc/*", "/sys/*" },
+        .allowed_file_patterns = &.{ "/home/*", "/tmp/*" },
     };
 
     var host = try Host.initWithSandbox(allocator, sandbox_config);

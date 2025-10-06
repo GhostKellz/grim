@@ -598,14 +598,14 @@ pub const Editor = struct {
         var i: usize = 0;
         while (i < content.len) {
             if (i + identifier.len <= content.len and
-                std.mem.eql(u8, content[i..i + identifier.len], identifier))
+                std.mem.eql(u8, content[i .. i + identifier.len], identifier))
             {
                 // Check word boundaries
                 const is_start_boundary = i == 0 or !isIdentifierChar(content[i - 1]);
                 const is_end_boundary = i + identifier.len >= content.len or !isIdentifierChar(content[i + identifier.len]);
 
                 if (is_start_boundary and is_end_boundary) {
-                    try occurrences.append(.{.start = i, .end = i + identifier.len });
+                    try occurrences.append(.{ .start = i, .end = i + identifier.len });
                 }
                 i += identifier.len;
             } else {
@@ -638,9 +638,9 @@ pub const Editor = struct {
 
     fn isIdentifierChar(ch: u8) bool {
         return (ch >= 'a' and ch <= 'z') or
-               (ch >= 'A' and ch <= 'Z') or
-               (ch >= '0' and ch <= '9') or
-               ch == '_';
+            (ch >= 'A' and ch <= 'Z') or
+            (ch >= '0' and ch <= '9') or
+            ch == '_';
     }
 
     // Selection methods
@@ -847,9 +847,9 @@ pub const Editor = struct {
 
     fn isWordChar(ch: u8) bool {
         return (ch >= 'a' and ch <= 'z') or
-               (ch >= 'A' and ch <= 'Z') or
-               (ch >= '0' and ch <= '9') or
-               ch == '_';
+            (ch >= 'A' and ch <= 'Z') or
+            (ch >= '0' and ch <= '9') or
+            ch == '_';
     }
 
     fn removeLastCursor(self: *Editor) void {

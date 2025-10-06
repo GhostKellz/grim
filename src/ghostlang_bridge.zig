@@ -106,10 +106,7 @@ pub const GhostlangBridge = struct {
         const results = bridge.fuzzy.?.getResults();
         for (results, 0..) |result, i| {
             var buf: [256]u8 = undefined;
-            const obj = std.fmt.bufPrint(&buf,
-                "{{\"path\":\"{s}\",\"score\":{d}}}",
-                .{ result.entry.path, result.score }
-            ) catch break;
+            const obj = std.fmt.bufPrint(&buf, "{{\"path\":\"{s}\",\"score\":{d}}}", .{ result.entry.path, result.score }) catch break;
             json.appendSlice(obj) catch break;
             if (i < results.len - 1) {
                 json.appendSlice(",") catch break;
@@ -190,10 +187,7 @@ pub const GhostlangBridge = struct {
 
         for (blame, 0..) |info, i| {
             var buf: [512]u8 = undefined;
-            const obj = std.fmt.bufPrint(&buf,
-                "{{\"commit\":\"{s}\",\"author\":\"{s}\",\"date\":\"{s}\"}}",
-                .{ info.commit_hash, info.author, info.date }
-            ) catch break;
+            const obj = std.fmt.bufPrint(&buf, "{{\"commit\":\"{s}\",\"author\":\"{s}\",\"date\":\"{s}\"}}", .{ info.commit_hash, info.author, info.date }) catch break;
             json.appendSlice(obj) catch break;
             if (i < blame.len - 1) {
                 json.appendSlice(",") catch break;
@@ -274,10 +268,7 @@ pub const GhostlangBridge = struct {
                 .deleted => "deleted",
             };
             var buf: [512]u8 = undefined;
-            const obj = std.fmt.bufPrint(&buf,
-                "{{\"start\":{d},\"end\":{d},\"type\":\"{s}\"}}",
-                .{ hunk.start_line, hunk.end_line, type_str }
-            ) catch break;
+            const obj = std.fmt.bufPrint(&buf, "{{\"start\":{d},\"end\":{d},\"type\":\"{s}\"}}", .{ hunk.start_line, hunk.end_line, type_str }) catch break;
             json.appendSlice(obj) catch break;
             if (i < hunks.len - 1) {
                 json.appendSlice(",") catch break;
@@ -370,10 +361,7 @@ pub const GhostlangBridge = struct {
 
         for (regions, 0..) |region, i| {
             var buf: [256]u8 = undefined;
-            const obj = std.fmt.bufPrint(&buf,
-                "{{\"start\":{d},\"end\":{d},\"level\":{d}}}",
-                .{ region.start_line, region.end_line, region.level }
-            ) catch break;
+            const obj = std.fmt.bufPrint(&buf, "{{\"start\":{d},\"end\":{d},\"level\":{d}}}", .{ region.start_line, region.end_line, region.level }) catch break;
             json.appendSlice(obj) catch break;
             if (i < regions.len - 1) {
                 json.appendSlice(",") catch break;
@@ -399,10 +387,7 @@ pub const GhostlangBridge = struct {
 
         if (range) |r| {
             var buf: [256]u8 = undefined;
-            const json = std.fmt.bufPrint(&buf,
-                "{{\"start\":{d},\"end\":{d}}}",
-                .{ r.start_byte, r.end_byte }
-            ) catch return "null";
+            const json = std.fmt.bufPrint(&buf, "{{\"start\":{d},\"end\":{d}}}", .{ r.start_byte, r.end_byte }) catch return "null";
 
             // Allocate and copy to persist
             const result = bridge.allocator.dupeZ(u8, json) catch return "null";
@@ -426,10 +411,7 @@ pub const GhostlangBridge = struct {
 
         if (range) |r| {
             var buf: [256]u8 = undefined;
-            const json = std.fmt.bufPrint(&buf,
-                "{{\"start\":{d},\"end\":{d}}}",
-                .{ r.start_byte, r.end_byte }
-            ) catch return "null";
+            const json = std.fmt.bufPrint(&buf, "{{\"start\":{d},\"end\":{d}}}", .{ r.start_byte, r.end_byte }) catch return "null";
 
             const result = bridge.allocator.dupeZ(u8, json) catch return "null";
             return result.ptr;
