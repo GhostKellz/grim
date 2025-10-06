@@ -61,7 +61,10 @@ pub const SimpleTUI = struct {
             .fold_regions = &.{},
             .selection_start = null,
             .selection_end = null,
-            .theme = Theme.defaultDark(),
+            .theme = Theme.loadDefault(allocator) catch |err| blk: {
+                std.log.warn("Failed to load theme: {}, using built-in fallback", .{err});
+                break :blk Theme.ghostHackerBlue();
+            },
         };
         return self;
     }
