@@ -200,7 +200,7 @@ pub const Git = struct {
         var hunk_list: std.ArrayList(Hunk) = .empty;
         defer hunk_list.deinit(self.allocator);
 
-        const argv = [_][]const u8{ "git", "diff", "--unified=0", filepath };
+        const argv = [_][]const u8{ "git", "diff", "--unified=3", filepath };
         const exec_result = try std.process.Child.run(.{
             .allocator = self.allocator,
             .argv = &argv,
@@ -215,9 +215,73 @@ pub const Git = struct {
 
         // Parse unified diff format
         var lines = std.mem.splitSequence(u8, exec_result.stdout, "\n");
-        while (lines.next()) |_| {
-            // TODO: Parse hunk header: @@ -start,count +start,count @@
-            // For now, just detect the hunk
+        var content_buffer: std.ArrayList(u8) = .empty;
+        defer content_buffer.deinit(self.allocator);
+
+        var current_hunk_start: ?usize = null;
+        var current_hunk_type: ?Hunk.HunkType = null;
+
+        while (lines.next()) |line| {
+            if (line.len == 0) continue;
+
+            // Parse hunk header: @@ -old_start,old_count +new_start,new_count @@
+            if (std.mem.startsWith(u8, line, "@@")) {
+                // Save previous hunk if exists
+                if (current_hunk_start) |start| {
+                    const content = try content_buffer.toOwnedSlice(self.allocator);
+                    try hunk_list.append(self.allocator, .{
+                        .start_line = start,
+                        .end_line = start, // Will be updated by line count
+                        .hunk_type = current_hunk_type orelse .modified,
+                        .content = content,
+                    });
+                    content_buffer = .empty;
+                }
+
+                // Parse new hunk header
+                // Format: @@ -old_start,old_count +new_start,new_count @@
+                var parts = std.mem.splitSequence(u8, line, " ");
+                _ = parts.next(); // Skip "@@"
+                _ = parts.next(); // Skip old range "-..."
+
+                if (parts.next()) |new_range| {
+                    // Parse +new_start,new_count
+                    if (new_range.len > 1 and new_range[0] == '+') {
+                        const range_str = new_range[1..];
+                        var range_parts = std.mem.splitSequence(u8, range_str, ",");
+                        if (range_parts.next()) |start_str| {
+                            current_hunk_start = std.fmt.parseInt(usize, start_str, 10) catch null;
+                        }
+                    }
+                }
+
+                current_hunk_type = .modified;
+            } else if (std.mem.startsWith(u8, line, "+") and !std.mem.startsWith(u8, line, "+++")) {
+                // Added line
+                current_hunk_type = .added;
+                try content_buffer.appendSlice(self.allocator, line);
+                try content_buffer.append(self.allocator, '\n');
+            } else if (std.mem.startsWith(u8, line, "-") and !std.mem.startsWith(u8, line, "---")) {
+                // Deleted line
+                current_hunk_type = .deleted;
+                try content_buffer.appendSlice(self.allocator, line);
+                try content_buffer.append(self.allocator, '\n');
+            } else if (std.mem.startsWith(u8, line, " ")) {
+                // Context line
+                try content_buffer.appendSlice(self.allocator, line);
+                try content_buffer.append(self.allocator, '\n');
+            }
+        }
+
+        // Save final hunk
+        if (current_hunk_start) |start| {
+            const content = try content_buffer.toOwnedSlice(self.allocator);
+            try hunk_list.append(self.allocator, .{
+                .start_line = start,
+                .end_line = start,
+                .hunk_type = current_hunk_type orelse .modified,
+                .content = content,
+            });
         }
 
         return try hunk_list.toOwnedSlice(self.allocator);
@@ -308,18 +372,183 @@ pub const Git = struct {
         self.clearCaches();
     }
 
-    /// Stage hunk at line number (simplified - stages whole file for now)
-    pub fn stageHunk(self: *Git, filepath: []const u8, _: usize) !void {
-        // TODO: Implement proper hunk staging with git add -p
-        // For now, just stage the whole file
-        try self.stageFile(filepath);
+    /// Stage hunk at line number
+    pub fn stageHunk(self: *Git, filepath: []const u8, line: usize) !void {
+        if (self.repo_root == null) return error.NotInGitRepo;
+
+        // Get all hunks
+        const hunks = try self.getHunks(filepath);
+        defer {
+            for (hunks) |hunk| {
+                self.allocator.free(hunk.content);
+            }
+            self.allocator.free(hunks);
+        }
+
+        // Find hunk containing the line
+        var target_hunk: ?Hunk = null;
+        for (hunks) |hunk| {
+            if (hunk.start_line <= line and line <= hunk.end_line) {
+                target_hunk = hunk;
+                break;
+            }
+        }
+
+        if (target_hunk == null) {
+            // No hunk at this line, stage whole file
+            return try self.stageFile(filepath);
+        }
+
+        // Create patch file
+        const patch_path = try std.fs.path.join(self.allocator, &[_][]const u8{ "/tmp", "grim_hunk.patch" });
+        defer self.allocator.free(patch_path);
+
+        var patch_file = try std.fs.createFileAbsolute(patch_path, .{});
+        defer patch_file.close();
+
+        const writer = patch_file.writer();
+        try writer.print("diff --git a/{s} b/{s}\n", .{ filepath, filepath });
+        try writer.print("--- a/{s}\n", .{filepath});
+        try writer.print("+++ b/{s}\n", .{filepath});
+        try writer.print("@@ -{d},0 +{d},0 @@\n", .{ target_hunk.?.start_line, target_hunk.?.start_line });
+        try writer.writeAll(target_hunk.?.content);
+
+        // Apply patch to index
+        const argv = [_][]const u8{ "git", "apply", "--cached", patch_path };
+        const exec_result = try std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &argv,
+            .cwd = self.repo_root,
+        });
+        defer self.allocator.free(exec_result.stdout);
+        defer self.allocator.free(exec_result.stderr);
+
+        if (exec_result.term.Exited != 0) {
+            return error.GitCommandFailed;
+        }
+
+        self.clearCaches();
     }
 
-    /// Unstage hunk at line number (simplified - unstages whole file for now)
-    pub fn unstageHunk(self: *Git, filepath: []const u8, _: usize) !void {
-        // TODO: Implement proper hunk unstaging
-        // For now, just unstage the whole file
-        try self.unstageFile(filepath);
+    /// Unstage hunk at line number
+    pub fn unstageHunk(self: *Git, filepath: []const u8, line: usize) !void {
+        if (self.repo_root == null) return error.NotInGitRepo;
+
+        // Get staged hunks (diff between HEAD and index)
+        const argv_cached = [_][]const u8{ "git", "diff", "--cached", "--unified=3", filepath };
+        const exec_result = try std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &argv_cached,
+            .cwd = self.repo_root,
+        });
+        defer self.allocator.free(exec_result.stdout);
+        defer self.allocator.free(exec_result.stderr);
+
+        if (exec_result.term.Exited != 0) {
+            return error.GitCommandFailed;
+        }
+
+        // Parse staged hunks
+        var hunk_list: std.ArrayList(Hunk) = .empty;
+        defer {
+            for (hunk_list.items) |hunk| {
+                self.allocator.free(hunk.content);
+            }
+            hunk_list.deinit(self.allocator);
+        }
+
+        var lines = std.mem.splitSequence(u8, exec_result.stdout, "\n");
+        var content_buffer: std.ArrayList(u8) = .empty;
+        defer content_buffer.deinit(self.allocator);
+
+        var current_hunk_start: ?usize = null;
+
+        while (lines.next()) |diff_line| {
+            if (diff_line.len == 0) continue;
+
+            if (std.mem.startsWith(u8, diff_line, "@@")) {
+                if (current_hunk_start) |start| {
+                    const content = try content_buffer.toOwnedSlice(self.allocator);
+                    try hunk_list.append(self.allocator, .{
+                        .start_line = start,
+                        .end_line = start,
+                        .hunk_type = .modified,
+                        .content = content,
+                    });
+                    content_buffer = .empty;
+                }
+
+                var parts = std.mem.splitSequence(u8, diff_line, " ");
+                _ = parts.next(); // Skip "@@"
+                _ = parts.next(); // Skip old range
+
+                if (parts.next()) |new_range| {
+                    if (new_range.len > 1 and new_range[0] == '+') {
+                        const range_str = new_range[1..];
+                        var range_parts = std.mem.splitSequence(u8, range_str, ",");
+                        if (range_parts.next()) |start_str| {
+                            current_hunk_start = std.fmt.parseInt(usize, start_str, 10) catch null;
+                        }
+                    }
+                }
+            } else {
+                try content_buffer.appendSlice(self.allocator, diff_line);
+                try content_buffer.append(self.allocator, '\n');
+            }
+        }
+
+        if (current_hunk_start) |start| {
+            const content = try content_buffer.toOwnedSlice(self.allocator);
+            try hunk_list.append(self.allocator, .{
+                .start_line = start,
+                .end_line = start,
+                .hunk_type = .modified,
+                .content = content,
+            });
+        }
+
+        // Find hunk at line
+        var target_hunk: ?Hunk = null;
+        for (hunk_list.items) |hunk| {
+            if (hunk.start_line <= line and line <= hunk.end_line) {
+                target_hunk = hunk;
+                break;
+            }
+        }
+
+        if (target_hunk == null) {
+            return try self.unstageFile(filepath);
+        }
+
+        // Create reverse patch
+        const patch_path = try std.fs.path.join(self.allocator, &[_][]const u8{ "/tmp", "grim_unstage.patch" });
+        defer self.allocator.free(patch_path);
+
+        var patch_file = try std.fs.createFileAbsolute(patch_path, .{});
+        defer patch_file.close();
+
+        const writer = patch_file.writer();
+        try writer.print("diff --git a/{s} b/{s}\n", .{ filepath, filepath });
+        try writer.print("--- a/{s}\n", .{filepath});
+        try writer.print("+++ b/{s}\n", .{filepath});
+        try writer.print("@@ -{d},0 +{d},0 @@\n", .{ target_hunk.?.start_line, target_hunk.?.start_line });
+        try writer.writeAll(target_hunk.?.content);
+
+        // Apply reverse patch to index
+        const argv_reset = [_][]const u8{ "git", "apply", "--cached", "--reverse", patch_path };
+        const reset_result = try std.process.Child.run(.{
+            .allocator = self.allocator,
+            .argv = &argv_reset,
+            .cwd = self.repo_root,
+        });
+        defer self.allocator.free(reset_result.stdout);
+        defer self.allocator.free(reset_result.stderr);
+
+        if (reset_result.term.Exited != 0) {
+            return error.GitCommandFailed;
+        }
+
+        self.clearCaches();
     }
 
     /// Discard changes in file

@@ -27,10 +27,11 @@ pub const Features = struct {
 
     /// Get fold regions from syntax tree
     /// Folds functions, blocks, structs, etc.
-    pub fn getFoldRegions(_: *Features, _: []const u8) ![]FoldRegion {
-        // TODO: Implement tree-sitter query-based folding
-        // For now, use getFoldRegionsSimple()
-        return &.{};
+    pub fn getFoldRegions(self: *Features, source: []const u8) ![]FoldRegion {
+        // TODO: Implement tree-sitter query-based folding when Grove API is complete
+        // For now, fallback to simple brace-based folding
+        _ = self.parser;
+        return try self.getFoldRegionsSimple(source);
     }
 
     /// Selection range for incremental selection
@@ -56,9 +57,8 @@ pub const Features = struct {
 
     /// Get selection ranges at cursor position (for expanding selection)
     pub fn getSelectionRanges(_: *Features, _: []const u8, _: usize) ![]SelectionRange {
-        // TODO: Implement tree-sitter query-based selection
-        // Should return ranges from smallest to largest:
-        // token -> expression -> statement -> block -> function -> class -> file
+        // TODO: Implement tree-sitter query-based selection when Grove API is complete
+        // For now, return empty
         return &.{};
     }
 
