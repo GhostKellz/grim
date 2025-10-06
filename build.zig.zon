@@ -57,8 +57,8 @@
             .hash = "ghostlang-0.1.0-_SzSPTmiBQDNBVoKrlD3968nr64-NeIhF0MdXxAWMHNr",
         },
         .zap = .{
-            .url = "https://github.com/ghostkellz/zap/archive/main.tar.gz",
-            .hash = "zap-0.0.0--jHF1gzHAQAWOiZjabkwTjc6Y3t3IrzwQF4mQo_mxDDy",
+            .url = "https://github.com/ghostkellz/zap/archive/refs/heads/main.tar.gz",
+            .hash = "zap-0.0.0--jHF1gHHAQAJ-1P80ZGWuusd3Q3wLH2EkaxsXTX_JKTJ",
         },
     },
     .paths = .{
