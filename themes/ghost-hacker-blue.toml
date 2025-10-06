@@ -1,0 +1,284 @@
+# Ghost Hacker Blue Theme
+# By: cktech
+# Base: Tokyo Night Moon + Custom Hacker Colors
+#
+# Your signature cyan/teal/minty blue-green aesthetic
+# Combines official Tokyo Night with vivid hacker colors
+
+[theme]
+name = "Ghost Hacker Blue"
+author = "cktech"
+variant = "dark"
+base = "tokyonight-moon"
+
+# ============================================================================
+# BASE PALETTE - Tokyo Night Moon Official Colors
+# Source: tokyonight.nvim/extras/lua/tokyonight_moon.lua
+# ============================================================================
+[palette]
+# Background shades
+bg = "#222436"
+bg_dark = "#1e2030"
+bg_float = "#1e2030"
+bg_highlight = "#2f334d"
+bg_popup = "#1e2030"
+bg_search = "#3e68d7"
+bg_sidebar = "#1e2030"
+bg_statusline = "#1e2030"
+bg_visual = "#2d3f76"
+black = "#1b1d2b"
+
+# Foreground shades
+fg = "#c8d3f5"
+fg_dark = "#828bb8"
+fg_float = "#c8d3f5"
+fg_gutter = "#3b4261"
+fg_sidebar = "#828bb8"
+
+# Core colors - Tokyo Night
+blue = "#82aaff"
+blue0 = "#3e68d7"
+blue1 = "#65bcff"
+blue2 = "#0db9d7"
+blue5 = "#89ddff"
+blue6 = "#b4f9f8"
+blue7 = "#394b70"
+cyan = "#86e1fc"
+green = "#c3e88d"
+green1 = "#4fd6be"
+green2 = "#41a6b5"
+magenta = "#c099ff"
+magenta2 = "#ff007c"
+orange = "#ff966c"
+purple = "#fca7ea"
+red = "#ff757f"
+red1 = "#c53b53"
+teal = "#4fd6be"
+yellow = "#ffc777"
+
+# UI colors
+comment = "#636da6"
+dark3 = "#545c7e"
+dark5 = "#737aa2"
+border = "#1b1d2b"
+border_highlight = "#589ed7"
+terminal_black = "#444a73"
+hint = "#4fd6be"
+info = "#0db9d7"
+warning = "#ffc777"
+error = "#c53b53"
+
+# ============================================================================
+# YOUR CUSTOM HACKER COLORS
+# Sources: vivid/ghost-hacker-blue.yml + nvim/colorscheme.lua
+# ============================================================================
+[palette.hacker]
+# Signature mint/aqua greens (from vivid + NeoVim)
+mint = "#8aff80"              # Primary mint - functions, normal text
+mint_vivid = "#66ffc2"        # Darker vivid mint - fuzzy matches
+mint_pastel = "#d0fcdc"       # Pastel mint - selections
+minty = "#7fffd4"             # True aquamarine - cursor line
+aqua_ice = "#a0ffe8"          # Icy aqua - visual mode
+aqua_tealish = "#66ffe0"      # Teal blend - highlights
+green_cli = "#98ec65"         # CLI nano green - git added
+green_xterm = "#8ae234"       # Terminal lime - success
+green_brisk = "#b8ff99"       # Light variant - hints
+
+# Signature blues (from vivid + NeoVim)
+blue_hacker = "#57c7ff"       # Hacker blue - comments
+blue_moon = "#c0caf5"         # Moon blue - operators, status
+docker_blue = "#2496ED"       # Docker blue - special
+
+# Extended palette (from vivid)
+goldish = "#d4af37"           # Gold - warnings
+yellow2 = "#e5c07b"           # Alt yellow
+
+# ============================================================================
+# SYNTAX HIGHLIGHTING
+# Your custom token → color mappings
+# ============================================================================
+[syntax]
+# Keywords (cyan/blue tones)
+keyword = "blue5"             # Bright cyan (#89ddff)
+control = "purple"            # if/else/while
+type = "blue1"                # Types/classes (#65bcff)
+operator = "blue_moon"        # +, -, =, etc (YOUR blue)
+boolean = "orange"            # true/false
+
+# Functions & Variables (MINT - your signature!)
+function = "mint"             # YOUR mint green (#8aff80)
+method = "mint"
+variable = "fg"               # Default foreground
+parameter = "fg_dark"
+field = "teal"
+property = "cyan"
+constant = "purple"
+
+# Literals
+string = "green"              # Tokyo Night green
+string_escape = "blue_hacker" # YOUR hacker blue
+number = "yellow"             # Tokyo Night yellow (#ffc777)
+char = "green1"
+
+# Comments & Docs (HACKER BLUE - your choice!)
+comment = "blue_hacker"       # YOUR hacker blue (#57c7ff)
+comment_doc = "dark5"
+todo = "blue1"                # TODO/FIXME highlights
+
+# Special
+error_token = "error"
+warning_token = "warning"
+deprecated = "dark3"
+macro = "magenta"
+label = "blue1"
+
+# ============================================================================
+# UI ELEMENTS
+# Your aesthetic: mint borders, aqua highlights, hacker blue accents
+# ============================================================================
+[ui]
+# Background/Foreground
+background = "bg"
+foreground = "mint"           # YOUR choice: mint as primary text
+background_alt = "bg_dark"
+
+# Borders & Lines
+border = "blue_hacker"        # YOUR hacker blue borders
+border_active = "mint_vivid"  # Active window: vivid mint
+vert_split = "bg_highlight"
+line_number = "comment"
+line_number_current = "mint"  # YOUR mint for current line
+
+# Cursor & Selection
+cursor = "mint"               # Mint cursor
+cursor_line = "minty"         # YOUR aquamarine cursor line bg
+cursor_line_number = "mint"
+selection = "aqua_ice"        # YOUR icy aqua selection
+visual = "bg_visual"
+search = "bg_search"
+search_match = "yellow"
+incremental_search = "orange"
+
+# Status Line & Tabs
+status_line = "blue_moon"     # YOUR moon blue status
+status_line_inactive = "fg_sidebar"
+tab_active = "blue_moon"
+tab_inactive = "bg_sidebar"
+title = "blue1"
+
+# Popups & Floats
+popup_bg = "bg_popup"
+popup_border = "blue_hacker"  # YOUR hacker blue
+float_bg = "bg_float"
+float_border = "blue_hacker"
+menu_bg = "bg_popup"
+menu_sel = "bg_highlight"
+
+# Fuzzy Finder (Telescope-style)
+fuzzy_match = "mint_vivid"    # YOUR darker mint
+fuzzy_file = "fg"
+fuzzy_dir = "teal"
+fuzzy_border = "blue_hacker"  # YOUR hacker blue
+
+# Hints & Diagnostics
+hint_bg = "bg_highlight"
+hint_fg = "hint"
+info_bg = "bg_highlight"
+info_fg = "info"
+warning_bg = "bg_highlight"
+warning_fg = "warning"
+error_bg = "bg_highlight"
+error_fg = "error"
+
+# ============================================================================
+# GIT INTEGRATION
+# ============================================================================
+[git]
+added = "green_cli"           # YOUR CLI green
+modified = "blue1"
+removed = "red"
+deleted = "red"
+conflict = "orange"
+renamed = "cyan"
+untracked = "dark5"
+ignored = "dark3"
+
+# Git signs in gutter
+sign_add = "green_cli"
+sign_change = "blue1"
+sign_delete = "red"
+
+# Git diff
+diff_add_bg = "#2a4556"
+diff_add_fg = "green_cli"
+diff_change_bg = "#252a3f"
+diff_change_fg = "blue1"
+diff_delete_bg = "#4b2a3d"
+diff_delete_fg = "red"
+diff_text_bg = "#394b70"
+
+# ============================================================================
+# LSP / DIAGNOSTICS
+# ============================================================================
+[diagnostic]
+error = "error"               # Red
+warning = "warning"           # Yellow
+info = "info"                 # Cyan
+hint = "hint"                 # Teal
+
+# Diagnostic signs
+sign_error = "error"
+sign_warning = "warning"
+sign_info = "info"
+sign_hint = "hint"
+
+# Diagnostic underlines
+underline_error = "error"
+underline_warning = "warning"
+underline_info = "info"
+underline_hint = "hint"
+
+# ============================================================================
+# TERMINAL COLORS
+# ANSI 16 color palette
+# ============================================================================
+[terminal]
+black = "#1b1d2b"
+red = "#ff757f"
+green = "green_cli"           # YOUR CLI green
+yellow = "#ffc777"
+blue = "#82aaff"
+magenta = "#c099ff"
+cyan = "minty"                # YOUR aquamarine
+white = "#828bb8"
+
+# Bright variants
+bright_black = "#444a73"
+bright_red = "#ff8d94"
+bright_green = "green_xterm"  # YOUR xterm lime
+bright_yellow = "#ffd8ab"
+bright_blue = "#9ab8ff"
+bright_magenta = "#caabff"
+bright_cyan = "aqua_ice"      # YOUR icy aqua
+bright_white = "#c8d3f5"
+
+# ============================================================================
+# EXTRAS
+# ============================================================================
+[extras]
+# Rainbow brackets
+rainbow = ["#82aaff", "#ffc777", "#c3e88d", "#4fd6be", "#c099ff", "#fca7ea", "#ff966c", "#ff757f"]
+
+# Todo highlights
+todo = "blue1"
+note = "cyan"
+hack = "warning"
+warn = "warning"
+perf = "magenta"
+test = "purple"
+
+# File types
+directory = "teal"
+executable = "green"
+symlink = "blue5"
+broken_symlink = "error"

@@ -1,0 +1,231 @@
+# Custom Theme Template
+# Copy this file and modify to create your own theme!
+#
+# Steps to create your theme:
+# 1. Copy this file to: themes/custom/my-theme.toml
+# 2. Change the [theme] metadata
+# 3. Define your color palette in [palette]
+# 4. Map colors to syntax tokens in [syntax]
+# 5. Map colors to UI elements in [ui]
+# 6. (Optional) Customize git, diagnostic, terminal colors
+# 7. Load with: grim --theme my-theme
+
+[theme]
+name = "My Custom Theme"           # Your theme name
+author = "your-name"               # Your name
+variant = "dark"                   # "dark" or "light"
+base = ""                          # Optional: inherit from another theme
+
+# ============================================================================
+# COLOR PALETTE
+# Define all your colors here using hex format: "#RRGGBB"
+# ============================================================================
+[palette]
+# Background & Foreground
+bg = "#1a1b26"                     # Main background
+bg_dark = "#16161e"                # Darker background (sidebars, etc.)
+bg_highlight = "#292e42"           # Highlighted line background
+fg = "#c0caf5"                     # Main foreground text
+fg_dark = "#a9b1d6"                # Darker foreground (comments, etc.)
+
+# Core Colors - Define your theme's personality
+red = "#f7768e"
+orange = "#ff9e64"
+yellow = "#e0af68"
+green = "#9ece6a"
+cyan = "#7dcfff"
+blue = "#7aa2f7"
+purple = "#bb9af7"
+magenta = "#ff007c"
+
+# UI Colors
+comment = "#565f89"                # Comment color
+border = "#1a1b26"                 # Border color
+selection = "#33467c"              # Selection background
+search = "#3d59a1"                 # Search match background
+
+# Add any custom colors you want!
+# my_special_color = "#abc123"
+
+# ============================================================================
+# SYNTAX HIGHLIGHTING
+# Map your palette colors to code syntax tokens
+# Use color names from [palette] section
+# ============================================================================
+[syntax]
+# Keywords
+keyword = "purple"                 # if, for, while, return, etc.
+control = "purple"                 # break, continue, etc.
+type = "cyan"                      # int, string, MyClass, etc.
+operator = "cyan"                  # +, -, =, etc.
+boolean = "orange"                 # true, false
+
+# Functions & Variables
+function = "blue"                  # function names
+method = "blue"                    # method names
+variable = "fg"                    # variable names
+parameter = "orange"               # function parameters
+field = "green"                    # object fields
+property = "green"                 # object properties
+constant = "orange"                # CONSTANTS, consts
+
+# Literals
+string = "green"                   # "string literals"
+string_escape = "magenta"          # "\n", "\t" escapes
+number = "orange"                  # 123, 45.67
+char = "green"                     # 'c'
+
+# Comments
+comment = "comment"                # // comments
+comment_doc = "fg_dark"            # /// doc comments
+todo = "yellow"                    # TODO, FIXME, etc.
+
+# Special
+error_token = "red"                # syntax errors
+warning_token = "yellow"           # warnings
+deprecated = "fg_dark"             # deprecated items
+macro = "magenta"                  # macros, preprocessor
+label = "blue"                     # labels, annotations
+
+# ============================================================================
+# UI ELEMENTS
+# Customize the editor interface colors
+# ============================================================================
+[ui]
+# Background/Foreground
+background = "bg"
+foreground = "fg"
+background_alt = "bg_dark"
+
+# Borders & Lines
+border = "border"
+border_active = "blue"             # Active window border
+vert_split = "bg_highlight"        # Vertical split line
+line_number = "comment"            # Line numbers
+line_number_current = "yellow"     # Current line number
+
+# Cursor & Selection
+cursor = "fg"
+cursor_line = "bg_highlight"       # Cursor line background
+cursor_line_number = "yellow"
+selection = "selection"            # Visual selection
+visual = "selection"
+search = "search"                  # Search matches
+search_match = "yellow"            # Current search match
+
+# Status Line
+status_line = "fg_dark"
+status_line_inactive = "comment"
+tab_active = "blue"
+tab_inactive = "comment"
+title = "blue"
+
+# Popups & Floats
+popup_bg = "bg_dark"
+popup_border = "border"
+float_bg = "bg_dark"
+float_border = "border"
+menu_bg = "bg_dark"
+menu_sel = "bg_highlight"
+
+# Fuzzy Finder (Telescope-style)
+fuzzy_match = "cyan"               # Matched characters
+fuzzy_file = "fg"                  # File names
+fuzzy_dir = "blue"                 # Directory names
+fuzzy_border = "border"
+
+# ============================================================================
+# GIT INTEGRATION
+# Colors for git status indicators
+# ============================================================================
+[git]
+added = "green"                    # New files
+modified = "blue"                  # Modified files
+removed = "red"                    # Deleted files
+deleted = "red"
+conflict = "orange"                # Merge conflicts
+renamed = "cyan"
+untracked = "fg_dark"
+ignored = "comment"
+
+# Git signs in gutter
+sign_add = "green"
+sign_change = "blue"
+sign_delete = "red"
+
+# Git diff backgrounds
+diff_add_bg = "#1a2b1a"           # Added lines background
+diff_add_fg = "green"
+diff_change_bg = "#1a1b2b"        # Changed lines background
+diff_change_fg = "blue"
+diff_delete_bg = "#2b1a1a"        # Deleted lines background
+diff_delete_fg = "red"
+
+# ============================================================================
+# LSP / DIAGNOSTICS
+# Language Server Protocol diagnostic colors
+# ============================================================================
+[diagnostic]
+error = "red"                      # Errors
+warning = "yellow"                 # Warnings
+info = "cyan"                      # Information
+hint = "green"                     # Hints
+
+# Diagnostic signs in gutter
+sign_error = "red"
+sign_warning = "yellow"
+sign_info = "cyan"
+sign_hint = "green"
+
+# Diagnostic underlines (if supported)
+underline_error = "red"
+underline_warning = "yellow"
+underline_info = "cyan"
+underline_hint = "green"
+
+# ============================================================================
+# TERMINAL COLORS
+# ANSI 16-color palette for integrated terminal
+# ============================================================================
+[terminal]
+# Normal colors (0-7)
+black = "#16161e"
+red = "#f7768e"
+green = "#9ece6a"
+yellow = "#e0af68"
+blue = "#7aa2f7"
+magenta = "#bb9af7"
+cyan = "#7dcfff"
+white = "#a9b1d6"
+
+# Bright colors (8-15)
+bright_black = "#444b6a"
+bright_red = "#ff7a93"
+bright_green = "#b9f27c"
+bright_yellow = "#ff9e64"
+bright_blue = "#7da6ff"
+bright_magenta = "#bb9af7"
+bright_cyan = "#b4f9f8"
+bright_white = "#c0caf5"
+
+# ============================================================================
+# EXTRAS (Optional)
+# Additional theme customizations
+# ============================================================================
+[extras]
+# Rainbow brackets/delimiters
+rainbow = ["#7aa2f7", "#e0af68", "#9ece6a", "#7dcfff", "#bb9af7", "#ff007c"]
+
+# Special comment highlights
+todo = "yellow"
+note = "cyan"
+hack = "orange"
+warn = "orange"
+perf = "magenta"
+test = "purple"
+
+# File type colors
+directory = "blue"
+executable = "green"
+symlink = "cyan"
+broken_symlink = "red"
