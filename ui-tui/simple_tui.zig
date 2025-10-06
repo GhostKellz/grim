@@ -37,7 +37,44 @@ pub const SimpleTUI = struct {
     theme: Theme,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
+        return initWithTheme(allocator, null);
+    }
+
+    pub fn initWithTheme(allocator: std.mem.Allocator, theme_name: ?[]const u8) !*SimpleTUI {
         const self = try allocator.create(SimpleTUI);
+
+        // Load theme based on name
+        const theme = if (theme_name) |name| blk: {
+            // Try to load specified theme
+            const path_prefixes = [_][]const u8{
+                "themes/",
+                "/usr/share/grim/themes/",
+                "/usr/local/share/grim/themes/",
+            };
+
+            for (path_prefixes) |prefix| {
+                const path = std.fmt.allocPrint(allocator, "{s}{s}.toml", .{ prefix, name }) catch continue;
+                defer allocator.free(path);
+
+                if (Theme.loadFromFile(allocator, path)) |loaded_theme| {
+                    std.log.info("Loaded theme: {s}", .{name});
+                    break :blk loaded_theme;
+                } else |_| {
+                    continue;
+                }
+            }
+
+            // Theme not found, fall back to default
+            std.log.warn("Theme '{s}' not found, using ghost-hacker-blue", .{name});
+            break :blk Theme.loadDefault(allocator) catch Theme.ghostHackerBlue();
+        } else blk: {
+            // No theme specified, use default
+            break :blk Theme.loadDefault(allocator) catch |err| blk2: {
+                std.log.warn("Failed to load theme: {}, using built-in fallback", .{err});
+                break :blk2 Theme.ghostHackerBlue();
+            };
+        };
+
         self.* = .{
             .allocator = allocator,
             .editor = try Editor.init(allocator),
@@ -61,10 +98,7 @@ pub const SimpleTUI = struct {
             .fold_regions = &.{},
             .selection_start = null,
             .selection_end = null,
-            .theme = Theme.loadDefault(allocator) catch |err| blk: {
-                std.log.warn("Failed to load theme: {}, using built-in fallback", .{err});
-                break :blk Theme.ghostHackerBlue();
-            },
+            .theme = theme,
         };
         return self;
     }

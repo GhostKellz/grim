@@ -10,15 +10,66 @@ pub fn main() !void {
     const args = try std.process.argsAlloc(allocator);
     defer std.process.argsFree(allocator, args);
 
-    // Initialize Simple TUI app
+    // Parse command line options
+    var theme_name: ?[]const u8 = null;
+    var file_to_load: ?[]const u8 = null;
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+
+        if (std.mem.eql(u8, arg, "--theme") or std.mem.eql(u8, arg, "-t")) {
+            // Next arg is theme name
+            if (i + 1 < args.len) {
+                i += 1;
+                theme_name = args[i];
+            } else {
+                std.debug.print("Error: --theme requires a theme name\n", .{});
+                std.debug.print("Usage: grim [--theme <name>] [file]\n", .{});
+                std.debug.print("Available themes: ghost-hacker-blue, tokyonight-moon\n", .{});
+                return;
+            }
+        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            std.debug.print(
+                \\Grim - A modal text editor
+                \\
+                \\Usage: grim [options] [file]
+                \\
+                \\Options:
+                \\  -t, --theme <name>    Set theme (default: ghost-hacker-blue)
+                \\  -h, --help            Show this help message
+                \\
+                \\Available themes:
+                \\  ghost-hacker-blue     Cyan/teal/mint hacker aesthetic (default)
+                \\  tokyonight-moon       Tokyo Night Moon theme
+                \\
+                \\Examples:
+                \\  grim                            # Start with default theme
+                \\  grim myfile.zig                 # Open file with default theme
+                \\  grim --theme tokyonight-moon    # Start with Tokyo Night theme
+                \\  grim -t gruvbox myfile.rs       # Open file with custom theme
+                \\
+            , .{});
+            return;
+        } else if (!std.mem.startsWith(u8, arg, "-")) {
+            // Non-option argument is the file to load
+            file_to_load = arg;
+        } else {
+            std.debug.print("Unknown option: {s}\n", .{arg});
+            std.debug.print("Use --help for usage information\n", .{});
+            return;
+        }
+    }
+
+    // Initialize Simple TUI app with theme
     const SimpleTUI = @import("ui_tui").simple_tui.SimpleTUI;
-    var app = try SimpleTUI.init(allocator);
+    var app = try SimpleTUI.initWithTheme(allocator, theme_name);
     defer app.deinit();
 
     // Load file if provided
-    if (args.len > 1) {
-        app.loadFile(args[1]) catch |err| {
-            std.debug.print("Failed to load file {s}: {}\n", .{ args[1], err });
+    if (file_to_load) |file_path| {
+        app.loadFile(file_path) catch |err| {
+            std.debug.print("Failed to load file {s}: {}\n", .{ file_path, err });
             // Continue with empty buffer
         };
     } else {
