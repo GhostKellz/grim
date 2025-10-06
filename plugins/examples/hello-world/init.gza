@@ -1,0 +1,25 @@
+// Hello World Plugin
+// Demonstrates basic plugin structure
+
+// Called when plugin loads
+export fn setup() {
+    print("Hello World plugin loaded!")
+
+    // Register a command
+    grim.command("Hello", hello_command)
+
+    // Register a keymap (optional)
+    grim.keymap("n", "<leader>h", hello_command, {
+        desc: "Say hello"
+    })
+}
+
+// Command handler
+fn hello_command() {
+    grim.notify("Hello from Grim plugin!", "info")
+}
+
+// Called when plugin unloads
+export fn teardown() {
+    print("Hello World plugin unloaded!")
+}

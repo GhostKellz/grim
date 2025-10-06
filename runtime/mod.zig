@@ -1,6 +1,8 @@
 const std = @import("std");
 pub const plugin_api = @import("plugin_api.zig");
 pub const plugin_manager = @import("plugin_manager.zig");
+pub const plugin_manifest = @import("plugin_manifest.zig");
+pub const plugin_discovery = @import("plugin_discovery.zig");
 pub const example_plugin = @import("example_plugin.zig");
 
 pub const PluginAPI = plugin_api.PluginAPI;
@@ -13,8 +15,9 @@ pub const EventHandler = plugin_api.PluginAPI.EventHandler;
 pub const KeystrokeHandler = plugin_api.PluginAPI.KeystrokeHandler;
 
 pub const PluginManager = plugin_manager.PluginManager;
-pub const PluginManifest = plugin_manager.PluginManager.PluginManifest;
-pub const PluginInfo = plugin_manager.PluginManager.PluginInfo;
+pub const PluginManifest = plugin_manifest.PluginManifest;
+pub const PluginDiscovery = plugin_discovery.PluginDiscovery;
+pub const DiscoveredPlugin = plugin_discovery.DiscoveredPlugin;
 
 pub fn defaultAllocator() std.mem.Allocator {
     return std.heap.page_allocator;

@@ -1,0 +1,25 @@
+# Status Line Plugin
+# Customizable status line with git and LSP info
+
+[plugin]
+name = "status-line"
+version = "1.0.0"
+author = "Grim Team"
+description = "Customizable status line with git and LSP integration"
+main = "init.gza"
+license = "MIT"
+
+[config]
+enable_on_startup = true
+priority = 70  # Load early
+
+[dependencies]
+optional = ["git-signs", "lsp-support"]
+
+[status_line]
+# Plugin-specific configuration
+show_git = true
+show_lsp = true
+show_mode = true
+show_position = true
+format = "{mode} {git} {file} {lsp} {position}"

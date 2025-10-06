@@ -1,0 +1,13 @@
+# Hello World Plugin
+# Minimal example plugin demonstrating the basics
+
+[plugin]
+name = "hello-world"
+version = "1.0.0"
+author = "Grim Team"
+description = "Minimal example plugin"
+main = "init.gza"
+license = "MIT"
+
+[config]
+enable_on_startup = true
