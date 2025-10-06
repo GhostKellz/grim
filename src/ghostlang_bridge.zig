@@ -10,6 +10,7 @@ pub const GhostlangBridge = struct {
     git: ?*core.Git,
     harpoon: ?*core.Harpoon,
     features: ?*syntax.Features,
+    zap: ?*core.ZapIntegration,
 
     pub fn init(allocator: std.mem.Allocator) GhostlangBridge {
         return .{
@@ -18,6 +19,7 @@ pub const GhostlangBridge = struct {
             .git = null,
             .harpoon = null,
             .features = null,
+            .zap = null,
         };
     }
 
@@ -33,6 +35,10 @@ pub const GhostlangBridge = struct {
         if (self.harpoon) |h| {
             h.deinit();
             self.allocator.destroy(h);
+        }
+        if (self.zap) |z| {
+            z.deinit();
+            self.allocator.destroy(z);
         }
         _ = self.features;
     }
@@ -430,5 +436,127 @@ pub const GhostlangBridge = struct {
         }
 
         return "null";
+    }
+
+    // ========================================================================
+    // ZAP AI API
+    // ========================================================================
+
+    /// Initialize Zap AI integration
+    pub export fn grim_zap_init(bridge: *GhostlangBridge) callconv(.C) bool {
+        if (bridge.zap != null) return true;
+
+        const zap_instance = bridge.allocator.create(core.ZapIntegration) catch return false;
+        zap_instance.* = core.ZapIntegration.init(bridge.allocator) catch {
+            bridge.allocator.destroy(zap_instance);
+            return false;
+        };
+        bridge.zap = zap_instance;
+        return true;
+    }
+
+    /// Check if Zap/Ollama is available
+    pub export fn grim_zap_available(bridge: *GhostlangBridge) callconv(.C) bool {
+        if (bridge.zap == null) return false;
+        return bridge.zap.?.isAvailable();
+    }
+
+    /// Generate AI commit message from diff
+    pub export fn grim_zap_commit_message(
+        bridge: *GhostlangBridge,
+        diff: [*:0]const u8,
+    ) callconv(.C) [*:0]const u8 {
+        if (bridge.zap == null) return "";
+
+        const diff_slice = std.mem.span(diff);
+        const message = bridge.zap.?.generateCommitMessage(diff_slice) catch return "";
+
+        // Persist the result
+        const result = bridge.allocator.dupeZ(u8, message) catch return "";
+        return result.ptr;
+    }
+
+    /// Explain code changes
+    pub export fn grim_zap_explain_changes(
+        bridge: *GhostlangBridge,
+        changes: [*:0]const u8,
+    ) callconv(.C) [*:0]const u8 {
+        if (bridge.zap == null) return "";
+
+        const changes_slice = std.mem.span(changes);
+        const explanation = bridge.zap.?.explainChanges(changes_slice) catch return "";
+
+        const result = bridge.allocator.dupeZ(u8, explanation) catch return "";
+        return result.ptr;
+    }
+
+    /// Suggest merge conflict resolution
+    pub export fn grim_zap_resolve_conflict(
+        bridge: *GhostlangBridge,
+        conflict: [*:0]const u8,
+    ) callconv(.C) [*:0]const u8 {
+        if (bridge.zap == null) return "";
+
+        const conflict_slice = std.mem.span(conflict);
+        const suggestion = bridge.zap.?.suggestMergeResolution(conflict_slice) catch return "";
+
+        const result = bridge.allocator.dupeZ(u8, suggestion) catch return "";
+        return result.ptr;
+    }
+
+    /// AI code review
+    pub export fn grim_zap_review_code(
+        bridge: *GhostlangBridge,
+        code: [*:0]const u8,
+    ) callconv(.C) [*:0]const u8 {
+        if (bridge.zap == null) return "";
+
+        const code_slice = std.mem.span(code);
+        const review = bridge.zap.?.reviewCode(code_slice) catch return "";
+
+        const result = bridge.allocator.dupeZ(u8, review) catch return "";
+        return result.ptr;
+    }
+
+    /// Generate documentation
+    pub export fn grim_zap_generate_docs(
+        bridge: *GhostlangBridge,
+        code: [*:0]const u8,
+    ) callconv(.C) [*:0]const u8 {
+        if (bridge.zap == null) return "";
+
+        const code_slice = std.mem.span(code);
+        const docs = bridge.zap.?.generateDocs(code_slice) catch return "";
+
+        const result = bridge.allocator.dupeZ(u8, docs) catch return "";
+        return result.ptr;
+    }
+
+    /// Suggest better names
+    pub export fn grim_zap_suggest_names(
+        bridge: *GhostlangBridge,
+        code: [*:0]const u8,
+    ) callconv(.C) [*:0]const u8 {
+        if (bridge.zap == null) return "";
+
+        const code_slice = std.mem.span(code);
+        const names = bridge.zap.?.suggestNames(code_slice) catch return "";
+
+        const result = bridge.allocator.dupeZ(u8, names) catch return "";
+        return result.ptr;
+    }
+
+    /// Detect code issues
+    pub export fn grim_zap_detect_issues(
+        bridge: *GhostlangBridge,
+        code: [*:0]const u8,
+    ) callconv(.C) [*:0]const u8 {
+        if (bridge.zap == null) return "";
+
+        const code_slice = std.mem.span(code);
+        const issues = bridge.zap.?.detectIssues(code_slice) catch return "";
+
+        const result = bridge.allocator.dupeZ(u8, issues) catch return "";
+        return result.ptr;
     }
 };

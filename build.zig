@@ -49,12 +49,19 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+    // Zap dependency for AI-powered git features
+    const zap = b.dependency("zap", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     const core_mod = b.createModule(.{
         .root_source_file = b.path("core/mod.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "gcode", .module = gcode.module("gcode") },
+            .{ .name = "zap", .module = zap.module("zap") },
         },
     });
 
