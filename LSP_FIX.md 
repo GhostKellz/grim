@@ -1,55 +1,40 @@
-  Grove vs Grim Responsibility
+# Grove ↔ Grim Fix Tracker *(updated 2025-10-07)*
 
-  Issue 1: "Grove parser keeps returning fallback highlights"
+## Issue 1 – Syntax highlighting falls back to defaults
 
-  Likely a Grim integration issue, but needs investigation:
+### Current status
+- Grove ships a working highlight engine and 14 language grammars (tree-sitter 0.25.10 / ABI 15).
+- Grim now exposes live rope, cursor, and selection data to plugins via the PluginAPI bridge (Oct 7 updates in `runtime/plugin_api.zig` & `ui-tui/simple_tui.zig`).
+- Highlighting still degrades to fallback colors because Grim is not yet loading Grove’s `.scm` queries or mapping capture names to the theme registry.
 
-  - Grove provides: grove.Highlight.HighlightEngine that runs tree-sitter highlight queries and
-  returns HighlightSpan results with proper capture names and byte ranges (see
-  src/editor/highlight.zig)
-  - Grove provides: All bundled grammars ship with .scm highlight queries in
-  vendor/tree-sitter-*/queries/highlights.scm
-  - Grim must: Load the appropriate highlight query, execute it via Grove's engine, and map the
-  returned capture names to actual colors/styles
+### Next steps
+1. Load and cache highlight queries from `third_party/grove-queries` for each registered language.
+2. Execute `grove.Highlight.collectHighlights()` against the active buffer (use new buffer ids/events to keep caches fresh).
+3. Translate capture names (e.g. `@keyword.operator`) into `syntax.HighlightType` values and wire them through the theme registry so SimpleTUI renders the correct style.
+4. Add regression coverage (extend `tests/plugin_theme_registration.zig` or create a dedicated test) that asserts real highlight spans for Ghostlang, TOML, YAML, and C.
 
-  To debug: Check if Grim is:
-  1. Loading the correct .scm file for each language
-  2. Calling grove.Highlight.collectHighlights() properly
-  3. Mapping capture names (like @keyword, @function.call) to visual styles instead of falling back
-  to default
+## Issue 2 – LSP client/server lifecycle still partial
 
-  ---
-  Issue 2: "LSP client/server manager only partly implemented"
+### Current status
+- Ghostls wiring (spawn, initialize, hover, goto-definition) is working; see `LSP_INTEGRATION_COMPLETE.md` for the full checklist.
+- SimpleTUI now emits buffer open/save/close events and maintains dynamic buffer ids, so document sync can key off real ids.
+- Missing pieces: JSON-RPC response loop, document snapshot tracking, didOpen/didChange notifications, and UI handling of hover/definition payloads.
 
-  Definitely a Grim issue:
+### Next steps
+1. Implement a non-blocking JSON-RPC reader in `lsp/client.zig` that feeds responses into a dispatch queue.
+2. Maintain per-buffer snapshots keyed by the new buffer id and push didOpen/didChange/didSave notifications whenever SimpleTUI reports edits.
+3. Replace the hover placeholder in SimpleTUI with real ghostls data and wire goto-definition navigation.
+4. Extend `test_ghostls.zig` (or add a new integration test) to simulate open/change/save flows and assert that ghostls receives the notifications and responds as expected.
 
-  - Grove provides: LSP helper utilities in src/lsp.zig:
-    - Data structures (Position, Range, Location, DocumentSymbol, etc.)
-    - LanguageServer struct with methods like hover(), gotoDefinition(), foldingRanges(),
-  documentSymbols()
-    - Factory for creating language-specific servers
-  - Grove does NOT provide:
-    - JSON-RPC transport layer
-    - LSP message parsing/serialization
-    - didOpen/didChange/didSave notification handlers
-    - Document synchronization state management
-    - Client/server lifecycle management
+## Cross-cutting follow-up
+- Keep buffer lifecycle events, PluginAPI bridge tests, and upcoming UI hooks in sync.
+- Update developer docs (`docs/NAVIGATION.md`, `docs/THEME_FFI.md`) once highlight wiring lands.
+- Re-run Grove performance goals (<5 ms incremental latency) after highlights + LSP dispatch are in place.
 
-  Grim must implement:
-  1. JSON-RPC message handling (parse incoming requests, serialize responses)
-  2. Document state tracking (maintain buffers for open documents)
-  3. Wire up LSP notifications to Grove's utilities:
-  // Example: didChange should trigger incremental parse
-  fn handleDidChange(params: DidChangeParams) void {
-      tree.edit(edits);
-      new_tree = parser.parse(updated_source);
-      // Then use new_tree with grove.Highlight, grove.LSP.hover(), etc.
-  }
-  4. Expose Grove's LSP helper methods via JSON-RPC endpoints
-
-  ---
-  TL;DR:
-  - Highlights → Probably Grim (Grove provides the engine, Grim must wire it up correctly)
-  - LSP client/server → Definitely Grim (Grove only provides semantic analysis helpers, not the
-  protocol layer)
+## References
+- `ui-tui/simple_tui.zig` – buffer bridge, lifecycle events
+- `runtime/plugin_api.zig` – PluginAPI editor bridge
+- `lsp/` – client/server plumbing
+- `third_party/grove-queries/` – Tree-sitter highlight queries from Grove
+- `LATEST_GROVE.md`, `LSP_INTEGRATION_COMPLETE.md` – upstream context
 

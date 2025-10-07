@@ -22,6 +22,9 @@ pub const SimpleTUI = struct {
     command_buffer: std.ArrayList(u8),
     status_message: ?[]u8,
     plugin_cursor: ?*runtime.PluginAPI.EditorContext.CursorPosition,
+    editor_context: ?*runtime.PluginAPI.EditorContext,
+    current_buffer_id: runtime.PluginAPI.BufferId,
+    next_buffer_id: runtime.PluginAPI.BufferId,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
         const command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
@@ -44,6 +47,9 @@ pub const SimpleTUI = struct {
             .command_buffer = command_buffer,
             .status_message = null,
             .plugin_cursor = null,
+            .editor_context = null,
+            .current_buffer_id = 1,
+            .next_buffer_id = 2,
         };
         return self;
     }
@@ -78,8 +84,30 @@ pub const SimpleTUI = struct {
     }
 
     pub fn loadFile(self: *SimpleTUI, path: []const u8) !void {
+        const reuse_buffer = blk: {
+            if (self.editor.current_filename) |existing| {
+                break :blk std.mem.eql(u8, existing, path);
+            }
+            break :blk false;
+        };
+
         try self.editor.loadFile(path);
         self.markHighlightsDirty();
+
+        const filename = self.editor.current_filename orelse path;
+
+        if (!reuse_buffer) {
+            const previous_id = self.current_buffer_id;
+            const new_id = self.allocateBufferId();
+            self.setActiveBufferId(new_id);
+            if (previous_id != new_id) {
+                self.emitBufferClosed(previous_id);
+            }
+            self.emitBufferCreated(new_id);
+            self.emitBufferOpened(new_id, filename);
+        } else {
+            self.emitBufferOpened(self.current_buffer_id, filename);
+        }
 
         if (self.plugin_manager) |manager| {
             manager.emitEvent(.file_opened, .{ .file_opened = path }) catch |err| {
@@ -137,6 +165,73 @@ pub const SimpleTUI = struct {
             theme_mod.registerThemeCallback,
             theme_mod.unregisterThemeCallback,
         );
+
+        self.emitBufferCreated(self.current_buffer_id);
+        if (self.editor.current_filename) |filename| {
+            self.emitBufferOpened(self.current_buffer_id, filename);
+        }
+    }
+
+    pub fn setEditorContext(self: *SimpleTUI, ctx: *runtime.PluginAPI.EditorContext) void {
+        self.editor_context = ctx;
+        ctx.active_buffer_id = self.current_buffer_id;
+    }
+
+    pub fn getActiveBufferId(self: *const SimpleTUI) runtime.PluginAPI.BufferId {
+        return self.current_buffer_id;
+    }
+
+    fn setActiveBufferId(self: *SimpleTUI, buffer_id: runtime.PluginAPI.BufferId) void {
+        self.current_buffer_id = buffer_id;
+        if (self.editor_context) |ctx| {
+            ctx.active_buffer_id = buffer_id;
+        }
+    }
+
+    fn allocateBufferId(self: *SimpleTUI) runtime.PluginAPI.BufferId {
+        const candidate = self.next_buffer_id;
+        if (candidate == std.math.maxInt(runtime.PluginAPI.BufferId)) {
+            std.log.err("Buffer id counter exhausted", .{});
+            return candidate;
+        }
+        self.next_buffer_id = candidate + 1;
+        return candidate;
+    }
+
+    fn emitBufferCreated(self: *SimpleTUI, buffer_id: runtime.PluginAPI.BufferId) void {
+        if (self.plugin_manager) |manager| {
+            manager.emitEvent(.buffer_created, .{ .buffer_created = buffer_id }) catch |err| {
+                std.log.err("Failed to emit buffer_created event: {}", .{err});
+            };
+        }
+    }
+
+    fn emitBufferOpened(self: *SimpleTUI, buffer_id: runtime.PluginAPI.BufferId, filename: []const u8) void {
+        if (self.plugin_manager) |manager| {
+            manager.emitEvent(.buffer_opened, .{ .buffer_opened = .{ .buffer_id = buffer_id, .filename = filename } }) catch |err| {
+                std.log.err("Failed to emit buffer_opened event: {}", .{err});
+            };
+        }
+    }
+
+    fn emitBufferSaved(self: *SimpleTUI, buffer_id: runtime.PluginAPI.BufferId, filename: []const u8) void {
+        if (self.plugin_manager) |manager| {
+            manager.emitEvent(.buffer_saved, .{ .buffer_saved = .{ .buffer_id = buffer_id, .filename = filename } }) catch |err| {
+                std.log.err("Failed to emit buffer_saved event: {}", .{err});
+            };
+        }
+    }
+
+    fn emitBufferClosed(self: *SimpleTUI, buffer_id: runtime.PluginAPI.BufferId) void {
+        if (self.plugin_manager) |manager| {
+            manager.emitEvent(.buffer_closed, .{ .buffer_closed = buffer_id }) catch |err| {
+                std.log.err("Failed to emit buffer_closed event: {}", .{err});
+            };
+        }
+    }
+
+    pub fn closeActiveBuffer(self: *SimpleTUI) void {
+        self.emitBufferClosed(self.current_buffer_id);
     }
 
     fn render(self: *SimpleTUI) !void {
@@ -148,7 +243,7 @@ pub const SimpleTUI = struct {
         try self.setCursor(1, 1);
 
         self.refreshHighlights();
-    self.updatePluginCursorFromEditor();
+        self.updatePluginCursorFromEditor();
 
         if (self.highlight_error_flash) {
             self.highlight_error_flash_state = !self.highlight_error_flash_state;
@@ -608,6 +703,8 @@ pub const SimpleTUI = struct {
                 std.log.err("Failed to emit file_saved event: {}", .{err});
             };
         }
+
+        self.emitBufferSaved(self.current_buffer_id, path);
     }
 
     fn executePluginCommand(self: *SimpleTUI, name: []const u8, args: []const []const u8) !void {
@@ -708,8 +805,7 @@ pub const SimpleTUI = struct {
 
     fn bridgeGetCurrentBuffer(ctx: *anyopaque) runtime.PluginAPI.BufferId {
         const self = @as(*SimpleTUI, @ptrCast(@alignCast(ctx)));
-        _ = self;
-        return 1;
+        return self.current_buffer_id;
     }
 
     fn bridgeGetCursorPosition(ctx: *anyopaque) runtime.PluginAPI.EditorContext.CursorPosition {
@@ -743,6 +839,35 @@ pub const SimpleTUI = struct {
         }
     }
 
+    fn bridgeGetSelection(ctx: *anyopaque) ?runtime.PluginAPI.EditorContext.SelectionRange {
+        const self = @as(*SimpleTUI, @ptrCast(@alignCast(ctx)));
+        const start_opt = self.editor.selection_start;
+        const end_opt = self.editor.selection_end;
+        if (start_opt == null or end_opt == null) return null;
+
+        const start_val = start_opt.?;
+        const end_val = end_opt.?;
+        const normalized_start = @min(start_val, end_val);
+        const normalized_end = @max(start_val, end_val);
+        return .{ .start = normalized_start, .end = normalized_end };
+    }
+
+    fn bridgeSetSelection(ctx: *anyopaque, selection: ?runtime.PluginAPI.EditorContext.SelectionRange) anyerror!void {
+        const self = @as(*SimpleTUI, @ptrCast(@alignCast(ctx)));
+        if (selection) |sel| {
+            const rope_len = self.editor.rope.len();
+            const clamped_start = @min(sel.start, rope_len);
+            const clamped_end = @min(sel.end, rope_len);
+            const normalized_start = @min(clamped_start, clamped_end);
+            const normalized_end = @max(clamped_start, clamped_end);
+            self.editor.selection_start = normalized_start;
+            self.editor.selection_end = normalized_end;
+        } else {
+            self.editor.selection_start = null;
+            self.editor.selection_end = null;
+        }
+    }
+
     fn bridgeNotifyChange(ctx: *anyopaque, change: runtime.PluginAPI.EditorContext.BufferChange) anyerror!void {
         const self = @as(*SimpleTUI, @ptrCast(@alignCast(ctx)));
         _ = change;
@@ -759,6 +884,8 @@ pub const SimpleTUI = struct {
             .getCurrentBuffer = bridgeGetCurrentBuffer,
             .getCursorPosition = bridgeGetCursorPosition,
             .setCursorPosition = bridgeSetCursorPosition,
+            .getSelection = bridgeGetSelection,
+            .setSelection = bridgeSetSelection,
             .notifyChange = bridgeNotifyChange,
         };
     }

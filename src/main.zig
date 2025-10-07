@@ -90,9 +90,11 @@ pub fn main() !void {
         .highlighter = &app.editor.highlighter,
         .selection_start = &app.editor.selection_start,
         .selection_end = &app.editor.selection_end,
-        .active_buffer_id = 1,
+        .active_buffer_id = app.getActiveBufferId(),
         .bridge = app.makeEditorBridge(),
     };
+
+    app.setEditorContext(&editor_context);
 
     var plugin_api = runtime.PluginAPI.init(allocator, &editor_context);
     defer plugin_api.deinit();
@@ -102,6 +104,7 @@ pub fn main() !void {
     defer plugin_manager.deinit();
 
     app.attachPluginManager(&plugin_manager);
+    defer app.closeActiveBuffer();
 
     const discovered_plugins = try plugin_manager.discoverPlugins();
     defer cleanupDiscoveredPlugins(allocator, &plugin_manager, discovered_plugins);
