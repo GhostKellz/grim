@@ -1,6 +1,7 @@
 const std = @import("std");
 const grim = @import("grim");
 const runtime = grim.runtime;
+const EditorLSP = @import("ui_tui").EditorLSP;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -104,6 +105,13 @@ pub fn main() !void {
     defer plugin_manager.deinit();
 
     app.attachPluginManager(&plugin_manager);
+
+    var editor_lsp = try EditorLSP.init(allocator, &app.editor);
+    defer {
+        app.detachEditorLSP();
+        editor_lsp.deinit();
+    }
+    app.attachEditorLSP(editor_lsp);
     defer app.closeActiveBuffer();
 
     const discovered_plugins = try plugin_manager.discoverPlugins();

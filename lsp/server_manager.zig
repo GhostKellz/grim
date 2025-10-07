@@ -83,6 +83,7 @@ pub const ServerManager = struct {
         defer self.allocator.free(root_uri);
 
         _ = try server.client.sendInitialize(root_uri);
+        try server.client.startReaderLoop();
 
         return server;
     }

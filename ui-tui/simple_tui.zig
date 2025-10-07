@@ -3,6 +3,7 @@ const runtime = @import("runtime");
 const syntax = @import("syntax");
 const theme_mod = @import("theme.zig");
 const Editor = @import("editor.zig").Editor;
+const editor_lsp_mod = @import("editor_lsp.zig");
 
 pub const SimpleTUI = struct {
     allocator: std.mem.Allocator,
@@ -13,6 +14,7 @@ pub const SimpleTUI = struct {
     theme_registry: theme_mod.ThemeRegistry,
     active_theme: theme_mod.Theme,
     plugin_manager: ?*runtime.PluginManager,
+    editor_lsp: ?*editor_lsp_mod.EditorLSP,
     highlight_cache: []syntax.HighlightRange,
     highlight_dirty: bool,
     highlight_error: ?[]u8,
@@ -25,6 +27,14 @@ pub const SimpleTUI = struct {
     editor_context: ?*runtime.PluginAPI.EditorContext,
     current_buffer_id: runtime.PluginAPI.BufferId,
     next_buffer_id: runtime.PluginAPI.BufferId,
+    completion_popup_active: bool,
+    completion_selected_index: usize,
+    completion_items: []editor_lsp_mod.EditorLSP.Completion,
+    completion_items_heap: bool,
+    completion_prefix: std.ArrayList(u8),
+    completion_anchor_offset: ?usize,
+    completion_generation_seen: u64,
+    completion_dirty: bool,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
         const command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
@@ -38,6 +48,7 @@ pub const SimpleTUI = struct {
             .theme_registry = theme_mod.ThemeRegistry.init(allocator),
             .active_theme = theme_mod.Theme.defaultDark(),
             .plugin_manager = null,
+            .editor_lsp = null,
             .highlight_cache = &.{},
             .highlight_dirty = true,
             .highlight_error = null,
@@ -50,11 +61,21 @@ pub const SimpleTUI = struct {
             .editor_context = null,
             .current_buffer_id = 1,
             .next_buffer_id = 2,
+            .completion_popup_active = false,
+            .completion_selected_index = 0,
+            .completion_items = &.{},
+            .completion_items_heap = false,
+            .completion_prefix = std.ArrayList(u8).init(allocator),
+            .completion_anchor_offset = null,
+            .completion_generation_seen = 0,
+            .completion_dirty = false,
         };
         return self;
     }
 
     pub fn deinit(self: *SimpleTUI) void {
+        self.clearCompletionDisplay();
+        self.completion_prefix.deinit(self.allocator);
         if (self.highlight_cache.len > 0) {
             self.allocator.free(self.highlight_cache);
         }
@@ -92,6 +113,7 @@ pub const SimpleTUI = struct {
         };
 
         try self.editor.loadFile(path);
+    self.closeCompletionPopup();
         self.markHighlightsDirty();
 
         const filename = self.editor.current_filename orelse path;
@@ -107,6 +129,12 @@ pub const SimpleTUI = struct {
             self.emitBufferOpened(new_id, filename);
         } else {
             self.emitBufferOpened(self.current_buffer_id, filename);
+        }
+
+        if (self.editor_lsp) |lsp| {
+            lsp.openFile(filename) catch |err| {
+                std.log.warn("Failed to open file for LSP: {}", .{err});
+            };
         }
 
         if (self.plugin_manager) |manager| {
@@ -172,6 +200,14 @@ pub const SimpleTUI = struct {
         }
     }
 
+    pub fn attachEditorLSP(self: *SimpleTUI, editor_lsp: *editor_lsp_mod.EditorLSP) void {
+        self.editor_lsp = editor_lsp;
+    }
+
+    pub fn detachEditorLSP(self: *SimpleTUI) void {
+        self.editor_lsp = null;
+    }
+
     pub fn setEditorContext(self: *SimpleTUI, ctx: *runtime.PluginAPI.EditorContext) void {
         self.editor_context = ctx;
         ctx.active_buffer_id = self.current_buffer_id;
@@ -231,6 +267,13 @@ pub const SimpleTUI = struct {
     }
 
     pub fn closeActiveBuffer(self: *SimpleTUI) void {
+        if (self.editor.current_filename) |path| {
+            if (self.editor_lsp) |lsp| {
+                lsp.closeFile(path) catch |err| {
+                    std.log.warn("Failed to close LSP document: {}", .{err});
+                };
+            }
+        }
         self.emitBufferClosed(self.current_buffer_id);
     }
 
@@ -238,6 +281,8 @@ pub const SimpleTUI = struct {
         // Get terminal size (simplified)
         const width = 80;
         const height = 24;
+
+        self.applyPendingDefinition();
 
         try self.clearScreen();
         try self.setCursor(1, 1);
@@ -256,6 +301,13 @@ pub const SimpleTUI = struct {
 
         const content_width: usize = if (width > 6) width - 6 else 0;
 
+        var diagnostics_entries: []const editor_lsp_mod.EditorLSP.Diagnostic = &[_]editor_lsp_mod.EditorLSP.Diagnostic{};
+        if (self.editor_lsp) |lsp| {
+            if (self.editor.current_filename) |filename| {
+                diagnostics_entries = lsp.getDiagnostics(filename) orelse diagnostics_entries;
+            }
+        }
+
         var line_start: usize = 0;
         var logical_line: usize = 0;
 
@@ -265,10 +317,16 @@ pub const SimpleTUI = struct {
             const line_end = if (rel_newline) |rel| line_start + rel else content.len;
             const line_slice = content[line_start..line_end];
 
-            // Line numbers
+            // Line numbers + diagnostic marker column
             var line_buf: [16]u8 = undefined;
-            const line_str = try std.fmt.bufPrint(&line_buf, "{d:4} ", .{logical_line + 1});
+            const line_str = try std.fmt.bufPrint(&line_buf, "{d:4}", .{logical_line + 1});
             try self.stdout.writeAll(line_str);
+
+            const line_diag = selectLineDiagnostic(diagnostics_entries, logical_line);
+            const marker = if (line_diag) |diag| severityMarker(diag.severity) else ' ';
+            var marker_buf = [1]u8{marker};
+            try self.stdout.writeAll(marker_buf[0..]);
+            try self.stdout.writeAll(" ");
 
             if (content_width > 0) {
                 try self.renderHighlightedLine(line_slice, logical_line, content_width);
@@ -283,6 +341,8 @@ pub const SimpleTUI = struct {
         while (logical_line < height - 2) : (logical_line += 1) {
             try self.stdout.writeAll("~\r\n");
         }
+
+        try self.renderCompletionBar(width, height);
 
         // Status line
         try self.setCursor(height, 1);
@@ -313,8 +373,9 @@ pub const SimpleTUI = struct {
             .command => "COMMAND",
         };
 
-        const cursor_line = self.getCursorLine();
-        const cursor_col = self.getCursorColumn();
+    const cursor_line = self.getCursorLine();
+    const cursor_col = self.getCursorColumn();
+    const cursor_diag = selectLineDiagnostic(diagnostics_entries, cursor_line);
 
         const language = self.editor.getLanguageName();
 
@@ -348,6 +409,33 @@ pub const SimpleTUI = struct {
             if (msg.len > max_msg_len) {
                 const ellipsis_slice = try std.fmt.bufPrint(status_buf[status_len..], "…", .{});
                 status_len += ellipsis_slice.len;
+            }
+        }
+
+        if (cursor_diag) |diag| {
+            const label = severityLabel(diag.severity);
+            const max_diag_len: usize = 60;
+            const trimmed_len = if (diag.message.len > max_diag_len) max_diag_len else diag.message.len;
+            const diag_slice = try std.fmt.bufPrint(status_buf[status_len..], " | {s}: {s}", .{ label, diag.message[0..trimmed_len] });
+            status_len += diag_slice.len;
+            if (diag.message.len > max_diag_len) {
+                const ellipsis_slice = try std.fmt.bufPrint(status_buf[status_len..], "…", .{});
+                status_len += ellipsis_slice.len;
+            }
+        }
+
+        if (self.editor_lsp) |lsp| {
+            if (lsp.getHoverInfo()) |hover| {
+                if (hover.len > 0) {
+                    const max_hover_len: usize = 40;
+                    const trimmed_len = if (hover.len > max_hover_len) max_hover_len else hover.len;
+                    const hover_slice = try std.fmt.bufPrint(status_buf[status_len..], " | Hover: {s}", .{hover[0..trimmed_len]});
+                    status_len += hover_slice.len;
+                    if (hover.len > max_hover_len) {
+                        const ellipsis_slice = try std.fmt.bufPrint(status_buf[status_len..], "…", .{});
+                        status_len += ellipsis_slice.len;
+                    }
+                }
             }
         }
 
@@ -443,10 +531,32 @@ pub const SimpleTUI = struct {
         } else if (key_bytes.len == 3 and key_bytes[0] == 27 and key_bytes[1] == '[') {
             // Arrow keys
             switch (key_bytes[2]) {
-                'A' => self.editor.moveCursorUp(), // Up arrow
-                'B' => self.editor.moveCursorDown(), // Down arrow
-                'C' => self.editor.moveCursorRight(), // Right arrow
-                'D' => self.editor.moveCursorLeft(), // Left arrow
+                'A' => { // Up arrow
+                    if (self.editor.mode == .insert and self.completion_popup_active and self.completion_items.len > 0) {
+                        self.moveCompletionSelection(-1);
+                    } else {
+                        self.editor.moveCursorUp();
+                    }
+                },
+                'B' => { // Down arrow
+                    if (self.editor.mode == .insert and self.completion_popup_active and self.completion_items.len > 0) {
+                        self.moveCompletionSelection(1);
+                    } else {
+                        self.editor.moveCursorDown();
+                    }
+                },
+                'C' => { // Right arrow
+                    self.editor.moveCursorRight();
+                    if (self.editor.mode == .insert and self.completion_popup_active) {
+                        self.completion_dirty = true;
+                    }
+                },
+                'D' => { // Left arrow
+                    self.editor.moveCursorLeft();
+                    if (self.editor.mode == .insert and self.completion_popup_active) {
+                        self.completion_dirty = true;
+                    }
+                },
                 else => {},
             }
         }
@@ -489,6 +599,8 @@ pub const SimpleTUI = struct {
                 // TODO: Handle 'gg' for goto top
             },
             'G' => self.editor.moveCursorToEnd(),
+            'H' => self.requestLspHover(),
+            'D' => self.requestLspDefinition(),
             ':' => self.startCommandMode(),
             'v' => self.switchMode(.visual),
             'q' => self.running = false, // Simple quit
@@ -499,11 +611,50 @@ pub const SimpleTUI = struct {
     fn handleInsertMode(self: *SimpleTUI, key: u8) !void {
         switch (key) {
             27 => self.switchMode(.normal), // ESC
-            8, 127 => try self.editor.backspace(), // Backspace/Delete
-            13 => try self.editor.insertChar('\n'), // Enter
+            0 => self.triggerCompletionRequest(), // Ctrl+Space
+            8, 127 => { // Backspace/Delete
+                try self.editor.backspace();
+                self.afterTextEdit();
+                if (self.completion_popup_active) {
+                    self.completion_dirty = true;
+                }
+            },
+            9 => { // Tab
+                if (self.completion_popup_active and self.completion_items.len > 0) {
+                    self.moveCompletionSelection(1);
+                } else {
+                    try self.editor.insertChar('\t');
+                    self.afterTextEdit();
+                }
+            },
+            13 => { // Enter
+                if (self.completion_popup_active and self.completion_items.len > 0) {
+                    try self.acceptCompletionSelection();
+                } else {
+                    try self.editor.insertChar('\n');
+                    self.afterTextEdit();
+                    self.closeCompletionPopup();
+                }
+            },
+            14 => { // Ctrl+N
+                if (self.completion_popup_active and self.completion_items.len > 0) {
+                    self.moveCompletionSelection(1);
+                }
+            },
+            16 => { // Ctrl+P
+                if (self.completion_popup_active and self.completion_items.len > 0) {
+                    self.moveCompletionSelection(-1);
+                }
+            },
             else => {
                 if (key >= 32 and key < 127) { // Printable ASCII
                     try self.editor.insertChar(key);
+                    self.afterTextEdit();
+                    if (self.completion_popup_active) {
+                        self.completion_dirty = true;
+                    } else {
+                        self.maybeTriggerAutoCompletion(key);
+                    }
                 }
             },
         }
@@ -561,6 +712,10 @@ pub const SimpleTUI = struct {
         const current = self.editor.mode;
         if (current == new_mode) return;
         self.editor.mode = new_mode;
+
+        if (new_mode != .insert) {
+            self.closeCompletionPopup();
+        }
 
         if (self.plugin_manager) |manager| {
             const event_data = runtime.PluginAPI.EventData{
@@ -705,6 +860,12 @@ pub const SimpleTUI = struct {
         }
 
         self.emitBufferSaved(self.current_buffer_id, path);
+
+        if (self.editor_lsp) |lsp| {
+            lsp.notifyFileSaved(path) catch |err| {
+                std.log.warn("Failed to notify LSP about save: {}", .{err});
+            };
+        }
     }
 
     fn executePluginCommand(self: *SimpleTUI, name: []const u8, args: []const []const u8) !void {
@@ -876,6 +1037,13 @@ pub const SimpleTUI = struct {
             self.editor.cursor.offset = cursor_ptr.byte_offset;
             self.updatePluginCursorFromEditor();
         }
+        if (self.editor_lsp) |lsp| {
+            if (self.editor.current_filename) |path| {
+                lsp.notifyBufferChange(path) catch |err| {
+                    std.log.warn("Failed to send LSP change notification: {}", .{err});
+                };
+            }
+        }
     }
 
     pub fn makeEditorBridge(self: *SimpleTUI) runtime.PluginAPI.EditorContext.EditorBridge {
@@ -888,6 +1056,92 @@ pub const SimpleTUI = struct {
             .setSelection = bridgeSetSelection,
             .notifyChange = bridgeNotifyChange,
         };
+    }
+
+    fn requestLspHover(self: *SimpleTUI) void {
+        const lsp = self.editor_lsp orelse {
+            self.setStatusMessage("LSP inactive");
+            return;
+        };
+
+        const path = self.editor.current_filename orelse {
+            self.setStatusMessage("No active file");
+            return;
+        };
+
+        const line_idx = self.getCursorLine();
+        const char_idx = self.getCursorColumn();
+        const line = std.math.cast(u32, line_idx) orelse std.math.maxInt(u32);
+        const character = std.math.cast(u32, char_idx) orelse std.math.maxInt(u32);
+
+        lsp.requestHover(path, line, character) catch |err| {
+            std.log.warn("Failed to request hover: {}", .{err});
+            self.setStatusMessage("Hover request failed");
+            return;
+        };
+
+        self.setStatusMessage("Hover requested");
+    }
+
+    fn requestLspDefinition(self: *SimpleTUI) void {
+        const lsp = self.editor_lsp orelse {
+            self.setStatusMessage("LSP inactive");
+            return;
+        };
+
+        const path = self.editor.current_filename orelse {
+            self.setStatusMessage("No active file");
+            return;
+        };
+
+        const line_idx = self.getCursorLine();
+        const char_idx = self.getCursorColumn();
+        const line = std.math.cast(u32, line_idx) orelse std.math.maxInt(u32);
+        const character = std.math.cast(u32, char_idx) orelse std.math.maxInt(u32);
+
+        lsp.requestDefinition(path, line, character) catch |err| {
+            std.log.warn("Failed to request definition: {}", .{err});
+            self.setStatusMessage("Definition request failed");
+            return;
+        };
+
+        self.setStatusMessage("Definition requested");
+    }
+
+    fn applyPendingDefinition(self: *SimpleTUI) void {
+        const lsp = self.editor_lsp orelse return;
+
+        while (lsp.takeDefinitionResult()) |result| {
+            const def = result;
+            defer lsp.freeDefinitionResult(def);
+
+            const path_slice: []const u8 = def.path;
+            const same_file = blk: {
+                if (self.editor.current_filename) |current| {
+                    break :blk std.mem.eql(u8, current, path_slice);
+                }
+                break :blk false;
+            };
+
+            if (!same_file) {
+                const load_result = self.loadFile(path_slice);
+                if (load_result) |_| {
+                    self.markHighlightsDirty();
+                } else |err| {
+                    std.log.warn("Failed to open definition target '{s}': {}", .{ path_slice, err });
+                    self.setStatusMessage("Definition open failed");
+                    continue;
+                }
+            }
+
+            const offset = lsp.offsetFromPosition(def.line, def.character);
+            self.editor.cursor.offset = if (offset <= self.editor.rope.len()) offset else self.editor.rope.len();
+            self.editor.selection_start = null;
+            self.editor.selection_end = null;
+            self.updatePluginCursorFromEditor();
+
+            self.setStatusMessage("Jumped to definition");
+        }
     }
 
     fn updatePluginCursorFromEditor(self: *SimpleTUI) void {
@@ -917,6 +1171,170 @@ pub const SimpleTUI = struct {
         var buf: [32]u8 = undefined;
         const seq = try std.fmt.bufPrint(&buf, "\x1B[{d};{d}H", .{ row, col });
         try self.stdout.writeAll(seq);
+    }
+
+    fn clearLineAt(self: *SimpleTUI, row: usize, width: usize) !void {
+        try self.setCursor(row, 1);
+        var blank: [128]u8 = undefined;
+        const chunk = @min(blank.len, width);
+        @memset(blank[0..chunk], ' ');
+        var remaining = width;
+        while (remaining > 0) {
+            const emit = @min(chunk, remaining);
+            try self.stdout.writeAll(blank[0..emit]);
+            remaining -= emit;
+        }
+        try self.setCursor(row, 1);
+    }
+
+    fn renderCompletionBar(self: *SimpleTUI, width: usize, height: usize) !void {
+        const status_row = if (height > 0) height else 1;
+        const popup_height: usize = 6; // 4 entries + header/footer
+        const popup_row = if (status_row > popup_height) status_row - popup_height else 1;
+
+        var row = popup_row;
+        var lines_to_clear: usize = popup_height;
+        while (lines_to_clear > 0) : (lines_to_clear -= 1) {
+            try self.clearLineAt(row, width);
+            row += 1;
+        }
+
+        if (!self.completion_popup_active) return;
+
+        const lsp = self.editor_lsp orelse {
+            self.closeCompletionPopup();
+            return;
+        };
+
+        var needs_refresh = self.completion_dirty;
+        const generation = lsp.getCompletionGeneration();
+        if (generation != self.completion_generation_seen) {
+            self.completion_generation_seen = generation;
+            needs_refresh = true;
+        }
+
+        if (needs_refresh) {
+            self.refreshCompletionPrefix() catch {
+                self.closeCompletionPopup();
+                return;
+            };
+
+            if (self.completion_popup_active) {
+                self.refreshCompletionDisplay(lsp);
+            }
+        }
+
+        const list_window = popup_height - 2;
+        if (self.completion_items.len == 0) {
+            try self.displayCenteredMessage(popup_row, width, "Waiting for completions…");
+            return;
+        }
+
+        const visible = self.computeVisibleCompletions(list_window);
+        try self.renderCompletionList(popup_row, width, visible.start, visible.count);
+    }
+
+    const VisibleWindow = struct { start: usize, count: usize };
+
+    fn computeVisibleCompletions(self: *SimpleTUI, capacity: usize) VisibleWindow {
+        if (capacity == 0 or self.completion_items.len == 0) return .{ .start = 0, .count = 0 };
+
+        const total = self.completion_items.len;
+        const selected = self.completion_selected_index;
+
+        const half = capacity / 2;
+        var start = if (selected > half) selected - half else 0;
+        if (start + capacity > total) {
+            if (total > capacity) {
+                start = total - capacity;
+            } else {
+                start = 0;
+            }
+        }
+
+        const remaining = total - start;
+        const count = if (remaining < capacity) remaining else capacity;
+        return .{ .start = start, .count = count };
+    }
+
+    fn displayCenteredMessage(self: *SimpleTUI, row_start: usize, width: usize, message: []const u8) !void {
+        const centered_col = if (message.len >= width) 1 else (width - message.len) / 2 + 1;
+        try self.setCursor(row_start + 1, centered_col);
+        try self.stdout.writeAll(message[0..@min(message.len, width)]);
+    }
+
+    fn renderCompletionList(self: *SimpleTUI, row_start: usize, width: usize, start: usize, count: usize) !void {
+        const total = self.completion_items.len;
+        const selected = self.completion_selected_index;
+        const header_row = row_start;
+        const list_row = row_start + 1;
+        const detail_row = row_start + 4;
+        const footer_row = row_start + 5;
+
+        // Header
+        try self.setCursor(header_row, 1);
+        var header_buf: [128]u8 = undefined;
+        const header_slice = try std.fmt.bufPrint(&header_buf, "Completions {d}/{d} (prefix: {s})", .{ selected + 1, total, self.completion_prefix.items });
+        try self.stdout.writeAll(header_slice[0..@min(header_slice.len, width)]);
+
+        // Entries
+        var idx: usize = 0;
+        while (idx < count) : (idx += 1) {
+            const absolute = start + idx;
+            const comp = self.completion_items[absolute];
+            const is_selected = absolute == selected;
+
+            var line_buf: [256]u8 = undefined;
+            var stream = std.io.fixedBufferStream(&line_buf);
+            const writer = stream.writer();
+
+            try writer.print("{s}{s}", .{ if (is_selected) "→ " else "  ", comp.label });
+            if (comp.detail) |detail| {
+                try writer.print(" — {s}", .{detail});
+            }
+
+            const slice = line_buf[0..stream.pos];
+            try self.setCursor(list_row + idx, 1);
+            try self.stdout.writeAll(slice[0..@min(slice.len, width)]);
+        }
+
+        // Inline documentation or detail preview
+        try self.renderCompletionDetails(detail_row, width);
+
+        // Footer
+        try self.setCursor(footer_row, 1);
+        const footer = "Tab/Ctrl+N next • Ctrl+P prev • Enter apply • Esc cancel";
+        try self.stdout.writeAll(footer[0..@min(footer.len, width)]);
+    }
+
+    fn renderCompletionDetails(self: *SimpleTUI, row: usize, width: usize) !void {
+        if (self.completion_items.len == 0) return;
+
+        const comp = self.completion_items[self.completion_selected_index];
+        try self.setCursor(row, 1);
+
+        if (comp.documentation) |doc| {
+            try self.writeWrapped(doc, width, row, 2);
+        } else if (comp.detail) |detail| {
+            try self.stdout.writeAll(detail[0..@min(detail.len, width)]);
+        } else {
+            const placeholder = "(no documentation available)";
+            try self.stdout.writeAll(placeholder[0..@min(placeholder.len, width)]);
+        }
+    }
+
+    fn writeWrapped(self: *SimpleTUI, text: []const u8, width: usize, row_start: usize, max_lines: usize) !void {
+        var remaining = text;
+        var row = row_start;
+        var lines_written: usize = 0;
+        while (remaining.len > 0 and lines_written < max_lines) {
+            const take = @min(remaining.len, width);
+            try self.setCursor(row, 1);
+            try self.stdout.writeAll(remaining[0..take]);
+            remaining = remaining[take..];
+            row += 1;
+            lines_written += 1;
+        }
     }
 
     fn showCursor(self: *SimpleTUI) !void {
@@ -978,6 +1396,471 @@ pub const SimpleTUI = struct {
         self.highlight_error_logged = false;
     }
 
+    fn afterTextEdit(self: *SimpleTUI) void {
+        self.markHighlightsDirty();
+        self.updatePluginCursorFromEditor();
+        if (self.editor_lsp) |lsp| {
+            if (self.editor.current_filename) |path| {
+                lsp.notifyBufferChange(path) catch |err| {
+                    std.log.warn("Failed to send LSP change notification: {}", .{err});
+                };
+            }
+        }
+    }
+
+    fn clearCompletionDisplay(self: *SimpleTUI) void {
+        if (self.completion_items_heap) {
+            self.allocator.free(self.completion_items);
+        }
+        self.completion_items = &.{};
+        self.completion_items_heap = false;
+        self.completion_selected_index = 0;
+    }
+
+    fn closeCompletionPopup(self: *SimpleTUI) void {
+        if (!self.completion_popup_active) return;
+        self.completion_popup_active = false;
+        self.completion_anchor_offset = null;
+        self.completion_generation_seen = 0;
+        self.completion_dirty = false;
+        self.clearCompletionDisplay();
+        self.completion_prefix.clearRetainingCapacity();
+    }
+
+    fn isWordChar(ch: u8) bool {
+        return std.ascii.isAlphanumeric(ch) or ch == '_';
+    }
+
+    fn captureCompletionContext(self: *SimpleTUI) !void {
+        const cursor_offset = self.editor.cursor.offset;
+        const head = try self.editor.rope.slice(.{ .start = 0, .end = cursor_offset });
+        defer self.allocator.free(head);
+
+        var anchor = cursor_offset;
+        while (anchor > 0) {
+            const ch = head[anchor - 1];
+            if (!isWordChar(ch)) break;
+            anchor -= 1;
+        }
+
+        self.completion_anchor_offset = anchor;
+        self.completion_prefix.clearRetainingCapacity();
+        const prefix_slice = head[anchor..];
+        if (prefix_slice.len > 0) {
+            try self.completion_prefix.appendSlice(self.allocator, prefix_slice);
+        }
+    }
+
+    fn refreshCompletionPrefix(self: *SimpleTUI) !void {
+        const anchor = self.completion_anchor_offset orelse {
+            self.closeCompletionPopup();
+            return;
+        };
+
+        const cursor_offset = self.editor.cursor.offset;
+        if (cursor_offset < anchor) {
+            self.closeCompletionPopup();
+            return;
+        }
+
+        const slice = try self.editor.rope.slice(.{ .start = anchor, .end = cursor_offset });
+        defer self.allocator.free(slice);
+
+        self.completion_prefix.clearRetainingCapacity();
+        if (slice.len > 0) {
+            try self.completion_prefix.appendSlice(self.allocator, slice);
+        }
+    }
+
+    fn refreshCompletionDisplay(self: *SimpleTUI, lsp: *editor_lsp_mod.EditorLSP) void {
+        self.clearCompletionDisplay();
+
+        const filtered = lsp.filterCompletions(self.allocator, self.completion_prefix.items) catch |err| {
+            std.log.warn("Failed to filter completions: {}", .{err});
+            self.setStatusMessage("Completion update failed");
+            return;
+        };
+
+        self.completion_items = filtered;
+        self.completion_items_heap = true;
+        if (self.completion_items.len == 0) {
+            self.completion_selected_index = 0;
+        } else if (self.completion_selected_index >= self.completion_items.len) {
+            self.completion_selected_index = self.completion_items.len - 1;
+        }
+        self.completion_dirty = false;
+    }
+
+    fn triggerCompletionRequest(self: *SimpleTUI) void {
+        const lsp = self.editor_lsp orelse {
+            self.setStatusMessage("LSP inactive");
+            return;
+        };
+
+        const path = self.editor.current_filename orelse {
+            self.setStatusMessage("No active file");
+            return;
+        };
+
+        self.clearCompletionDisplay();
+
+        self.captureCompletionContext() catch |err| {
+            std.log.warn("Failed to capture completion context: {}", .{err});
+            self.setStatusMessage("Completion unavailable");
+            return;
+        };
+
+        const line_idx = self.getCursorLine();
+        const col_idx = self.getCursorColumn();
+        const line = std.math.cast(u32, line_idx) orelse std.math.maxInt(u32);
+        const character = std.math.cast(u32, col_idx) orelse std.math.maxInt(u32);
+
+        lsp.requestCompletion(path, line, character) catch |err| {
+            std.log.warn("Failed to request completion: {}", .{err});
+            self.setStatusMessage("Completion request failed");
+            self.closeCompletionPopup();
+            return;
+        };
+
+        self.completion_popup_active = true;
+        self.completion_selected_index = 0;
+        self.completion_dirty = true;
+        self.completion_generation_seen = lsp.getCompletionGeneration();
+    }
+
+    fn maybeTriggerAutoCompletion(self: *SimpleTUI, typed_char: u8) void {
+        const lsp = self.editor_lsp orelse return;
+        if (!lsp.shouldTriggerCompletion(typed_char)) return;
+        self.triggerCompletionRequest();
+    }
+
+    fn moveCompletionSelection(self: *SimpleTUI, direction: i32) void {
+        if (!self.completion_popup_active) return;
+        if (self.completion_items.len == 0) return;
+
+        const len = self.completion_items.len;
+        if (direction > 0) {
+            self.completion_selected_index = (self.completion_selected_index + 1) % len;
+        } else if (direction < 0) {
+            if (self.completion_selected_index == 0) {
+                self.completion_selected_index = len - 1;
+            } else {
+                self.completion_selected_index -= 1;
+            }
+        }
+    }
+
+    fn acceptCompletionSelection(self: *SimpleTUI) !void {
+        if (!self.completion_popup_active) return;
+        if (self.completion_items.len == 0) {
+            self.closeCompletionPopup();
+            return;
+        }
+
+        const anchor = self.completion_anchor_offset orelse {
+            self.closeCompletionPopup();
+            return;
+        };
+
+        const comp = self.completion_items[self.completion_selected_index];
+        try self.applyCompletion(comp, anchor);
+        self.setStatusMessage("Inserted completion");
+        self.closeCompletionPopup();
+    }
+
+    const SelectionRange = struct { start: usize, end: usize };
+
+    fn applyCompletion(self: *SimpleTUI, comp: editor_lsp_mod.EditorLSP.Completion, anchor: usize) !void {
+        var selection: ?SelectionRange = null;
+
+        if (comp.text_edit) |edit| {
+            selection = try self.applyTextEditCompletion(edit, comp.insert_text_format);
+        } else {
+            const cursor_offset = self.editor.cursor.offset;
+            if (cursor_offset < anchor) return;
+
+            const prefix_len = cursor_offset - anchor;
+            if (prefix_len > 0) {
+                try self.editor.rope.delete(anchor, prefix_len);
+            }
+
+            const insert_text = comp.insert_text orelse comp.label;
+            if (comp.insert_text_format == .snippet) {
+                selection = try self.insertSnippetText(anchor, insert_text);
+            } else {
+                try self.editor.rope.insert(anchor, insert_text);
+                self.editor.cursor.offset = anchor + insert_text.len;
+            }
+        }
+
+        if (selection) |sel| {
+            if (sel.start != sel.end) {
+                self.editor.selection_start = sel.start;
+                self.editor.selection_end = sel.end;
+            } else {
+                self.editor.selection_start = null;
+                self.editor.selection_end = null;
+            }
+        } else {
+            self.editor.selection_start = null;
+            self.editor.selection_end = null;
+        }
+
+        self.updatePluginCursorFromEditor();
+        self.afterTextEdit();
+    }
+
+    fn applyTextEditCompletion(
+        self: *SimpleTUI,
+        edit: editor_lsp_mod.EditorLSP.Completion.TextEdit,
+        format: editor_lsp_mod.EditorLSP.Completion.InsertTextFormat,
+    ) !?SelectionRange {
+    if (self.editor_lsp == null) return null;
+
+        const lsp = self.editor_lsp.?;
+        const start_offset = lsp.offsetFromPosition(edit.range.start.line, edit.range.start.character);
+        const end_offset = lsp.offsetFromPosition(edit.range.end.line, edit.range.end.character);
+
+        if (end_offset > start_offset) {
+            try self.editor.rope.delete(start_offset, end_offset - start_offset);
+        }
+
+        switch (format) {
+            .snippet => {
+                const expansion = self.expandSnippet(edit.new_text) catch |err| {
+                    std.log.warn("Failed to expand snippet text edit: {}", .{err});
+                    try self.editor.rope.insert(start_offset, edit.new_text);
+                    self.editor.cursor.offset = start_offset + edit.new_text.len;
+                    return null;
+                };
+                defer self.allocator.free(expansion.text);
+
+                try self.editor.rope.insert(start_offset, expansion.text);
+                self.editor.cursor.offset = start_offset + expansion.caret;
+
+                if (expansion.selection) |sel| {
+                    return .{ .start = start_offset + sel.start, .end = start_offset + sel.end };
+                }
+                return null;
+            },
+            .plain_text => {
+                try self.editor.rope.insert(start_offset, edit.new_text);
+                self.editor.cursor.offset = start_offset + edit.new_text.len;
+                return null;
+            },
+        }
+    }
+
+    fn insertSnippetText(self: *SimpleTUI, anchor: usize, snippet: []const u8) !?SelectionRange {
+        const expansion = self.expandSnippet(snippet) catch |err| {
+            std.log.warn("Failed to expand snippet: {}", .{err});
+            try self.editor.rope.insert(anchor, snippet);
+            self.editor.cursor.offset = anchor + snippet.len;
+            return null;
+        };
+        defer self.allocator.free(expansion.text);
+
+        try self.editor.rope.insert(anchor, expansion.text);
+        self.editor.cursor.offset = anchor + expansion.caret;
+
+        if (expansion.selection) |sel| {
+            return .{ .start = anchor + sel.start, .end = anchor + sel.end };
+        }
+        return null;
+    }
+
+    const SnippetExpansion = struct {
+        text: []u8,
+        caret: usize,
+        selection: ?SelectionRange,
+    };
+
+    fn expandSnippet(self: *SimpleTUI, snippet: []const u8) !SnippetExpansion {
+        var buffer = std.ArrayList(u8).init(self.allocator);
+        errdefer buffer.deinit();
+
+        const PlaceholderInfo = struct {
+            id: u32,
+            offset: usize,
+            length: usize,
+        };
+
+        var best_placeholder: ?PlaceholderInfo = null;
+        var final_stop: ?PlaceholderInfo = null;
+
+        var idx: usize = 0;
+        while (idx < snippet.len) {
+            const ch = snippet[idx];
+            if (ch == '\\' and idx + 1 < snippet.len) {
+                try buffer.append(snippet[idx + 1]);
+                idx += 2;
+                continue;
+            }
+
+            if (ch == '$') {
+                if (idx + 1 < snippet.len and std.ascii.isDigit(snippet[idx + 1])) {
+                    var j = idx + 1;
+                    while (j < snippet.len and std.ascii.isDigit(snippet[j])) j += 1;
+                    const id_slice = snippet[idx + 1 .. j];
+                    const id = std.fmt.parseUnsigned(u32, id_slice, 10) catch {
+                        try buffer.append('$');
+                        idx += 1;
+                        continue;
+                    };
+
+                    const info = PlaceholderInfo{ .id = id, .offset = buffer.items.len, .length = 0 };
+                    if (id == 0) {
+                        if (final_stop == null) final_stop = info;
+                    } else if (best_placeholder == null or id < best_placeholder.?.id) {
+                        best_placeholder = info;
+                    }
+                    idx = j;
+                    continue;
+                } else if (idx + 1 < snippet.len and snippet[idx + 1] == '{') {
+                    var j = idx + 2;
+                    var depth: usize = 1;
+                    while (j < snippet.len) {
+                        const c = snippet[j];
+                        if (c == '\\' and j + 1 < snippet.len) {
+                            j += 2;
+                            continue;
+                        } else if (c == '{') {
+                            depth += 1;
+                            j += 1;
+                            continue;
+                        } else if (c == '}') {
+                            depth -= 1;
+                            if (depth == 0) break;
+                            j += 1;
+                            continue;
+                        } else {
+                            j += 1;
+                        }
+                    }
+
+                    if (depth != 0 or j >= snippet.len) {
+                        try buffer.append('$');
+                        idx += 1;
+                        continue;
+                    }
+
+                    const body = snippet[idx + 2 .. j];
+                    if (parseSnippetPlaceholder(body)) |placeholder| {
+                        const placeholder_offset = buffer.items.len;
+                        var inserted_len: usize = 0;
+                        if (placeholder.default_text) |default_slice| {
+                            const normalized = normalizePlaceholderDefault(default_slice);
+                            inserted_len = buffer.items.len;
+                            try appendSnippetPlain(&buffer, normalized);
+                            inserted_len = buffer.items.len - placeholder_offset;
+                        }
+
+                        const info = PlaceholderInfo{
+                            .id = placeholder.id,
+                            .offset = placeholder_offset,
+                            .length = inserted_len,
+                        };
+
+                        if (placeholder.id == 0) {
+                            if (final_stop == null) final_stop = info;
+                        } else if (best_placeholder == null or placeholder.id < best_placeholder.?.id) {
+                            best_placeholder = info;
+                        }
+
+                        idx = j + 1;
+                        continue;
+                    }
+
+                    try buffer.append('$');
+                    idx += 1;
+                    continue;
+                }
+            }
+
+            try buffer.append(ch);
+            idx += 1;
+        }
+
+        const final_len = buffer.items.len;
+        const fallback = PlaceholderInfo{ .id = 0, .offset = final_len, .length = 0 };
+        const chosen = if (best_placeholder) |sel|
+            sel
+        else if (final_stop) |sel|
+            sel
+        else
+            fallback;
+
+        const text = try buffer.toOwnedSlice();
+        const caret = chosen.offset + chosen.length;
+        const selection = if (chosen.length > 0)
+            SelectionRange{ .start = chosen.offset, .end = chosen.offset + chosen.length }
+        else
+            null;
+
+        return SnippetExpansion{
+            .text = text,
+            .caret = caret,
+            .selection = selection,
+        };
+    }
+
+    const SnippetPlaceholder = struct {
+        id: u32,
+        default_text: ?[]const u8,
+    };
+
+    fn parseSnippetPlaceholder(body: []const u8) ?SnippetPlaceholder {
+        if (body.len == 0) return null;
+        var i: usize = 0;
+        while (i < body.len and std.ascii.isDigit(body[i])) : (i += 1) {}
+        if (i == 0) return null;
+
+        const id_slice = body[0..i];
+        const id = std.fmt.parseUnsigned(u32, id_slice, 10) catch return null;
+
+        if (i >= body.len) {
+            return SnippetPlaceholder{ .id = id, .default_text = null };
+        }
+
+        return SnippetPlaceholder{ .id = id, .default_text = body[i..] };
+    }
+
+    fn normalizePlaceholderDefault(default_slice: []const u8) []const u8 {
+        if (default_slice.len == 0) return default_slice;
+
+        if (default_slice[0] == ':') {
+            return default_slice[1..];
+        }
+
+        if (default_slice[0] == '|' and default_slice.len > 1) {
+            const rest = default_slice[1..];
+            if (std.mem.indexOfScalar(u8, rest, '|')) |end_idx| {
+                const choices = rest[0..end_idx];
+                if (std.mem.indexOfScalar(u8, choices, ',')) |comma| {
+                    return choices[0..comma];
+                }
+                return choices;
+            }
+            return rest;
+        }
+
+        return default_slice;
+    }
+
+    fn appendSnippetPlain(buffer: *std.ArrayList(u8), text: []const u8) !void {
+        var idx: usize = 0;
+        while (idx < text.len) {
+            const ch = text[idx];
+            if (ch == '\\' and idx + 1 < text.len) {
+                try buffer.append(text[idx + 1]);
+                idx += 2;
+            } else {
+                try buffer.append(ch);
+                idx += 1;
+            }
+        }
+    }
+
     fn refreshHighlights(self: *SimpleTUI) void {
         if (!self.highlight_dirty) return;
 
@@ -1019,6 +1902,56 @@ pub const SimpleTUI = struct {
 
         self.highlight_cache = new_highlights;
         self.highlight_dirty = false;
+    }
+
+    const LineDiagnostic = struct {
+        severity: editor_lsp_mod.EditorLSP.Diagnostic.Severity,
+        message: []const u8,
+    };
+
+    fn selectLineDiagnostic(diags: []const editor_lsp_mod.EditorLSP.Diagnostic, line_usize: usize) ?LineDiagnostic {
+        if (line_usize > std.math.maxInt(u32)) return null;
+        const line_val: u32 = @intCast(line_usize);
+        var best: ?LineDiagnostic = null;
+        var best_score: u8 = 0;
+
+        for (diags) |diag| {
+            if (line_val < diag.range.start.line or line_val > diag.range.end.line) continue;
+            const score = severityScore(diag.severity);
+            if (score > best_score) {
+                best_score = score;
+                best = .{ .severity = diag.severity, .message = diag.message };
+            }
+        }
+
+        return best;
+    }
+
+    fn severityScore(severity: editor_lsp_mod.EditorLSP.Diagnostic.Severity) u8 {
+        return switch (severity) {
+            .error_sev => 4,
+            .warning => 3,
+            .information => 2,
+            .hint => 1,
+        };
+    }
+
+    fn severityMarker(severity: editor_lsp_mod.EditorLSP.Diagnostic.Severity) u8 {
+        return switch (severity) {
+            .error_sev => 'E',
+            .warning => 'W',
+            .information => 'I',
+            .hint => 'H',
+        };
+    }
+
+    fn severityLabel(severity: editor_lsp_mod.EditorLSP.Diagnostic.Severity) []const u8 {
+        return switch (severity) {
+            .error_sev => "ERR",
+            .warning => "WARN",
+            .information => "INFO",
+            .hint => "HINT",
+        };
     }
 
     fn renderPlainLine(self: *SimpleTUI, line: []const u8, max_width: usize) !void {
@@ -1162,3 +2095,42 @@ pub const SimpleTUI = struct {
         }
     }
 };
+
+test "simple tui expand snippet captures default placeholder" {
+    var tui = try SimpleTUI.init(std.testing.allocator);
+    defer tui.deinit();
+
+    const expansion = try tui.expandSnippet("${1:foo}bar");
+    defer tui.allocator.free(expansion.text);
+
+    try std.testing.expectEqualStrings("foobar", expansion.text);
+    try std.testing.expectEqual(@as(usize, 3), expansion.caret);
+    try std.testing.expect(expansion.selection != null);
+    const sel = expansion.selection.?;
+    try std.testing.expectEqual(@as(usize, 0), sel.start);
+    try std.testing.expectEqual(@as(usize, 3), sel.end);
+}
+
+test "simple tui expand snippet falls back to final stop" {
+    var tui = try SimpleTUI.init(std.testing.allocator);
+    defer tui.deinit();
+
+    const expansion = try tui.expandSnippet("print($0)");
+    defer tui.allocator.free(expansion.text);
+
+    try std.testing.expectEqualStrings("print()", expansion.text);
+    try std.testing.expectEqual(@as(usize, 6), expansion.caret);
+    try std.testing.expect(expansion.selection == null);
+}
+
+test "simple tui expand snippet handles plain tab stop" {
+    var tui = try SimpleTUI.init(std.testing.allocator);
+    defer tui.deinit();
+
+    const expansion = try tui.expandSnippet("$1");
+    defer tui.allocator.free(expansion.text);
+
+    try std.testing.expectEqualStrings("", expansion.text);
+    try std.testing.expectEqual(@as(usize, 0), expansion.caret);
+    try std.testing.expect(expansion.selection == null);
+}

@@ -6,11 +6,11 @@ pub const TransportError = error{
     WriteFailure,
 };
 
-pub const DiagnosticsLogFn = *const fn (ctx: *anyopaque, message: []const u8) std.mem.Allocator.Error!void;
+pub const DiagnosticsHandlerFn = *const fn (ctx: *anyopaque, params: std.json.Value) std.mem.Allocator.Error!void;
 
 pub const DiagnosticsSink = struct {
     ctx: *anyopaque,
-    logFn: DiagnosticsLogFn,
+    handleFn: DiagnosticsHandlerFn,
 };
 
 pub const HoverResponse = struct {
@@ -25,10 +25,16 @@ pub const DefinitionResponse = struct {
     character: u32,
 };
 
+pub const CompletionResponse = struct {
+    request_id: u32,
+    result: std.json.Value,
+};
+
 pub const ResponseCallback = struct {
     ctx: *anyopaque,
     onHover: ?*const fn (ctx: *anyopaque, response: HoverResponse) void,
     onDefinition: ?*const fn (ctx: *anyopaque, response: DefinitionResponse) void,
+    onCompletion: ?*const fn (ctx: *anyopaque, response: CompletionResponse) void,
 };
 
 pub const PendingRequest = struct {
@@ -53,10 +59,13 @@ pub const Client = struct {
     transport: Transport,
     next_id: u32,
     pending_initialize: ?u32,
-    initialized: bool,
+    initialized: std.atomic.Value(bool),
     diagnostics_sink: ?DiagnosticsSink,
     response_callback: ?ResponseCallback,
     pending_requests: std.ArrayList(PendingRequest),
+    pending_mutex: std.Thread.Mutex,
+    reader_thread: ?std.Thread,
+    running: std.atomic.Value(bool),
 
     pub const Error = TransportError || std.mem.Allocator.Error || error{
         ProtocolError,
@@ -70,14 +79,20 @@ pub const Client = struct {
             .transport = transport,
             .next_id = 1,
             .pending_initialize = null,
-            .initialized = false,
+            .initialized = std.atomic.Value(bool).init(false),
             .diagnostics_sink = null,
             .response_callback = null,
             .pending_requests = .empty,
+            .pending_mutex = .{},
+            .reader_thread = null,
+            .running = std.atomic.Value(bool).init(false),
         };
     }
 
     pub fn deinit(self: *Client) void {
+        self.stopReaderLoop();
+        self.pending_mutex.lock();
+        self.pending_mutex.unlock();
         self.pending_requests.deinit(self.allocator);
         self.* = undefined;
     }
@@ -91,7 +106,7 @@ pub const Client = struct {
     }
 
     pub fn isInitialized(self: *const Client) bool {
-        return self.initialized;
+        return self.initialized.load(.acquire);
     }
 
     fn jsonStringify(self: *Client, value: anytype) Error![]u8 {
@@ -127,6 +142,8 @@ pub const Client = struct {
 
         try self.writeMessage(body);
 
+        self.pending_mutex.lock();
+        defer self.pending_mutex.unlock();
         self.pending_initialize = id;
         return id;
     }
@@ -256,6 +273,16 @@ pub const Client = struct {
 
         try self.writeMessage(body);
 
+        // Track pending request for response handling
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
+                .id = id,
+                .kind = .completion,
+            });
+        }
+
         return id;
     }
 
@@ -289,10 +316,14 @@ pub const Client = struct {
         try self.writeMessage(body);
 
         // Track pending request for response handling
-        try self.pending_requests.append(self.allocator, .{
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
             .id = id,
             .kind = .hover,
         });
+        }
 
         return id;
     }
@@ -327,10 +358,14 @@ pub const Client = struct {
         try self.writeMessage(body);
 
         // Track pending request for response handling
-        try self.pending_requests.append(self.allocator, .{
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
             .id = id,
             .kind = .definition,
         });
+        }
 
         return id;
     }
@@ -429,17 +464,15 @@ pub const Client = struct {
                 const response_id: u32 = @intCast(id_node.integer);
 
                 // Check for initialize response
-                if (self.pending_initialize) |expected| {
-                    if (response_id == expected) {
-                        self.pending_initialize = null;
-                        self.initialized = true;
-                        return;
-                    }
+                if (self.tryCompleteInitialize(response_id)) {
+                    return;
                 }
 
                 // Check for hover/definition/completion responses
                 if (object.get("result")) |result_node| {
-                    try self.handleResponse(response_id, result_node);
+                    if (self.takePendingRequest(response_id)) |kind| {
+                        try self.dispatchResponse(response_id, kind, result_node);
+                    }
                 }
             }
         }
@@ -448,32 +481,18 @@ pub const Client = struct {
             if (method_node == .string) {
                 if (std.mem.eql(u8, method_node.string, "textDocument/publishDiagnostics")) {
                     if (object.get("params")) |params_node| {
-                        if (params_node == .object) {
-                            try self.logDiagnostics(params_node.object);
-                        }
+                        try self.handleDiagnostics(params_node);
                     }
                 }
             }
         }
     }
 
-    fn handleResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
-        // Find the pending request
-        var request_kind: ?PendingRequest.RequestKind = null;
-        for (self.pending_requests.items, 0..) |req, i| {
-            if (req.id == id) {
-                request_kind = req.kind;
-                _ = self.pending_requests.swapRemove(i);
-                break;
-            }
-        }
-
-        if (request_kind == null) return; // Unknown request
-
-        switch (request_kind.?) {
+    fn dispatchResponse(self: *Client, id: u32, kind: PendingRequest.RequestKind, result: std.json.Value) Error!void {
+        switch (kind) {
             .hover => try self.handleHoverResponse(id, result),
             .definition => try self.handleDefinitionResponse(id, result),
-            .completion => {}, // TODO
+            .completion => try self.handleCompletionResponse(id, result),
         }
     }
 
@@ -553,28 +572,72 @@ pub const Client = struct {
         }
     }
 
-    fn logDiagnostics(self: *Client, params: std.json.ObjectMap) Error!void {
-        if (self.diagnostics_sink == null) return;
-        var uri_slice: []const u8 = "<unknown>";
-        var count: usize = 0;
+    fn handleCompletionResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        const callback = self.response_callback orelse return;
+        if (callback.onCompletion == null) return;
 
-        if (params.get("uri")) |uri_node| {
-            if (uri_node == .string) {
-                uri_slice = uri_node.string;
+        const response = CompletionResponse{
+            .request_id = id,
+            .result = result,
+        };
+
+        callback.onCompletion.?(callback.ctx, response);
+    }
+
+    fn handleDiagnostics(self: *Client, params: std.json.Value) Error!void {
+        const sink = self.diagnostics_sink orelse return;
+        try sink.handleFn(sink.ctx, params);
+    }
+
+    fn tryCompleteInitialize(self: *Client, response_id: u32) bool {
+        self.pending_mutex.lock();
+        defer self.pending_mutex.unlock();
+        if (self.pending_initialize) |expected| {
+            if (response_id == expected) {
+                self.pending_initialize = null;
+                self.initialized.store(true, .release);
+                return true;
             }
         }
+        return false;
+    }
 
-        if (params.get("diagnostics")) |diag_node| {
-            if (diag_node == .array) {
-                count = diag_node.array.items.len;
+    fn takePendingRequest(self: *Client, id: u32) ?PendingRequest.RequestKind {
+        self.pending_mutex.lock();
+        defer self.pending_mutex.unlock();
+        for (self.pending_requests.items, 0..) |req, i| {
+            if (req.id == id) {
+                const kind = req.kind;
+                _ = self.pending_requests.swapRemove(i);
+                return kind;
             }
         }
+        return null;
+    }
 
-        const message = try std.fmt.allocPrint(self.allocator, "{s}: {d} diagnostic(s)", .{ uri_slice, count });
-        defer self.allocator.free(message);
+    pub fn startReaderLoop(self: *Client) !void {
+        if (self.reader_thread != null) return;
+        self.running.store(true, .release);
+        self.reader_thread = try std.Thread.spawn(.{}, readerLoop, .{self});
+    }
 
-        const sink = self.diagnostics_sink.?;
-        try sink.logFn(sink.ctx, message);
+    pub fn stopReaderLoop(self: *Client) void {
+        self.running.store(false, .release);
+        if (self.reader_thread) |thread| {
+            thread.join();
+            self.reader_thread = null;
+        }
+    }
+
+    fn readerLoop(self: *Client) void {
+        while (self.running.load(.acquire)) {
+            self.poll() catch |err| {
+                if (err == error.EndOfStream) {
+                    break;
+                }
+                std.log.debug("LSP client reader error: {}", .{err});
+            };
+        }
     }
 };
 
@@ -611,8 +674,9 @@ test "diagnostics notification triggers sink" {
     client.setDiagnosticsSink(sink.sink());
 
     try client.poll();
-    try std.testing.expect(std.mem.indexOf(u8, sink.last_message.?, "test.zig") != null);
-    try std.testing.expect(std.mem.indexOf(u8, sink.last_message.?, "1 diagnostic") != null);
+    try std.testing.expect(sink.last_uri != null);
+    try std.testing.expectEqualStrings("file:///test.zig", sink.last_uri.?);
+    try std.testing.expectEqual(@as(usize, 1), sink.last_count);
 }
 
 const MockTransport = struct {
@@ -675,28 +739,51 @@ const MockTransport = struct {
 
 const CaptureSink = struct {
     allocator: std.mem.Allocator,
-    last_message: ?[]const u8,
+    last_uri: ?[]u8,
+    last_count: usize,
 
     fn init(allocator: std.mem.Allocator) CaptureSink {
-        return .{ .allocator = allocator, .last_message = null };
+        return .{ .allocator = allocator, .last_uri = null, .last_count = 0 };
     }
 
     fn deinit(self: *CaptureSink) void {
-        if (self.last_message) |msg| self.allocator.free(msg);
+        if (self.last_uri) |uri| self.allocator.free(uri);
         self.* = undefined;
     }
 
     fn sink(self: *CaptureSink) DiagnosticsSink {
         return .{
             .ctx = self,
-            .logFn = log,
+            .handleFn = log,
         };
     }
 
-    fn log(ctx: *anyopaque, message: []const u8) !void {
+    fn log(ctx: *anyopaque, params: std.json.Value) !void {
         const self = fromCtx(ctx);
-        if (self.last_message) |old| self.allocator.free(old);
-        self.last_message = try self.allocator.dupe(u8, message);
+
+        if (self.last_uri) |uri| {
+            self.allocator.free(uri);
+            self.last_uri = null;
+        }
+        self.last_count = 0;
+
+        if (params != .object) return;
+        const object = params.object;
+
+        var uri_slice: []const u8 = "<unknown>";
+        if (object.get("uri")) |uri_node| {
+            if (uri_node == .string) {
+                uri_slice = uri_node.string;
+            }
+        }
+
+        if (object.get("diagnostics")) |diag_node| {
+            if (diag_node == .array) {
+                self.last_count = diag_node.array.items.len;
+            }
+        }
+
+        self.last_uri = try self.allocator.dupe(u8, uri_slice);
     }
 
     fn fromCtx(ctx: *anyopaque) *CaptureSink {

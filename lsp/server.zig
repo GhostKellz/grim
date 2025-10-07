@@ -302,6 +302,14 @@ pub const LanguageServer = struct {
         character: u32,
     };
 
+    pub fn setResponseCallback(self: *LanguageServer, callback: client.ResponseCallback) void {
+        self.client.setResponseCallback(callback);
+    }
+
+    pub fn setDiagnosticsSink(self: *LanguageServer, sink: client.DiagnosticsSink) void {
+        self.client.setDiagnosticsSink(sink);
+    }
+
     // Request methods
     pub fn requestCompletion(self: *LanguageServer, uri: []const u8, position: Position) !u32 {
         const id = self.client.next_id;
