@@ -591,8 +591,8 @@ pub const Editor = struct {
         const identifier = self.features.getIdentifierAtPosition(content, self.cursor.offset) orelse return;
 
         // Find all occurrences of this identifier
-        var occurrences = std.ArrayList(struct { start: usize, end: usize }).init(self.allocator);
-        defer occurrences.deinit();
+    var occurrences = try std.ArrayList(struct { start: usize, end: usize }).initCapacity(self.allocator, 0);
+    defer occurrences.deinit(self.allocator);
 
         // Simple text-based search for now (tree-sitter-based would be more accurate)
         var i: usize = 0;
@@ -605,7 +605,7 @@ pub const Editor = struct {
                 const is_end_boundary = i + identifier.len >= content.len or !isIdentifierChar(content[i + identifier.len]);
 
                 if (is_start_boundary and is_end_boundary) {
-                    try occurrences.append(.{ .start = i, .end = i + identifier.len });
+                    try occurrences.append(self.allocator, .{ .start = i, .end = i + identifier.len });
                 }
                 i += identifier.len;
             } else {

@@ -93,6 +93,15 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const lsp_mod = b.createModule(.{
+        .root_source_file = b.path("lsp/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zsync", .module = zsync.module("zsync") },
+        },
+    });
+
     const ui_tui_mod = b.createModule(.{
         .root_source_file = b.path("ui-tui/mod.zig"),
         .target = target,
@@ -102,15 +111,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "core", .module = core_mod },
             .{ .name = "syntax", .module = syntax_mod },
             .{ .name = "runtime", .module = runtime_mod },
-        },
-    });
-
-    const lsp_mod = b.createModule(.{
-        .root_source_file = b.path("lsp/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "zsync", .module = zsync.module("zsync") },
+            .{ .name = "lsp", .module = lsp_mod },
         },
     });
 
@@ -193,6 +194,19 @@ pub fn build(b: *std.Build) void {
     // step). By default the install prefix is `zig-out/` but can be overridden
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
+
+    const pkg_exe = b.addExecutable(.{
+        .name = "grim-pkg",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/grim_pkg/main.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "runtime", .module = runtime_mod },
+            },
+        }),
+    });
+    b.installArtifact(pkg_exe);
 
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).

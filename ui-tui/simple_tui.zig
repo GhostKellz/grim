@@ -29,7 +29,7 @@ pub const SimpleTUI = struct {
     next_buffer_id: runtime.PluginAPI.BufferId,
     completion_popup_active: bool,
     completion_selected_index: usize,
-    completion_items: []editor_lsp_mod.EditorLSP.Completion,
+    completion_items: []editor_lsp_mod.Completion,
     completion_items_heap: bool,
     completion_prefix: std.ArrayList(u8),
     completion_anchor_offset: ?usize,
@@ -37,7 +37,10 @@ pub const SimpleTUI = struct {
     completion_dirty: bool,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
-        const command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+    var command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+    errdefer command_buffer.deinit(allocator);
+    var completion_prefix = try std.ArrayList(u8).initCapacity(allocator, 0);
+    errdefer completion_prefix.deinit(allocator);
         const self = try allocator.create(SimpleTUI);
         self.* = .{
             .allocator = allocator,
@@ -65,7 +68,7 @@ pub const SimpleTUI = struct {
             .completion_selected_index = 0,
             .completion_items = &.{},
             .completion_items_heap = false,
-            .completion_prefix = std.ArrayList(u8).init(allocator),
+            .completion_prefix = completion_prefix,
             .completion_anchor_offset = null,
             .completion_generation_seen = 0,
             .completion_dirty = false,
@@ -301,7 +304,7 @@ pub const SimpleTUI = struct {
 
         const content_width: usize = if (width > 6) width - 6 else 0;
 
-        var diagnostics_entries: []const editor_lsp_mod.EditorLSP.Diagnostic = &[_]editor_lsp_mod.EditorLSP.Diagnostic{};
+    var diagnostics_entries: []const editor_lsp_mod.Diagnostic = &[_]editor_lsp_mod.Diagnostic{};
         if (self.editor_lsp) |lsp| {
             if (self.editor.current_filename) |filename| {
                 diagnostics_entries = lsp.getDiagnostics(filename) orelse diagnostics_entries;
@@ -973,13 +976,13 @@ pub const SimpleTUI = struct {
         const self = @as(*SimpleTUI, @ptrCast(@alignCast(ctx)));
         const offset = self.editor.cursor.offset;
         const lc = self.editor.rope.lineColumnAtOffset(offset) catch {
-            const fallback = .{ .line = 0, .column = 0, .byte_offset = offset };
+            const fallback = runtime.PluginAPI.EditorContext.CursorPosition{ .line = 0, .column = 0, .byte_offset = offset };
             if (self.plugin_cursor) |cursor_ptr| {
                 cursor_ptr.* = fallback;
             }
             return fallback;
         };
-        const position = .{ .line = lc.line, .column = lc.column, .byte_offset = offset };
+        const position = runtime.PluginAPI.EditorContext.CursorPosition{ .line = lc.line, .column = lc.column, .byte_offset = offset };
         if (self.plugin_cursor) |cursor_ptr| {
             cursor_ptr.* = position;
         }
@@ -1285,15 +1288,15 @@ pub const SimpleTUI = struct {
             const is_selected = absolute == selected;
 
             var line_buf: [256]u8 = undefined;
-            var stream = std.io.fixedBufferStream(&line_buf);
-            const writer = stream.writer();
-
-            try writer.print("{s}{s}", .{ if (is_selected) "→ " else "  ", comp.label });
+            var written: usize = 0;
+            const first = try std.fmt.bufPrint(line_buf[written..], "{s}{s}", .{ if (is_selected) "→ " else "  ", comp.label });
+            written += first.len;
             if (comp.detail) |detail| {
-                try writer.print(" — {s}", .{detail});
+                const detail_slice = try std.fmt.bufPrint(line_buf[written..], " — {s}", .{detail});
+                written += detail_slice.len;
             }
 
-            const slice = line_buf[0..stream.pos];
+            const slice = line_buf[0..written];
             try self.setCursor(list_row + idx, 1);
             try self.stdout.writeAll(slice[0..@min(slice.len, width)]);
         }
@@ -1570,7 +1573,7 @@ pub const SimpleTUI = struct {
 
     const SelectionRange = struct { start: usize, end: usize };
 
-    fn applyCompletion(self: *SimpleTUI, comp: editor_lsp_mod.EditorLSP.Completion, anchor: usize) !void {
+    fn applyCompletion(self: *SimpleTUI, comp: editor_lsp_mod.Completion, anchor: usize) !void {
         var selection: ?SelectionRange = null;
 
         if (comp.text_edit) |edit| {
@@ -1612,8 +1615,8 @@ pub const SimpleTUI = struct {
 
     fn applyTextEditCompletion(
         self: *SimpleTUI,
-        edit: editor_lsp_mod.EditorLSP.Completion.TextEdit,
-        format: editor_lsp_mod.EditorLSP.Completion.InsertTextFormat,
+    edit: editor_lsp_mod.Completion.TextEdit,
+    format: editor_lsp_mod.Completion.InsertTextFormat,
     ) !?SelectionRange {
     if (self.editor_lsp == null) return null;
 
@@ -1676,8 +1679,8 @@ pub const SimpleTUI = struct {
     };
 
     fn expandSnippet(self: *SimpleTUI, snippet: []const u8) !SnippetExpansion {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        errdefer buffer.deinit();
+    var buffer = try std.ArrayList(u8).initCapacity(self.allocator, 0);
+    errdefer buffer.deinit(self.allocator);
 
         const PlaceholderInfo = struct {
             id: u32,
@@ -1692,7 +1695,7 @@ pub const SimpleTUI = struct {
         while (idx < snippet.len) {
             const ch = snippet[idx];
             if (ch == '\\' and idx + 1 < snippet.len) {
-                try buffer.append(snippet[idx + 1]);
+                try buffer.append(self.allocator, snippet[idx + 1]);
                 idx += 2;
                 continue;
             }
@@ -1703,7 +1706,7 @@ pub const SimpleTUI = struct {
                     while (j < snippet.len and std.ascii.isDigit(snippet[j])) j += 1;
                     const id_slice = snippet[idx + 1 .. j];
                     const id = std.fmt.parseUnsigned(u32, id_slice, 10) catch {
-                        try buffer.append('$');
+                        try buffer.append(self.allocator, '$');
                         idx += 1;
                         continue;
                     };
@@ -1739,7 +1742,7 @@ pub const SimpleTUI = struct {
                     }
 
                     if (depth != 0 or j >= snippet.len) {
-                        try buffer.append('$');
+                        try buffer.append(self.allocator, '$');
                         idx += 1;
                         continue;
                     }
@@ -1751,7 +1754,7 @@ pub const SimpleTUI = struct {
                         if (placeholder.default_text) |default_slice| {
                             const normalized = normalizePlaceholderDefault(default_slice);
                             inserted_len = buffer.items.len;
-                            try appendSnippetPlain(&buffer, normalized);
+                            try appendSnippetPlain(&buffer, self.allocator, normalized);
                             inserted_len = buffer.items.len - placeholder_offset;
                         }
 
@@ -1771,13 +1774,13 @@ pub const SimpleTUI = struct {
                         continue;
                     }
 
-                    try buffer.append('$');
+                    try buffer.append(self.allocator, '$');
                     idx += 1;
                     continue;
                 }
             }
 
-            try buffer.append(ch);
+            try buffer.append(self.allocator, ch);
             idx += 1;
         }
 
@@ -1790,7 +1793,7 @@ pub const SimpleTUI = struct {
         else
             fallback;
 
-        const text = try buffer.toOwnedSlice();
+    const text = try buffer.toOwnedSlice(self.allocator);
         const caret = chosen.offset + chosen.length;
         const selection = if (chosen.length > 0)
             SelectionRange{ .start = chosen.offset, .end = chosen.offset + chosen.length }
@@ -1847,15 +1850,15 @@ pub const SimpleTUI = struct {
         return default_slice;
     }
 
-    fn appendSnippetPlain(buffer: *std.ArrayList(u8), text: []const u8) !void {
+    fn appendSnippetPlain(buffer: *std.ArrayList(u8), allocator: std.mem.Allocator, text: []const u8) !void {
         var idx: usize = 0;
         while (idx < text.len) {
             const ch = text[idx];
             if (ch == '\\' and idx + 1 < text.len) {
-                try buffer.append(text[idx + 1]);
+                try buffer.append(allocator, text[idx + 1]);
                 idx += 2;
             } else {
-                try buffer.append(ch);
+                try buffer.append(allocator, ch);
                 idx += 1;
             }
         }
@@ -1905,11 +1908,11 @@ pub const SimpleTUI = struct {
     }
 
     const LineDiagnostic = struct {
-        severity: editor_lsp_mod.EditorLSP.Diagnostic.Severity,
+    severity: editor_lsp_mod.Diagnostic.Severity,
         message: []const u8,
     };
 
-    fn selectLineDiagnostic(diags: []const editor_lsp_mod.EditorLSP.Diagnostic, line_usize: usize) ?LineDiagnostic {
+    fn selectLineDiagnostic(diags: []const editor_lsp_mod.Diagnostic, line_usize: usize) ?LineDiagnostic {
         if (line_usize > std.math.maxInt(u32)) return null;
         const line_val: u32 = @intCast(line_usize);
         var best: ?LineDiagnostic = null;
@@ -1927,7 +1930,7 @@ pub const SimpleTUI = struct {
         return best;
     }
 
-    fn severityScore(severity: editor_lsp_mod.EditorLSP.Diagnostic.Severity) u8 {
+    fn severityScore(severity: editor_lsp_mod.Diagnostic.Severity) u8 {
         return switch (severity) {
             .error_sev => 4,
             .warning => 3,
@@ -1936,7 +1939,7 @@ pub const SimpleTUI = struct {
         };
     }
 
-    fn severityMarker(severity: editor_lsp_mod.EditorLSP.Diagnostic.Severity) u8 {
+    fn severityMarker(severity: editor_lsp_mod.Diagnostic.Severity) u8 {
         return switch (severity) {
             .error_sev => 'E',
             .warning => 'W',
@@ -1945,7 +1948,7 @@ pub const SimpleTUI = struct {
         };
     }
 
-    fn severityLabel(severity: editor_lsp_mod.EditorLSP.Diagnostic.Severity) []const u8 {
+    fn severityLabel(severity: editor_lsp_mod.Diagnostic.Severity) []const u8 {
         return switch (severity) {
             .error_sev => "ERR",
             .warning => "WARN",

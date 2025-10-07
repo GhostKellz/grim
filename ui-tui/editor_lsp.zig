@@ -225,7 +225,7 @@ test "editor lsp parses snippet text edit completions" {
     const comp = completions[0];
     try std.testing.expectEqualStrings("wrap", comp.label);
     try std.testing.expect(comp.text_edit != null);
-    try std.testing.expectEqual(EditorLSP.Completion.InsertTextFormat.snippet, comp.insert_text_format);
+    try std.testing.expectEqual(Completion.InsertTextFormat.snippet, comp.insert_text_format);
     const edit = comp.text_edit.?;
     try std.testing.expectEqual(@as(u32, 0), edit.range.start.line);
     try std.testing.expectEqual(@as(u32, 0), edit.range.start.character);
@@ -303,7 +303,7 @@ pub const EditorLSP = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
     server_registry: lsp.ServerRegistry,
-    diagnostics: std.HashMap([]const u8, []Diagnostic),
+    diagnostics: std.StringHashMap([]Diagnostic),
     completions: std.ArrayList(Completion),
     documents: std.ArrayList(DocumentEntry),
     hover_info: ?[]u8,
@@ -334,9 +334,9 @@ pub const EditorLSP = struct {
             .allocator = allocator,
             .editor = editor,
             .server_registry = lsp.ServerRegistry.init(allocator),
-            .diagnostics = std.HashMap([]const u8, []Diagnostic).init(allocator),
-            .completions = std.ArrayList(Completion).init(allocator),
-            .documents = std.ArrayList(DocumentEntry).init(allocator),
+            .diagnostics = std.StringHashMap([]Diagnostic).init(allocator),
+            .completions = std.ArrayList(Completion).empty,
+            .documents = std.ArrayList(DocumentEntry).empty,
             .hover_info = null,
             .pending_definition = null,
             .pending_completion = null,
@@ -362,7 +362,7 @@ pub const EditorLSP = struct {
 
         // Free completions
         self.clearCompletions();
-        self.completions.deinit();
+    self.completions.deinit(self.allocator);
 
         for (self.documents.items) |doc| {
             self.allocator.free(doc.path);
@@ -370,7 +370,7 @@ pub const EditorLSP = struct {
         self.documents.deinit(self.allocator);
 
         if (self.hover_info) |info| self.allocator.free(info);
-    if (self.pending_definition) |def| self.allocator.free(def.path);
+        if (self.pending_definition) |def| self.allocator.free(def.path);
         if (self.current_file) |path| self.allocator.free(path);
 
         self.allocator.destroy(self);
@@ -378,7 +378,7 @@ pub const EditorLSP = struct {
 
     pub fn openFile(self: *EditorLSP, path: []const u8) !void {
         const language = syntax.detectLanguage(path);
-        if (self.getServerConfig(language) == null) {
+        if (self.getServerCommand(language) == null) {
             self.language = null;
             return;
         }
@@ -389,14 +389,14 @@ pub const EditorLSP = struct {
             };
         }
 
-    const server = try self.getOrStartServer(language, path);
+        const server = try self.getOrStartServer(language, path);
 
         if (self.current_file) |current| self.allocator.free(current);
         self.current_file = try self.allocator.dupe(u8, path);
         self.language = language;
-    self.clearCompletions();
-    self.pending_completion = null;
-    self.bumpCompletionGeneration();
+        self.clearCompletions();
+        self.pending_completion = null;
+        self.bumpCompletionGeneration();
 
         if (self.hover_info) |info| {
             self.allocator.free(info);
@@ -566,8 +566,8 @@ pub const EditorLSP = struct {
             return;
         }
 
-        var list = std.ArrayList(Diagnostic).init(self.allocator);
-        errdefer list.deinit();
+            var list = try std.ArrayList(Diagnostic).initCapacity(self.allocator, 0);
+            errdefer list.deinit(self.allocator);
 
         for (diagnostics_node.array.items) |diag_node| {
             if (diag_node != .object) continue;
@@ -612,34 +612,34 @@ pub const EditorLSP = struct {
 
             if (diag_obj.get("source")) |source_node| {
                 if (source_node == .string) {
-                    entry.source = self.allocator.dupe(u8, source_node.string) catch |err| {
+                    entry.source = self.allocator.dupe(u8, source_node.string) catch |err| blk: {
                         std.log.warn("Failed to duplicate diagnostic source: {}", .{err});
-                        null;
+                        break :blk null;
                     };
                 }
             }
 
             if (diag_obj.get("code")) |code_node| {
-                entry.code = self.cloneDiagnosticCode(code_node) catch |err| {
+                entry.code = self.cloneDiagnosticCode(code_node) catch |err| blk: {
                     std.log.warn("Failed to duplicate diagnostic code: {}", .{err});
-                    null;
+                    break :blk null;
                 };
             }
 
-            list.append(entry) catch |err| {
+                list.append(self.allocator, entry) catch |err| {
                 self.freeDiagnostic(entry);
                 return err;
             };
         }
 
         if (list.items.len == 0) {
-            list.deinit();
+            list.deinit(self.allocator);
             self.clearDiagnostics(path);
             self.allocator.free(path);
             return;
         }
 
-        const diagnostics_slice = try list.toOwnedSlice();
+            const diagnostics_slice = try list.toOwnedSlice(self.allocator);
         errdefer self.freeDiagnosticSlice(diagnostics_slice);
 
         try self.storeDiagnostics(path, diagnostics_slice);
@@ -664,12 +664,16 @@ pub const EditorLSP = struct {
         return position;
     }
 
-    fn cloneDiagnosticCode(self: *EditorLSP, node: std.json.Value) std.mem.Allocator.Error!?[]u8 {
-        return switch (node) {
-            .string => self.allocator.dupe(u8, node.string),
-            .integer => std.fmt.allocPrint(self.allocator, "{d}", .{node.integer}),
-            else => null,
-        };
+    fn cloneDiagnosticCode(self: *EditorLSP, node: std.json.Value) std.mem.Allocator.Error!?[]const u8 {
+        if (node == .string) {
+            const duped = try self.allocator.dupe(u8, node.string);
+            return duped;
+        }
+        if (node == .integer) {
+            const formatted = try std.fmt.allocPrint(self.allocator, "{d}", .{node.integer});
+            return formatted;
+        }
+        return null;
     }
 
     fn storeDiagnostics(self: *EditorLSP, path: []u8, diagnostics: []Diagnostic) !void {
@@ -679,7 +683,7 @@ pub const EditorLSP = struct {
             return;
         }
 
-        const gop = try self.diagnostics.getOrPut(self.allocator, path);
+    const gop = try self.diagnostics.getOrPut(path);
         if (gop.found_existing) {
             self.freeDiagnosticSlice(gop.value_ptr.*);
             self.allocator.free(path);
@@ -743,7 +747,10 @@ pub const EditorLSP = struct {
         };
     }
 
-    fn extractInsertText(obj: std.json.Object) ?[]const u8 {
+    fn extractInsertText(node: std.json.Value) ?[]const u8 {
+        if (node != .object) return null;
+        const obj = node.object;
+
         if (obj.get("insertText")) |insert_node| {
             if (insert_node == .string) return insert_node.string;
         }
@@ -759,7 +766,7 @@ pub const EditorLSP = struct {
         return null;
     }
 
-    fn parseRange(self: *EditorLSP, node: std.json.Value) ?Diagnostic.Range {
+    fn parseRange(node: std.json.Value) ?Diagnostic.Range {
         if (node != .object) return null;
         const obj = node.object;
         const start_node = obj.get("start") orelse return null;
@@ -767,8 +774,8 @@ pub const EditorLSP = struct {
         if (start_node != .object or end_node != .object) return null;
 
         return Diagnostic.Range{
-            .start = self.parsePosition(start_node),
-            .end = self.parsePosition(end_node),
+            .start = parsePosition(start_node),
+            .end = parsePosition(end_node),
         };
     }
 
@@ -777,7 +784,7 @@ pub const EditorLSP = struct {
         const obj = node.object;
 
         const range_node = obj.get("range") orelse return null;
-        const range = self.parseRange(range_node) orelse return null;
+    const range = parseRange(range_node) orelse return null;
 
         const new_text_node = obj.get("newText") orelse return null;
         if (new_text_node != .string) return null;
@@ -786,7 +793,9 @@ pub const EditorLSP = struct {
         return Completion.TextEdit{ .range = range, .new_text = duped };
     }
 
-    fn parseCompletionItem(self: *EditorLSP, obj: std.json.Object) ?Completion {
+    fn parseCompletionItem(self: *EditorLSP, node: std.json.Value) ?Completion {
+        if (node != .object) return null;
+        const obj = node.object;
         const label_node = obj.get("label") orelse return null;
         if (label_node != .string) return null;
 
@@ -842,7 +851,7 @@ pub const EditorLSP = struct {
             }
         }
 
-        if (extractInsertText(obj)) |insert_text| {
+        if (extractInsertText(node)) |insert_text| {
             completion.insert_text = self.allocator.dupe(u8, insert_text) catch |err| {
                 std.log.warn("Failed to duplicate completion insert text: {}", .{err});
                 self.freeCompletion(completion);
@@ -886,7 +895,7 @@ pub const EditorLSP = struct {
 
         for (items_node.array.items) |item_node| {
             if (item_node != .object) continue;
-            if (self.parseCompletionItem(item_node.object)) |completion| {
+            if (self.parseCompletionItem(item_node)) |completion| {
                 self.completions.append(self.allocator, completion) catch |err| {
                     self.freeCompletion(completion);
                     return err;
@@ -978,8 +987,8 @@ pub const EditorLSP = struct {
     }
 
     fn directoryHasRootMarker(dir_path: []const u8) bool {
-        const dir = std.fs.openDirAbsolute(dir_path, .{}) catch return false;
-        defer dir.close();
+    var dir = std.fs.openDirAbsolute(dir_path, .{}) catch return false;
+    defer dir.close();
 
         const markers = workspaceMarkers();
         for (markers) |marker| {
@@ -1190,12 +1199,12 @@ pub const EditorLSP = struct {
     pub fn renderDiagnostics(self: *EditorLSP, path: []const u8, start_line: u32, end_line: u32) ![]DiagnosticRender {
         const diagnostics = self.getDiagnostics(path) orelse return &[_]DiagnosticRender{};
 
-        var renders = std.ArrayList(DiagnosticRender).init(self.allocator);
+    var renders = try std.ArrayList(DiagnosticRender).initCapacity(self.allocator, 0);
         errdefer renders.deinit();
 
         for (diagnostics) |diag| {
             if (diag.range.start.line >= start_line and diag.range.start.line <= end_line) {
-                try renders.append(.{
+                try renders.append(self.allocator, .{
                     .line = diag.range.start.line,
                     .column = diag.range.start.character,
                     .length = if (diag.range.start.line == diag.range.end.line)
@@ -1231,16 +1240,16 @@ pub const EditorLSP = struct {
     pub fn filterCompletions(self: *EditorLSP, allocator: std.mem.Allocator, prefix: []const u8) ![]Completion {
         if (prefix.len == 0) return try allocator.dupe(Completion, self.completions.items);
 
-        var filtered = std.ArrayList(Completion).init(allocator);
-        errdefer filtered.deinit();
+    var filtered = try std.ArrayList(Completion).initCapacity(allocator, 0);
+    errdefer filtered.deinit(allocator);
 
         for (self.completions.items) |comp| {
             if (std.mem.startsWith(u8, comp.label, prefix)) {
-                try filtered.append(comp);
+                try filtered.append(allocator, comp);
             }
         }
 
-        return filtered.toOwnedSlice();
+    return filtered.toOwnedSlice(allocator);
     }
 };
 

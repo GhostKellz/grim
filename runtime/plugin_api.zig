@@ -47,7 +47,7 @@ pub const PluginAPI = struct {
 
         pub const BufferChange = struct {
             buffer_id: BufferId,
-            range: core.Rope.Range,
+            range: core.Range,
             inserted_len: usize,
             kind: BufferChangeKind,
         };
@@ -59,7 +59,7 @@ pub const PluginAPI = struct {
             setBufferContent: ?*const fn (ctx: *anyopaque, buffer_id: BufferId, content: []const u8) anyerror!void = null,
             getBufferLine: ?*const fn (ctx: *anyopaque, allocator: std.mem.Allocator, buffer_id: BufferId, line_num: usize) anyerror![]const u8 = null,
             insertText: ?*const fn (ctx: *anyopaque, buffer_id: BufferId, position: usize, text: []const u8) anyerror!void = null,
-            deleteRange: ?*const fn (ctx: *anyopaque, buffer_id: BufferId, range: core.Rope.Range) anyerror!void = null,
+            deleteRange: ?*const fn (ctx: *anyopaque, buffer_id: BufferId, range: core.Range) anyerror!void = null,
             getCursorPosition: ?*const fn (ctx: *anyopaque) CursorPosition = null,
             setCursorPosition: ?*const fn (ctx: *anyopaque, position: CursorPosition) anyerror!void = null,
             getSelection: ?*const fn (ctx: *anyopaque) ?SelectionRange = null,
@@ -405,7 +405,7 @@ pub const PluginAPI = struct {
             try self.emitTextInserted(buffer_id, position, text);
         }
 
-        pub fn deleteRange(self: *PluginContext, buffer_id: BufferId, range: core.Rope.Range) !void {
+    pub fn deleteRange(self: *PluginContext, buffer_id: BufferId, range: core.Range) !void {
             if (range.len() == 0) return;
             try self.ensureFallbackBuffer(buffer_id);
 
@@ -433,7 +433,7 @@ pub const PluginAPI = struct {
             try self.emitTextDeleted(buffer_id, range.start, range.len());
         }
 
-        pub fn replaceRange(self: *PluginContext, buffer_id: BufferId, range: core.Rope.Range, text: []const u8) !void {
+    pub fn replaceRange(self: *PluginContext, buffer_id: BufferId, range: core.Range, text: []const u8) !void {
             try self.deleteRange(buffer_id, range);
             try self.insertText(buffer_id, range.start, text);
         }
@@ -604,7 +604,7 @@ pub const PluginAPI = struct {
             try self.api.editor_context.rope.insert(position, text);
         }
 
-        fn deleteRangeFallback(self: *PluginContext, range: core.Rope.Range) !void {
+    fn deleteRangeFallback(self: *PluginContext, range: core.Range) !void {
             try self.api.editor_context.rope.delete(range.start, range.len());
         }
 

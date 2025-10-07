@@ -41,7 +41,15 @@ pub const LanguageServer = struct {
         ServerCrashed,
         InitializationFailed,
         ShutdownFailed,
-    } || client.Client.Error || std.process.Child.SpawnError;
+    } || client.Client.Error || std.process.Child.SpawnError || std.Thread.SpawnError || std.mem.Allocator.Error || std.fs.File.WriteError || error{WriteFailed};
+
+    fn jsonStringifyAlloc(allocator: std.mem.Allocator, value: anytype) ![]u8 {
+        var out = std.Io.Writer.Allocating.init(allocator);
+        defer out.deinit();
+        var stream = std.json.Stringify{ .writer = &out.writer };
+        try stream.write(value);
+        return try out.toOwnedSlice();
+    }
 
     pub fn start(allocator: std.mem.Allocator, config: ServerConfig) Error!*LanguageServer {
         var self = try allocator.create(LanguageServer);
@@ -52,12 +60,16 @@ pub const LanguageServer = struct {
         process.stdin_behavior = .Pipe;
         process.stdout_behavior = .Pipe;
         process.stderr_behavior = .Pipe;
-        if (config.env) |env| {
-            process.env_map = env;
+        var env_map_opt = config.env;
+        if (env_map_opt) |*env_ptr| {
+            process.env_map = env_ptr;
         }
 
         try process.spawn();
-        errdefer process.kill() catch {};
+        process.env_map = null;
+        errdefer {
+            _ = process.kill() catch {};
+        }
 
         // Create transport for the client
         const transport = client.Transport{
@@ -86,7 +98,7 @@ pub const LanguageServer = struct {
                     return Error.ServerCrashed;
                 }
             };
-            std.time.sleep(100 * std.time.ns_per_ms);
+            std.Thread.sleep(100 * std.time.ns_per_ms);
         }
 
         if (!self.client.isInitialized()) {
@@ -94,7 +106,10 @@ pub const LanguageServer = struct {
         }
 
         // Send initialized notification
-        try self.sendInitializedNotification();
+        self.sendInitializedNotification() catch |err| {
+            if (err == error.WriteFailed) return Error.ServerStartFailed;
+            return err;
+        };
 
         // Start reader thread for async message handling
         self.reader_thread = try std.Thread.spawn(.{}, readerThreadFn, .{self});
@@ -107,7 +122,10 @@ pub const LanguageServer = struct {
         self.shutdown_requested.store(true, .seq_cst);
 
         // Send shutdown request
-        try self.sendShutdownRequest();
+        self.sendShutdownRequest() catch |err| {
+            if (err == error.WriteFailed) return Error.ShutdownFailed;
+            return err;
+        };
 
         // Send exit notification
         try self.sendExitNotification();
@@ -167,7 +185,7 @@ pub const LanguageServer = struct {
             .params = .{},
         };
 
-        const body = try std.json.stringifyAlloc(self.allocator, notification, .{});
+    const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -183,7 +201,7 @@ pub const LanguageServer = struct {
 
         self.client.next_id += 1;
 
-        const body = try std.json.stringifyAlloc(self.allocator, request, .{});
+    const body = try jsonStringifyAlloc(self.allocator, request);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -196,7 +214,7 @@ pub const LanguageServer = struct {
             .params = null,
         };
 
-        const body = try std.json.stringifyAlloc(self.allocator, notification, .{});
+    const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -227,7 +245,7 @@ pub const LanguageServer = struct {
             },
         };
 
-        const body = try std.json.stringifyAlloc(self.allocator, notification, .{});
+    const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -246,7 +264,7 @@ pub const LanguageServer = struct {
             },
         };
 
-        const body = try std.json.stringifyAlloc(self.allocator, notification, .{});
+    const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -263,7 +281,7 @@ pub const LanguageServer = struct {
             },
         };
 
-        const body = try std.json.stringifyAlloc(self.allocator, notification, .{});
+    const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -281,7 +299,7 @@ pub const LanguageServer = struct {
             },
         };
 
-        const body = try std.json.stringifyAlloc(self.allocator, notification, .{});
+    const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -325,7 +343,7 @@ pub const LanguageServer = struct {
             },
         };
 
-        const body = try std.json.stringifyAlloc(self.allocator, request, .{});
+    const body = try jsonStringifyAlloc(self.allocator, request);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -346,7 +364,7 @@ pub const LanguageServer = struct {
             },
         };
 
-        const body = try std.json.stringifyAlloc(self.allocator, request, .{});
+    const body = try jsonStringifyAlloc(self.allocator, request);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -367,7 +385,7 @@ pub const LanguageServer = struct {
             },
         };
 
-        const body = try std.json.stringifyAlloc(self.allocator, request, .{});
+    const body = try jsonStringifyAlloc(self.allocator, request);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);

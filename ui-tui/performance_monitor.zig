@@ -239,7 +239,8 @@ pub const EditorPerformanceMonitor = struct {
     };
 
     fn assessHealth(self: *const EditorPerformanceMonitor) SystemHealth {
-        var recommendations = std.ArrayList([]const u8).init(self.allocator);
+    var recommendations = std.ArrayList([]const u8).empty;
+    recommendations.allocator = self.allocator;
 
         // Assess memory health
         const memory_health = if (self.stats.peak_memory_usage > 100 * 1024 * 1024) // 100MB
@@ -274,16 +275,16 @@ pub const EditorPerformanceMonitor = struct {
 
         // Add recommendations based on health
         if (memory_health == .poor) {
-            recommendations.append("Consider reducing memory usage or increasing available memory") catch {};
+            recommendations.append(self.allocator, "Consider reducing memory usage or increasing available memory") catch {};
         }
         if (performance_health == .poor) {
-            recommendations.append("Performance is below optimal - consider rope defragmentation") catch {};
+            recommendations.append(self.allocator, "Performance is below optimal - consider rope defragmentation") catch {};
         }
         if (cache_health == .poor) {
-            recommendations.append("Low cache hit rate - review caching strategy") catch {};
+            recommendations.append(self.allocator, "Low cache hit rate - review caching strategy") catch {};
         }
         if (self.rope_optimizer.needsOptimization()) {
-            recommendations.append("Rope needs optimization - run defragmentation") catch {};
+            recommendations.append(self.allocator, "Rope needs optimization - run defragmentation") catch {};
         }
 
         // Overall health is the worst of individual components
@@ -305,24 +306,25 @@ pub const EditorPerformanceMonitor = struct {
 
     /// Performance optimization suggestions
     pub fn getOptimizationSuggestions(self: *const EditorPerformanceMonitor, allocator: std.mem.Allocator) ![][]const u8 {
-        var suggestions = std.ArrayList([]const u8).init(allocator);
+    var suggestions = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    errdefer suggestions.deinit();
 
         if (self.rope_optimizer.needsOptimization()) {
             const strategy = self.rope_optimizer.suggestStrategy();
             const suggestion = try std.fmt.allocPrint(allocator, "Optimize rope structure using {s} strategy", .{@tagName(strategy)});
-            try suggestions.append(suggestion);
+            try suggestions.append(allocator, suggestion);
         }
 
         if (self.stats.average_render_time > 16.0) {
-            try suggestions.append(try allocator.dupe(u8, "Reduce render complexity or optimize rendering pipeline"));
+            try suggestions.append(allocator, try allocator.dupe(u8, "Reduce render complexity or optimize rendering pipeline"));
         }
 
         if (self.stats.getCacheHitRate() < 70.0) {
-            try suggestions.append(try allocator.dupe(u8, "Improve caching strategy to reduce redundant operations"));
+            try suggestions.append(allocator, try allocator.dupe(u8, "Improve caching strategy to reduce redundant operations"));
         }
 
         if (self.stats.plugin_response_time > 10.0) {
-            try suggestions.append(try allocator.dupe(u8, "Review plugin performance or consider plugin optimization"));
+            try suggestions.append(allocator, try allocator.dupe(u8, "Review plugin performance or consider plugin optimization"));
         }
 
         return suggestions.toOwnedSlice();
