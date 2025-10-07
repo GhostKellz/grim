@@ -1,97 +1,97 @@
-// Grim editor initialization script
-// Test Ghostlang syntax highlighting and Grove integration
+-- Grim editor initialization script
+-- Test Ghostlang syntax highlighting and Grove integration
 
-function setupEditor() {
-    var config = createConfig();
+function setupEditor()
+    var config = createConfig()
 
-    // Basic editor settings
-    config.lineNumbers = true;
-    config.tabSize = 4;
-    config.autoIndent = true;
+    -- Basic editor settings
+    config.lineNumbers = true
+    config.tabSize = 4
+    config.autoIndent = true
 
-    // Theme configuration
-    config.theme = "dark";
-    config.fontSize = 14;
+    -- Theme configuration
+    config.theme = "dark"
+    config.fontSize = 14
 
-    return config;
-}
+    return config
+end
 
-function configureKeybindings() {
-    var bindings = createBindings();
+function configureKeybindings()
+    var bindings = createBindings()
 
-    // Navigation
-    bindings.bind("Ctrl+P", "command_palette");
-    bindings.bind("Ctrl+Shift+P", "action_palette");
-    bindings.bind("Ctrl+G", "goto_line");
+    -- Navigation
+    bindings.bind("Ctrl+P", "command_palette")
+    bindings.bind("Ctrl+Shift+P", "action_palette")
+    bindings.bind("Ctrl+G", "goto_line")
 
-    // File operations
-    bindings.bind("Ctrl+N", "new_file");
-    bindings.bind("Ctrl+O", "open_file");
-    bindings.bind("Ctrl+S", "save_file");
+    -- File operations
+    bindings.bind("Ctrl+N", "new_file")
+    bindings.bind("Ctrl+O", "open_file")
+    bindings.bind("Ctrl+S", "save_file")
 
-    // Editor features
-    bindings.bind("Ctrl+F", "find");
-    bindings.bind("Ctrl+H", "replace");
-    bindings.bind("Ctrl+/", "toggle_comment");
+    -- Editor features
+    bindings.bind("Ctrl+F", "find")
+    bindings.bind("Ctrl+H", "replace")
+    bindings.bind("Ctrl+/", "toggle_comment")
 
-    return bindings;
-}
+    return bindings
+end
 
-function registerPlugins() {
-    var plugins = createPluginManager();
+function registerPlugins()
+    var plugins = createPluginManager()
 
-    // Language support
+    -- Language support
     plugins.register("zig-support", {
-        extensions: [".zig"],
-        features: ["syntax", "completion", "lsp"]
-    });
+        extensions = {".zig"},
+        features = {"syntax", "completion", "lsp"}
+    })
 
     plugins.register("rust-support", {
-        extensions: [".rs"],
-        features: ["syntax", "completion", "lsp", "cargo"]
-    });
+        extensions = {".rs"},
+        features = {"syntax", "completion", "lsp", "cargo"}
+    })
 
-    // Development tools
+    -- Development tools
     plugins.register("git-integration", {
-        commands: ["git_status", "git_commit", "git_push"],
-        statusbar: true
-    });
+        commands = {"git_status", "git_commit", "git_push"},
+        statusbar = true
+    })
 
     plugins.register("terminal", {
-        shortcut: "Ctrl+`",
-        shell: "zsh"
-    });
+        shortcut = "Ctrl+`",
+        shell = "zsh"
+    })
 
-    return plugins;
-}
+    return plugins
+end
 
-// Main initialization
-function main() {
-    var editor = setupEditor();
-    var keymap = configureKeybindings();
-    var plugins = registerPlugins();
+-- Main initialization
+function main()
+    var editor = setupEditor()
+    var keymap = configureKeybindings()
+    var plugins = registerPlugins()
 
-    // Initialize Grove tree-sitter integration
-    if (hasGroveSupport()) {
-        editor.enableTreeSitter = true;
-        editor.groveLanguages = [
+    -- Initialize Grove tree-sitter integration
+    if hasGroveSupport() then
+        editor.enableTreeSitter = true
+        editor.groveLanguages = {
             "zig", "rust", "javascript", "typescript",
             "python", "go", "c", "cpp", "ghostlang"
-        ];
+        }
 
-        notify("Grove tree-sitter integration enabled");
-    }
+        notify("Grove tree-sitter integration enabled")
+    end
 
-    // Apply configuration
-    applyConfig(editor);
-    applyKeybindings(keymap);
-    loadPlugins(plugins);
+    -- Apply configuration
+    applyConfig(editor)
+    applyKeybindings(keymap)
+    loadPlugins(plugins)
 
-    notify("Grim editor initialized successfully");
+    notify("Grim editor initialized successfully")
 
     return {
-        editor: editor,
-        keymap: keymap,
-        plugins: plugins
-    };
-}
+        editor = editor,
+        keymap = keymap,
+        plugins = plugins
+    }
+end

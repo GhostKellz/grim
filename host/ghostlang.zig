@@ -87,6 +87,23 @@ fn builtinRegisterEventHandler(args: []const ghostlang.ScriptValue) ghostlang.Sc
     return .{ .nil = {} };
 }
 
+fn builtinRegisterTheme(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
+    const host = active_host orelse return .{ .nil = {} };
+    const plugin = host.active_plugin orelse {
+        host.recordScriptError(Host.Error.InvalidScript);
+        return .{ .nil = {} };
+    };
+
+    const name = getMandatoryStringArg(host, args, 0) orelse return .{ .nil = {} };
+    const colors = getMandatoryStringArg(host, args, 1) orelse return .{ .nil = {} };
+
+    plugin.appendRegisterTheme(name, colors) catch |err| switch (err) {
+        error.OutOfMemory => host.recordScriptError(Host.Error.MemoryLimitExceeded),
+    };
+
+    return .{ .nil = {} };
+}
+
 pub const Host = struct {
     const Self = @This();
 
@@ -161,11 +178,17 @@ pub const Host = struct {
         handler: []u8,
     };
 
+    const ThemeAction = struct {
+        name: []u8,
+        colors: []u8,
+    };
+
     const Action = union(enum) {
         show_message: []u8,
         register_command: CommandAction,
         register_keymap: KeymapAction,
         register_event_handler: EventAction,
+        register_theme: ThemeAction,
     };
 
     pub const ActionCallbacks = struct {
@@ -174,6 +197,7 @@ pub const Host = struct {
         register_command: ?*const fn (ctx: *anyopaque, action: *const CommandAction) anyerror!void = null,
         register_keymap: ?*const fn (ctx: *anyopaque, action: *const KeymapAction) anyerror!void = null,
         register_event_handler: ?*const fn (ctx: *anyopaque, action: *const EventAction) anyerror!void = null,
+        register_theme: ?*const fn (ctx: *anyopaque, action: *const ThemeAction) anyerror!void = null,
     };
 
     pub const CompiledPlugin = struct {
@@ -235,6 +259,11 @@ pub const Host = struct {
                     .register_event_handler => |*ev| {
                         if (callbacks.register_event_handler) |cb| {
                             try cb(callbacks.ctx, ev);
+                        }
+                    },
+                    .register_theme => |*theme| {
+                        if (callbacks.register_theme) |cb| {
+                            try cb(callbacks.ctx, theme);
                         }
                     },
                 }
@@ -326,6 +355,22 @@ pub const Host = struct {
             try self.actions.append(.{ .register_event_handler = .{
                 .event = event_copy,
                 .handler = handler_copy,
+            } });
+        }
+
+        fn appendRegisterTheme(
+            self: *CompiledPlugin,
+            name: []const u8,
+            colors: []const u8,
+        ) !void {
+            const name_copy = try self.allocator.dupe(u8, name);
+            errdefer self.allocator.free(name_copy);
+            const colors_copy = try self.allocator.dupe(u8, colors);
+            errdefer self.allocator.free(colors_copy);
+
+            try self.actions.append(.{ .register_theme = .{
+                .name = name_copy,
+                .colors = colors_copy,
             } });
         }
 
@@ -422,6 +467,10 @@ pub const Host = struct {
             .register_event_handler => |ev| {
                 allocator.free(ev.event);
                 allocator.free(ev.handler);
+            },
+            .register_theme => |theme| {
+                allocator.free(theme.name);
+                allocator.free(theme.colors);
             },
         }
     }
@@ -558,6 +607,7 @@ pub const Host = struct {
         };
     }
 
+
     pub fn configPath(self: *const Host) ?[]const u8 {
         return self.config_dir;
     }
@@ -626,6 +676,8 @@ pub const Host = struct {
         try self.registerBuiltin(engine, "register_keymap", builtinRegisterKeymap);
         try self.registerBuiltin(engine, "registerEventHandler", builtinRegisterEventHandler);
         try self.registerBuiltin(engine, "register_event_handler", builtinRegisterEventHandler);
+        try self.registerBuiltin(engine, "registerTheme", builtinRegisterTheme);
+        try self.registerBuiltin(engine, "register_theme", builtinRegisterTheme);
         self.builtins_registered = true;
     }
 
@@ -772,11 +824,12 @@ pub const Host = struct {
     fn matchesPattern(path: []const u8, pattern: []const u8) bool {
         // Simple glob pattern matching - supports * wildcard at end
         if (std.mem.endsWith(u8, pattern, "*")) {
-            const prefix = pattern[0 .. pattern.len - 1];
+            const prefix = pattern[0..pattern.len - 1];
             return std.mem.startsWith(u8, path, prefix);
         }
         return std.mem.eql(u8, path, pattern);
     }
+
 };
 
 test "host loads config and executes script" {
@@ -861,8 +914,8 @@ test "plugin script showMessage action executes" {
 test "sandbox config validates file access" {
     const allocator = std.testing.allocator;
     const sandbox_config = Host.SandboxConfig{
-        .blocked_file_patterns = &.{ "/etc/*", "/sys/*" },
-        .allowed_file_patterns = &.{ "/home/*", "/tmp/*" },
+        .blocked_file_patterns = &.{"/etc/*", "/sys/*"},
+        .allowed_file_patterns = &.{"/home/*", "/tmp/*"},
     };
 
     var host = try Host.initWithSandbox(allocator, sandbox_config);

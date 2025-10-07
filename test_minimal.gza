@@ -1,0 +1,9 @@
+-- test.gza
+local message = "Hello from Ghostlang!"
+
+function test()
+    print(message)
+    return true
+end
+
+test()

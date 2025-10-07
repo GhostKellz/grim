@@ -36,19 +36,8 @@ pub const Features = struct {
         var regions: std.ArrayList(FoldRegion) = .empty;
         defer regions.deinit(self.allocator);
 
-        // Parse source with Grove
-        const tree = self.parser.?.parse(source) catch {
-            return try self.getFoldRegionsSimple(source);
-        };
-
-        const root_node = tree.rootNode() orelse {
-            return try self.getFoldRegionsSimple(source);
-        };
-
-        // Traverse tree and collect foldable nodes
-        try self.collectFoldableNodes(&root_node, &regions, 0);
-
-        return try regions.toOwnedSlice(self.allocator);
+        // Grove parsing API changed, fall back to simple parsing
+        return try self.getFoldRegionsSimple(source);
     }
 
     fn collectFoldableNodes(

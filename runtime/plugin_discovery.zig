@@ -25,7 +25,7 @@ pub const PluginDiscovery = struct {
     pub fn init(allocator: std.mem.Allocator) PluginDiscovery {
         return .{
             .allocator = allocator,
-            .plugin_dirs = std.ArrayList([]const u8).init(allocator),
+            .plugin_dirs = .{},
         };
     }
 
@@ -33,19 +33,19 @@ pub const PluginDiscovery = struct {
         for (self.plugin_dirs.items) |dir| {
             self.allocator.free(dir);
         }
-        self.plugin_dirs.deinit();
+        self.plugin_dirs.deinit(self.allocator);
     }
 
     /// Add a plugin search directory
     pub fn addSearchPath(self: *PluginDiscovery, path: []const u8) !void {
         const owned_path = try self.allocator.dupe(u8, path);
-        try self.plugin_dirs.append(owned_path);
+        try self.plugin_dirs.append(self.allocator, owned_path);
     }
 
     /// Add default search paths
     pub fn addDefaultPaths(self: *PluginDiscovery) !void {
         // 1. User plugins directory
-        if (std.os.getenv("HOME")) |home| {
+        if (std.posix.getenv("HOME")) |home| {
             const user_plugins = try std.fs.path.join(self.allocator, &.{ home, ".config", "grim", "plugins" });
             defer self.allocator.free(user_plugins);
             try self.addSearchPath(user_plugins);
@@ -61,7 +61,7 @@ pub const PluginDiscovery = struct {
 
     /// Discover all plugins in search paths
     pub fn discoverAll(self: *PluginDiscovery) !std.ArrayList(DiscoveredPlugin) {
-        var plugins = std.ArrayList(DiscoveredPlugin).init(self.allocator);
+        var plugins: std.ArrayList(DiscoveredPlugin) = .{};
 
         for (self.plugin_dirs.items) |search_dir| {
             // Try to discover plugins in this directory
@@ -80,7 +80,7 @@ pub const PluginDiscovery = struct {
         dir_path: []const u8,
         plugins: *std.ArrayList(DiscoveredPlugin),
     ) !void {
-        var dir = std.fs.cwd().openIterableDir(dir_path, .{}) catch |err| {
+        var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
             if (err == error.FileNotFound) return; // Directory doesn't exist, skip
             return err;
         };
@@ -115,7 +115,7 @@ pub const PluginDiscovery = struct {
                 .allocator = self.allocator,
             };
 
-            try plugins.append(plugin);
+            try plugins.append(self.allocator, plugin);
             std.log.info("Discovered plugin: {s} v{s} at {s}", .{ plugin.name, manifest.version, plugin_path });
         }
     }

@@ -1,9 +1,8 @@
 const std = @import("std");
+const runtime = @import("runtime");
 const syntax = @import("syntax");
-const lsp = @import("lsp");
-const core = @import("core");
+const theme_mod = @import("theme.zig");
 const Editor = @import("editor.zig").Editor;
-const Theme = @import("theme.zig").Theme;
 
 pub const SimpleTUI = struct {
     allocator: std.mem.Allocator,
@@ -11,94 +10,31 @@ pub const SimpleTUI = struct {
     running: bool,
     stdin: std.fs.File,
     stdout: std.fs.File,
+    theme_registry: theme_mod.ThemeRegistry,
+    active_theme: theme_mod.Theme,
     highlight_cache: []syntax.HighlightRange,
     highlight_dirty: bool,
     highlight_error: ?[]u8,
     highlight_error_flash: bool,
     highlight_error_flash_state: bool,
     highlight_error_logged: bool,
-    lsp_manager: lsp.ServerManager,
-    hover_popup: ?[]const u8,
-    pending_key: ?u8,
-    // Git integration
-    git: core.Git,
-    git_blame_visible: bool,
-    // Fuzzy finder
-    file_picker: ?*core.FilePicker,
-    // Harpoon
-    harpoon: core.Harpoon,
-    // Tree-sitter features
-    syntax_features: syntax.Features,
-    fold_regions: []syntax.FoldRegion,
-    // Incremental selection
-    selection_start: ?usize,
-    selection_end: ?usize,
-    // Theme
-    theme: Theme,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
-        return initWithTheme(allocator, null);
-    }
-
-    pub fn initWithTheme(allocator: std.mem.Allocator, theme_name: ?[]const u8) !*SimpleTUI {
         const self = try allocator.create(SimpleTUI);
-
-        // Load theme based on name
-        const theme = if (theme_name) |name| blk: {
-            // Try to load specified theme
-            const path_prefixes = [_][]const u8{
-                "themes/",
-                "/usr/share/grim/themes/",
-                "/usr/local/share/grim/themes/",
-            };
-
-            for (path_prefixes) |prefix| {
-                const path = std.fmt.allocPrint(allocator, "{s}{s}.toml", .{ prefix, name }) catch continue;
-                defer allocator.free(path);
-
-                if (Theme.loadFromFile(allocator, path)) |loaded_theme| {
-                    std.log.info("Loaded theme: {s}", .{name});
-                    break :blk loaded_theme;
-                } else |_| {
-                    continue;
-                }
-            }
-
-            // Theme not found, fall back to default
-            std.log.warn("Theme '{s}' not found, using ghost-hacker-blue", .{name});
-            break :blk Theme.loadDefault(allocator) catch Theme.ghostHackerBlue();
-        } else blk: {
-            // No theme specified, use default
-            break :blk Theme.loadDefault(allocator) catch |err| blk2: {
-                std.log.warn("Failed to load theme: {}, using built-in fallback", .{err});
-                break :blk2 Theme.ghostHackerBlue();
-            };
-        };
-
         self.* = .{
             .allocator = allocator,
             .editor = try Editor.init(allocator),
             .running = true,
             .stdin = std.fs.File.stdin(),
             .stdout = std.fs.File.stdout(),
+            .theme_registry = theme_mod.ThemeRegistry.init(allocator),
+            .active_theme = theme_mod.Theme.defaultDark(),
             .highlight_cache = &.{},
             .highlight_dirty = true,
             .highlight_error = null,
             .highlight_error_flash = false,
             .highlight_error_flash_state = false,
             .highlight_error_logged = false,
-            .lsp_manager = lsp.ServerManager.init(allocator),
-            .hover_popup = null,
-            .pending_key = null,
-            .git = core.Git.init(allocator),
-            .git_blame_visible = false,
-            .file_picker = null,
-            .harpoon = core.Harpoon.init(allocator),
-            .syntax_features = syntax.Features.init(allocator),
-            .fold_regions = &.{},
-            .selection_start = null,
-            .selection_end = null,
-            .theme = theme,
         };
         return self;
     }
@@ -110,19 +46,7 @@ pub const SimpleTUI = struct {
         if (self.highlight_error) |msg| {
             self.allocator.free(msg);
         }
-        if (self.hover_popup) |popup| {
-            self.allocator.free(popup);
-        }
-        if (self.file_picker) |picker| {
-            picker.deinit();
-            self.allocator.destroy(picker);
-        }
-        if (self.fold_regions.len > 0) {
-            self.allocator.free(self.fold_regions);
-        }
-        self.git.deinit();
-        self.harpoon.deinit();
-        self.lsp_manager.deinit();
+        self.theme_registry.deinit();
         self.editor.deinit();
         self.allocator.destroy(self);
     }
@@ -143,260 +67,37 @@ pub const SimpleTUI = struct {
     pub fn loadFile(self: *SimpleTUI, path: []const u8) !void {
         try self.editor.loadFile(path);
         self.markHighlightsDirty();
-
-        // Auto-spawn LSP server for this file type
-        if (self.lsp_manager.autoSpawn(path) catch null) |server| {
-            // Set up response callbacks for this server
-            server.client.setResponseCallback(.{
-                .ctx = self,
-                .onHover = onLspHoverResponse,
-                .onDefinition = onLspDefinitionResponse,
-            });
-        }
-
-        // Detect git repository
-        const dir_path = std.fs.path.dirname(path) orelse ".";
-        _ = self.git.detectRepository(dir_path) catch false;
     }
 
-    fn onLspHoverResponse(ctx: *anyopaque, response: lsp.HoverResponse) void {
-        const self: *SimpleTUI = @ptrCast(@alignCast(ctx));
-
-        // Free old popup
-        if (self.hover_popup) |old| {
-            self.allocator.free(old);
-        }
-
-        // Display hover content
-        if (response.contents.len > 0) {
-            self.hover_popup = std.fmt.allocPrint(
-                self.allocator,
-                "Hover: {s}",
-                .{response.contents},
-            ) catch |err| {
-                std.log.warn("Failed to format hover popup: {}", .{err});
-                self.hover_popup = null;
-                return;
-            };
-        } else {
-            self.hover_popup = std.fmt.allocPrint(
-                self.allocator,
-                "Hover: (no info available)",
-                .{},
-            ) catch null;
-        }
-    }
-
-    fn onLspDefinitionResponse(ctx: *anyopaque, response: lsp.DefinitionResponse) void {
-        const self: *SimpleTUI = @ptrCast(@alignCast(ctx));
-
-        std.log.info("Definition: {s} at {d}:{d}", .{ response.uri, response.line, response.character });
-
-        // TODO: Actually jump to the definition location
-        // For now, just log it
-        _ = self;
-    }
-
-    fn lspHover(self: *SimpleTUI) !void {
-        const filepath = self.editor.current_filename orelse return;
-
-        // Get or spawn LSP server for this file
-        const server = (try self.lsp_manager.getOrSpawn(filepath)) orelse {
-            std.log.warn("No LSP server available for {s}", .{filepath});
+    pub fn setTheme(self: *SimpleTUI, name: []const u8) !void {
+        if (self.theme_registry.get(name)) |plugin_theme| {
+            self.active_theme = plugin_theme;
+            self.markHighlightsDirty();
             return;
-        };
-
-        // Ensure callbacks are set
-        server.client.setResponseCallback(.{
-            .ctx = self,
-            .onHover = onLspHoverResponse,
-            .onDefinition = onLspDefinitionResponse,
-        });
-
-        const line = self.getCursorLine();
-        const col = self.getCursorColumn();
-
-        // Send hover request
-        const uri = try std.fmt.allocPrint(self.allocator, "file://{s}", .{filepath});
-        defer self.allocator.free(uri);
-
-        const request_id = try server.client.requestHover(uri, @intCast(line), @intCast(col));
-
-        std.log.info("LSP hover requested at {d}:{d} (request_id: {d})", .{ line, col, request_id });
-
-        // Try to poll for response (will trigger callbacks)
-        server.client.poll() catch |err| {
-            std.log.warn("LSP poll failed: {}", .{err});
-        };
-    }
-
-    fn lspGotoDefinition(self: *SimpleTUI) !void {
-        const filepath = self.editor.current_filename orelse return;
-
-        // Get or spawn LSP server for this file
-        const server = (try self.lsp_manager.getOrSpawn(filepath)) orelse {
-            std.log.warn("No LSP server available for {s}", .{filepath});
-            return;
-        };
-
-        // Ensure callbacks are set
-        server.client.setResponseCallback(.{
-            .ctx = self,
-            .onHover = onLspHoverResponse,
-            .onDefinition = onLspDefinitionResponse,
-        });
-
-        const line = self.getCursorLine();
-        const col = self.getCursorColumn();
-
-        // Send definition request
-        const uri = try std.fmt.allocPrint(self.allocator, "file://{s}", .{filepath});
-        defer self.allocator.free(uri);
-
-        const request_id = try server.client.requestDefinition(uri, @intCast(line), @intCast(col));
-
-        std.log.info("LSP goto-definition requested at {d}:{d} (request_id: {d})", .{ line, col, request_id });
-
-        // Try to poll for response (will trigger callbacks)
-        server.client.poll() catch |err| {
-            std.log.warn("LSP poll failed: {}", .{err});
-        };
-    }
-
-    // Harpoon functions
-    fn harpoonPin(self: *SimpleTUI, slot: usize) !void {
-        const filepath = self.editor.current_filename orelse return;
-        const line = self.getCursorLine();
-        const col = self.getCursorColumn();
-        try self.harpoon.pin(slot, filepath, line, col);
-        std.log.info("Pinned {s} to slot {d}", .{ filepath, slot });
-    }
-
-    fn harpoonJump(self: *SimpleTUI, slot: usize) !void {
-        if (self.harpoon.get(slot)) |pinned| {
-            try self.loadFile(pinned.path);
-            // TODO: Restore cursor position
-            std.log.info("Jumped to slot {d}: {s}", .{ slot, pinned.path });
-        }
-    }
-
-    // Git functions
-    fn toggleGitBlame(self: *SimpleTUI) void {
-        self.git_blame_visible = !self.git_blame_visible;
-    }
-
-    fn gitNextHunk(_: *SimpleTUI) void {
-        // TODO: Implement hunk navigation
-        std.log.info("Next git hunk", .{});
-    }
-
-    fn gitPrevHunk(_: *SimpleTUI) void {
-        // TODO: Implement hunk navigation
-        std.log.info("Previous git hunk", .{});
-    }
-
-    fn gitStageFile(self: *SimpleTUI) !void {
-        const filepath = self.editor.current_filename orelse return;
-        try self.git.stageFile(filepath);
-        std.log.info("Staged: {s}", .{filepath});
-    }
-
-    fn gitUnstageFile(self: *SimpleTUI) !void {
-        const filepath = self.editor.current_filename orelse return;
-        try self.git.unstageFile(filepath);
-        std.log.info("Unstaged: {s}", .{filepath});
-    }
-
-    fn gitDiscardChanges(self: *SimpleTUI) !void {
-        const filepath = self.editor.current_filename orelse return;
-        try self.git.discardChanges(filepath);
-        std.log.info("Discarded changes: {s}", .{filepath});
-        // Reload file
-        try self.loadFile(filepath);
-    }
-
-    // Folding
-    fn updateFoldRegions(self: *SimpleTUI) !void {
-        if (self.fold_regions.len > 0) {
-            self.allocator.free(self.fold_regions);
         }
 
-        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
-        defer self.allocator.free(content);
-
-        self.fold_regions = try self.syntax_features.getFoldRegionsSimple(content);
-    }
-
-    fn toggleFoldAtCursor(self: *SimpleTUI) !void {
-        const cursor_line = self.getCursorLine();
-
-        // Find fold region at cursor
-        for (self.fold_regions) |*region| {
-            if (region.start_line == cursor_line) {
-                region.folded = !region.folded;
-                std.log.info("Toggled fold at line {d}", .{cursor_line});
-                return;
+        if (std.mem.indexOf(u8, name, "::")) |sep| {
+            const plugin_id = name[0..sep];
+            const plugin_theme_name = name[sep + 2 ..];
+            if (plugin_theme_name.len > 0) {
+                if (self.theme_registry.getPluginTheme(plugin_id, plugin_theme_name)) |plugin_theme_value| {
+                    self.active_theme = plugin_theme_value;
+                    self.markHighlightsDirty();
+                    return;
+                }
             }
         }
 
-        std.log.info("No fold region at line {d}", .{cursor_line});
+        self.active_theme = try theme_mod.Theme.get(name);
+        self.markHighlightsDirty();
     }
 
-    // Incremental selection
-    fn expandSelection(self: *SimpleTUI) !void {
-        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
-        defer self.allocator.free(content);
-
-        const current_start = self.selection_start orelse self.editor.cursor.offset;
-        const current_end = self.selection_end orelse self.editor.cursor.offset;
-
-        if (try self.syntax_features.expandSelection(content, current_start, current_end)) |range| {
-            self.selection_start = range.start_byte;
-            self.selection_end = range.end_byte;
-            self.editor.mode = .visual;
-            std.log.info("Expanded selection to {d}-{d}", .{ range.start_byte, range.end_byte });
-        } else {
-            std.log.info("Cannot expand selection further", .{});
-        }
-    }
-
-    fn shrinkSelection(self: *SimpleTUI) !void {
-        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
-        defer self.allocator.free(content);
-
-        const current_start = self.selection_start orelse self.editor.cursor.offset;
-        const current_end = self.selection_end orelse self.editor.cursor.offset;
-
-        if (try self.syntax_features.shrinkSelection(content, current_start, current_end)) |range| {
-            self.selection_start = range.start_byte;
-            self.selection_end = range.end_byte;
-            std.log.info("Shrunk selection to {d}-{d}", .{ range.start_byte, range.end_byte });
-        } else {
-            // Can't shrink further, exit visual mode
-            self.selection_start = null;
-            self.selection_end = null;
-            self.editor.mode = .normal;
-            std.log.info("Exited visual mode", .{});
-        }
-    }
-
-    // Fuzzy finder
-    fn openFilePicker(self: *SimpleTUI) !void {
-        if (self.file_picker) |picker| {
-            picker.deinit();
-            self.allocator.destroy(picker);
-        }
-
-        const picker = try self.allocator.create(core.FilePicker);
-        picker.* = core.FilePicker.init(self.allocator);
-        self.file_picker = picker;
-
-        // Find files in current directory
-        try picker.finder.findFiles(".", 5); // Max depth 5
-        try picker.updateQuery(""); // Show all files initially
-
-        std.log.info("File picker opened", .{});
-        // TODO: Enter file picker mode
+    pub fn attachPluginManager(self: *SimpleTUI, manager: *runtime.PluginManager) void {
+        manager.setThemeCallbacks(
+            @as(*anyopaque, @ptrCast(&self.theme_registry)),
+            theme_mod.registerThemeCallback,
+            theme_mod.unregisterThemeCallback,
+        );
     }
 
     fn render(self: *SimpleTUI) !void {
@@ -418,14 +119,7 @@ pub const SimpleTUI = struct {
         const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
         defer self.allocator.free(content);
 
-        // Get git blame if visible
-        const blame_info = if (self.git_blame_visible and self.editor.current_filename != null)
-            self.git.getBlame(self.editor.current_filename.?) catch null
-        else
-            null;
-
-        const gutter_width: usize = if (self.git_blame_visible) 20 else 6;
-        const content_width: usize = if (width > gutter_width) width - gutter_width else 0;
+        const content_width: usize = if (width > 6) width - 6 else 0;
 
         var line_start: usize = 0;
         var logical_line: usize = 0;
@@ -436,39 +130,10 @@ pub const SimpleTUI = struct {
             const line_end = if (rel_newline) |rel| line_start + rel else content.len;
             const line_slice = content[line_start..line_end];
 
-            // Git blame gutter (if enabled)
-            if (self.git_blame_visible) {
-                if (blame_info) |blame| {
-                    if (logical_line < blame.len) {
-                        const blame_line = blame[logical_line];
-                        // Show first 7 chars of commit hash
-                        const hash_short = if (blame_line.commit_hash.len >= 7)
-                            blame_line.commit_hash[0..7]
-                        else
-                            blame_line.commit_hash;
-
-                        try self.setColor(90, 0); // Dim gray
-                        var blame_buf: [16]u8 = undefined;
-                        const blame_str = try std.fmt.bufPrint(&blame_buf, "{s:7} ", .{hash_short});
-                        try self.stdout.writeAll(blame_str);
-                        try self.resetColor();
-                    } else {
-                        try self.stdout.writeAll("        ");
-                    }
-                } else {
-                    try self.stdout.writeAll("        ");
-                }
-            }
-
             // Line numbers
             var line_buf: [16]u8 = undefined;
-            const line_str = try std.fmt.bufPrint(&line_buf, "{d:4}", .{logical_line + 1});
+            const line_str = try std.fmt.bufPrint(&line_buf, "{d:4} ", .{logical_line + 1});
             try self.stdout.writeAll(line_str);
-
-            // Fold indicators
-            const fold_indicator = self.getFoldIndicator(logical_line);
-            try self.stdout.writeAll(fold_indicator);
-            try self.stdout.writeAll(" ");
 
             if (content_width > 0) {
                 try self.renderHighlightedLine(line_slice, logical_line, content_width);
@@ -484,27 +149,27 @@ pub const SimpleTUI = struct {
             try self.stdout.writeAll("~\r\n");
         }
 
-        // Hover popup (if active)
-        if (self.hover_popup) |popup_text| {
-            const popup_line = if (height > 5) height - 4 else 1;
-            try self.setCursor(popup_line, 1);
-            try self.setColor(44, 97); // Blue background, white text
-            var popup_buf: [256]u8 = undefined;
-            const popup_display = if (popup_text.len > 70) popup_text[0..70] else popup_text;
-            const popup_str = try std.fmt.bufPrint(&popup_buf, " LSP: {s} ", .{popup_display});
-            try self.stdout.writeAll(popup_str);
-            if (popup_text.len > 70) {
-                try self.stdout.writeAll("...");
-            }
-            try self.resetColor();
-        }
-
         // Status line
         try self.setCursor(height, 1);
         const flash_on = self.highlight_error_flash and self.highlight_error_flash_state;
-        const status_bg: u8 = if (flash_on) 41 else 47; // Red flash or default white
-        const status_fg: u8 = if (flash_on) 97 else 30; // Bright white or black text
-        try self.setColor(status_bg, status_fg);
+        if (flash_on) {
+            try self.setColor(41, 97);
+        } else blk: {
+            var bg_buf: [32]u8 = undefined;
+            var fg_buf: [32]u8 = undefined;
+            const bg_seq = self.active_theme.status_bar_bg.toBgSequence(&bg_buf) catch |err| {
+                std.log.warn("Failed to apply status bar background color: {}", .{err});
+                try self.setColor(47, 30);
+                break :blk;
+            };
+            const fg_seq = self.active_theme.status_bar_fg.toFgSequence(&fg_buf) catch |err| {
+                std.log.warn("Failed to apply status bar foreground color: {}", .{err});
+                try self.setColor(47, 30);
+                break :blk;
+            };
+            try self.stdout.writeAll(bg_seq);
+            try self.stdout.writeAll(fg_seq);
+        }
 
         const mode_str = switch (self.editor.mode) {
             .normal => "NORMAL",
@@ -518,42 +183,10 @@ pub const SimpleTUI = struct {
 
         const language = self.editor.getLanguageName();
 
-        // Get git info for status line
-        const git_branch = if (self.git.repo_root != null)
-            self.git.getCurrentBranch() catch null
-        else
-            null;
-
-        const file_status = if (self.git.repo_root != null and self.editor.current_filename != null)
-            self.git.getFileStatus(self.editor.current_filename.?) catch .unmodified
-        else
-            .unmodified;
-
-        const status_char = switch (file_status) {
-            .modified => "●",
-            .added => "+",
-            .deleted => "-",
-            .untracked => "?",
-            else => "",
-        };
-
         var status_buf: [512]u8 = undefined;
         var status_len: usize = 0;
-
-        // Build status line with git info
-        if (git_branch) |branch| {
-            const git_slice = try std.fmt.bufPrint(status_buf[status_len..], " {s} | {s}{s} | ", .{
-                mode_str,
-                branch,
-                status_char,
-            });
-            status_len += git_slice.len;
-        } else {
-            const mode_slice = try std.fmt.bufPrint(status_buf[status_len..], " {s} | ", .{mode_str});
-            status_len += mode_slice.len;
-        }
-
-        const base_slice = try std.fmt.bufPrint(status_buf[status_len..], "{d},{d} | {d} bytes | {s}", .{
+        const base_slice = try std.fmt.bufPrint(status_buf[status_len..], " {s} | {d},{d} | {d} bytes | {s}", .{
+            mode_str,
             cursor_line + 1,
             cursor_col + 1,
             self.editor.rope.len(),
@@ -561,15 +194,13 @@ pub const SimpleTUI = struct {
         });
         status_len += base_slice.len;
 
-        // Show warning instead of error for highlight issues (less alarming)
         if (self.highlight_error) |err_msg| {
-            const max_err_len: usize = 40;
+            const max_err_len: usize = 48;
             const trimmed_len = if (err_msg.len > max_err_len) max_err_len else err_msg.len;
-            // Show as warning, not error
-            const warn_slice = try std.fmt.bufPrint(status_buf[status_len..], " | ⚠ {s}", .{err_msg[0..trimmed_len]});
+            const warn_slice = try std.fmt.bufPrint(status_buf[status_len..], " | ! {s}", .{err_msg[0..trimmed_len]});
             status_len += warn_slice.len;
             if (err_msg.len > max_err_len) {
-                const ellipsis_slice = try std.fmt.bufPrint(status_buf[status_len..], "...", .{});
+                const ellipsis_slice = try std.fmt.bufPrint(status_buf[status_len..], "…", .{});
                 status_len += ellipsis_slice.len;
             }
         }
@@ -660,70 +291,12 @@ pub const SimpleTUI = struct {
     }
 
     fn handleNormalMode(self: *SimpleTUI, key: u8) !void {
-        // Handle pending key sequences (e.g., "gd" for goto-definition)
-        if (self.pending_key) |prev_key| {
-            defer self.pending_key = null;
-
-            if (prev_key == 'g' and key == 'd') {
-                // gd -> goto-definition
-                try self.lspGotoDefinition();
-                return;
-            } else if (prev_key == 'g' and key == 'g') {
-                // gg -> goto top
-                self.editor.cursor.offset = 0;
-                return;
-            } else if (prev_key == ' ') {
-                // Leader key mappings (space)
-                switch (key) {
-                    'f' => try self.openFilePicker(), // <leader>f -> file picker
-                    'g' => self.toggleGitBlame(), // <leader>g -> toggle git blame
-                    's' => try self.gitStageFile(), // <leader>s -> stage file
-                    'u' => try self.gitUnstageFile(), // <leader>u -> unstage file
-                    'd' => try self.gitDiscardChanges(), // <leader>d -> discard changes
-                    '1' => try self.harpoonPin(0), // <leader>1 -> pin to slot 1
-                    '2' => try self.harpoonPin(1),
-                    '3' => try self.harpoonPin(2),
-                    '4' => try self.harpoonPin(3),
-                    '5' => try self.harpoonPin(4),
-                    else => {},
-                }
-                return;
-            } else if (prev_key == ']') {
-                // ] prefix mappings
-                if (key == 'h') {
-                    self.gitNextHunk(); // ]h -> next hunk
-                    return;
-                }
-            } else if (prev_key == '[') {
-                // [ prefix mappings
-                if (key == 'h') {
-                    self.gitPrevHunk(); // [h -> prev hunk
-                    return;
-                }
-            } else if (prev_key == 'z') {
-                // z prefix mappings (folding)
-                switch (key) {
-                    'a' => try self.toggleFoldAtCursor(), // za -> toggle fold
-                    'u' => try self.updateFoldRegions(), // zu -> update fold regions
-                    else => {},
-                }
-                return;
-            }
-            // Fall through for other combinations
-        }
-
         switch (key) {
             27 => {}, // ESC in normal mode - already in normal
             'h' => self.editor.moveCursorLeft(),
             'j' => self.editor.moveCursorDown(),
             'k' => self.editor.moveCursorUp(),
             'l' => self.editor.moveCursorRight(),
-            'K' => try self.lspHover(), // LSP hover
-            'z' => {
-                // z prefix for folding
-                self.pending_key = 'z';
-            },
-            'V' => try self.expandSelection(), // Shift+V -> expand selection
             'i' => self.editor.mode = .insert,
             'I' => {
                 self.editor.moveCursorToLineStart();
@@ -751,27 +324,9 @@ pub const SimpleTUI = struct {
             '0' => self.editor.moveCursorToLineStart(),
             '$' => self.editor.moveCursorToLineEnd(),
             'g' => {
-                // Set pending key for multi-key sequences (gg, gd)
-                self.pending_key = 'g';
+                // TODO: Handle 'gg' for goto top
             },
             'G' => self.editor.moveCursorToEnd(),
-            ' ' => {
-                // Leader key (space)
-                self.pending_key = ' ';
-            },
-            '[' => {
-                // [ prefix for git hunk navigation
-                self.pending_key = '[';
-            },
-            ']' => {
-                // ] prefix for git hunk navigation
-                self.pending_key = ']';
-            },
-            '1' => try self.harpoonJump(0), // Jump to harpoon slot 1
-            '2' => try self.harpoonJump(1),
-            '3' => try self.harpoonJump(2),
-            '4' => try self.harpoonJump(3),
-            '5' => try self.harpoonJump(4),
             ':' => self.editor.mode = .command,
             'v' => self.editor.mode = .visual,
             'q' => self.running = false, // Simple quit
@@ -794,28 +349,17 @@ pub const SimpleTUI = struct {
 
     fn handleVisualMode(self: *SimpleTUI, key: u8) !void {
         switch (key) {
-            27 => {
-                // ESC -> exit visual mode
-                self.selection_start = null;
-                self.selection_end = null;
-                self.editor.mode = .normal;
-            },
+            27 => self.editor.mode = .normal, // ESC
             'h' => self.editor.moveCursorLeft(),
             'j' => self.editor.moveCursorDown(),
             'k' => self.editor.moveCursorUp(),
             'l' => self.editor.moveCursorRight(),
-            'V' => try self.expandSelection(), // Shift+V -> expand selection
-            'v' => try self.shrinkSelection(), // v -> shrink selection
             'd' => {
                 // TODO: Delete selection
-                self.selection_start = null;
-                self.selection_end = null;
                 self.editor.mode = .normal;
             },
             'y' => {
                 // TODO: Yank selection
-                self.selection_start = null;
-                self.selection_end = null;
                 self.editor.mode = .normal;
             },
             else => {},
@@ -1037,6 +581,7 @@ pub const SimpleTUI = struct {
         var seg_idx: usize = 0;
         var color_active = false;
         var active_type: ?syntax.HighlightType = null;
+        var seq_buf: [32]u8 = undefined;
 
         while (col < line_len and written < max_width) {
             while (seg_idx < segments.items.len and segments.items[seg_idx].end <= col) : (seg_idx += 1) {}
@@ -1067,8 +612,10 @@ pub const SimpleTUI = struct {
             if (run_type) |ht| {
                 if (!color_active or active_type != ht) {
                     if (color_active) try self.resetColor();
-                    var buf: [32]u8 = undefined;
-                    const seq = try self.theme.getHighlightSequence(ht, &buf);
+                    const seq = self.active_theme.getHighlightSequence(ht, &seq_buf) catch |err| {
+                        std.log.err("Failed to build highlight sequence: {}", .{err});
+                        return err;
+                    };
                     try self.stdout.writeAll(seq);
                     color_active = true;
                     active_type = ht;
@@ -1094,15 +641,5 @@ pub const SimpleTUI = struct {
         while (written < max_width) : (written += 1) {
             try self.stdout.writeAll(" ");
         }
-    }
-
-    fn getFoldIndicator(self: *SimpleTUI, line_num: usize) []const u8 {
-        // Check if this line starts a fold region
-        for (self.editor.fold_regions) |region| {
-            if (region.start_line == line_num) {
-                return if (region.folded) "▶" else "▼";
-            }
-        }
-        return " ";
     }
 };

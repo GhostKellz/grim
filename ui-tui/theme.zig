@@ -1,4 +1,5 @@
 const std = @import("std");
+const json = std.json;
 const syntax = @import("syntax");
 
 /// RGB color representation
@@ -85,6 +86,11 @@ pub const Theme = struct {
             .none => return "",
         };
         return try color.toFgSequence(buf);
+    }
+
+    /// Get the default theme
+    pub fn getDefault() Theme {
+        return defaultDark();
     }
 
     /// Default dark theme (current Grim colors)
@@ -174,6 +180,19 @@ pub const Theme = struct {
 
         // Fallback to built-in ghost-hacker-blue colors
         return ghostHackerBlue();
+    }
+
+    /// Get theme by name
+    pub fn get(name: []const u8) !Theme {
+        if (std.mem.eql(u8, name, "ghost-hacker-blue")) {
+            return ghostHackerBlue();
+        } else if (std.mem.eql(u8, name, "default-dark")) {
+            return defaultDark();
+        } else if (std.mem.eql(u8, name, "default-light")) {
+            return defaultLight();
+        } else {
+            return error.ThemeNotFound;
+        }
     }
 
     /// Built-in Ghost Hacker Blue theme (fallback)
@@ -311,6 +330,265 @@ fn resolveWithFallback(
     return try resolver.resolve(value);
 }
 
+const ThemeRegistryError = error{
+    InvalidThemeJson,
+    InvalidThemeName,
+    InvalidPluginId,
+    KeyTooLong,
+};
+
+const ParseThemeError = ThemeRegistryError || error{ InvalidHexColor, InvalidCharacter, Overflow, OutOfMemory };
+
+pub const ThemeRegistry = struct {
+    const Self = @This();
+
+    allocator: std.mem.Allocator,
+    plugin_themes: std.StringHashMap(Theme),
+
+    pub fn init(allocator: std.mem.Allocator) ThemeRegistry {
+        return .{
+            .allocator = allocator,
+            .plugin_themes = std.StringHashMap(Theme).init(allocator),
+        };
+    }
+
+    pub fn deinit(self: *Self) void {
+        var it = self.plugin_themes.iterator();
+        while (it.next()) |entry| {
+            self.allocator.free(entry.key_ptr.*);
+        }
+        self.plugin_themes.deinit();
+    }
+
+    pub fn registerPluginTheme(
+        self: *Self,
+        plugin_id: []const u8,
+        theme_name: []const u8,
+        colors_json: []const u8,
+    ) ParseThemeError!void {
+        if (plugin_id.len == 0) return ThemeRegistryError.InvalidPluginId;
+        if (theme_name.len == 0) return ThemeRegistryError.InvalidThemeName;
+
+        var parsed = json.parseFromSlice(json.Value, self.allocator, colors_json, .{}) catch {
+            std.log.err("Failed to parse theme JSON from plugin {s}: invalid JSON", .{plugin_id});
+            return ThemeRegistryError.InvalidThemeJson;
+        };
+        defer parsed.deinit();
+
+        if (parsed.value != .object) {
+            std.log.err("Theme registration for plugin {s} must provide a JSON object", .{plugin_id});
+            return ThemeRegistryError.InvalidThemeJson;
+        }
+
+        var theme = Theme.defaultDark();
+        try applyThemeJson(&theme, "", parsed.value);
+
+        const key_owned = try allocPluginKey(self.allocator, plugin_id, theme_name);
+        errdefer self.allocator.free(key_owned);
+
+        if (self.plugin_themes.getPtr(key_owned)) |existing| {
+            existing.* = theme;
+            self.allocator.free(key_owned);
+            std.log.info("Updated theme {s} from plugin {s}", .{ theme_name, plugin_id });
+            return;
+        }
+
+        try self.plugin_themes.put(key_owned, theme);
+        std.log.info("Registered plugin theme {s}::{s}", .{ plugin_id, theme_name });
+    }
+
+    pub fn unregisterPluginTheme(
+        self: *Self,
+        plugin_id: []const u8,
+        theme_name: []const u8,
+    ) void {
+        const key = allocPluginKey(self.allocator, plugin_id, theme_name) catch {
+            std.log.err("Failed to allocate key while unregistering theme {s}::{s}", .{ plugin_id, theme_name });
+            return;
+        };
+        defer self.allocator.free(key);
+
+        if (self.plugin_themes.fetchRemove(key)) |removed| {
+            self.allocator.free(removed.key);
+            std.log.info("Unregistered plugin theme {s}::{s}", .{ plugin_id, theme_name });
+        }
+    }
+
+    pub fn getPluginTheme(self: *Self, plugin_id: []const u8, theme_name: []const u8) ?Theme {
+        const key = allocPluginKey(self.allocator, plugin_id, theme_name) catch {
+            return null;
+        };
+        defer self.allocator.free(key);
+        return self.plugin_themes.get(key);
+    }
+
+    pub fn get(self: *Self, name: []const u8) ?Theme {
+        return self.plugin_themes.get(name);
+    }
+};
+
+pub fn registerThemeCallback(
+    ctx: *anyopaque,
+    plugin_id: []const u8,
+    theme_name: []const u8,
+    colors_json: []const u8,
+) ParseThemeError!void {
+    const registry = @as(*ThemeRegistry, @ptrCast(@alignCast(ctx)));
+    try registry.registerPluginTheme(plugin_id, theme_name, colors_json);
+}
+
+pub fn unregisterThemeCallback(
+    ctx: *anyopaque,
+    plugin_id: []const u8,
+    theme_name: []const u8,
+) void {
+    const registry = @as(*ThemeRegistry, @ptrCast(@alignCast(ctx)));
+    registry.unregisterPluginTheme(plugin_id, theme_name);
+}
+
+fn allocPluginKey(allocator: std.mem.Allocator, plugin_id: []const u8, theme_name: []const u8) ![]u8 {
+    return std.fmt.allocPrint(allocator, "{s}::{s}", .{ plugin_id, theme_name });
+}
+
+fn applyThemeJson(theme: *Theme, parent_key: []const u8, value: json.Value) ParseThemeError!void {
+    switch (value) {
+        .object => {
+            var it = value.object.iterator();
+            while (it.next()) |entry| {
+                const child_key = entry.key_ptr.*;
+                if (parent_key.len == 0) {
+                    try applyThemeJson(theme, child_key, entry.value_ptr.*);
+                } else {
+                    var combined_buf: [128]u8 = undefined;
+                    const combined = combineKey(parent_key, child_key, &combined_buf) catch {
+                        std.log.err("Theme key '{s}.{s}' is too long", .{ parent_key, child_key });
+                        return ThemeRegistryError.KeyTooLong;
+                    };
+                    try applyThemeJson(theme, combined, entry.value_ptr.*);
+                }
+            }
+        },
+        .string => {
+            if (parent_key.len == 0) {
+                return ThemeRegistryError.InvalidThemeJson;
+            }
+            const recognized = try assignColor(theme, parent_key, value.string);
+            if (!recognized) {
+                std.log.warn("Ignoring unknown theme field '{s}'", .{parent_key});
+            }
+        },
+        else => return ThemeRegistryError.InvalidThemeJson,
+    }
+}
+
+fn combineKey(parent: []const u8, child: []const u8, buffer: *[128]u8) ![]const u8 {
+    const total = parent.len + 1 + child.len;
+    if (total > buffer.len) return ThemeRegistryError.KeyTooLong;
+    @memcpy(buffer[0..parent.len], parent);
+    buffer[parent.len] = '_';
+    @memcpy(buffer[parent.len + 1 .. parent.len + 1 + child.len], child);
+    return buffer[0..total];
+}
+
+fn assignColor(theme: *Theme, key: []const u8, value: []const u8) ParseThemeError!bool {
+    var normalized_buf: [96]u8 = undefined;
+    const normalized = normalizeKey(key, &normalized_buf) catch {
+        return ThemeRegistryError.InvalidThemeJson;
+    };
+
+    if (normalized.len == 0) {
+        return ThemeRegistryError.InvalidThemeJson;
+    }
+
+    var slice = normalized;
+    const prefixes = [_][]const u8{ "syntax_", "ui_", "palette_", "editor_" };
+    for (prefixes) |prefix| {
+        if (std.mem.startsWith(u8, slice, prefix)) {
+            slice = slice[prefix.len..];
+            break;
+        }
+    }
+
+    const color = try Color.fromHex(value);
+
+    if (std.mem.eql(u8, slice, "keyword")) {
+        theme.keyword = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "string") or std.mem.eql(u8, slice, "string_literal")) {
+        theme.string_literal = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "number") or std.mem.eql(u8, slice, "number_literal")) {
+        theme.number_literal = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "comment")) {
+        theme.comment = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "function") or std.mem.eql(u8, slice, "function_name")) {
+        theme.function_name = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "type") or std.mem.eql(u8, slice, "type_name")) {
+        theme.type_name = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "variable")) {
+        theme.variable = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "operator")) {
+        theme.operator = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "punctuation")) {
+        theme.punctuation = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "error_bg") or std.mem.eql(u8, slice, "error_background") or std.mem.eql(u8, slice, "error")) {
+        theme.error_bg = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "error_fg") or std.mem.eql(u8, slice, "error_foreground")) {
+        theme.error_fg = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "background")) {
+        theme.background = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "foreground")) {
+        theme.foreground = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "cursor")) {
+        theme.cursor = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "selection")) {
+        theme.selection = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "line_number") or std.mem.eql(u8, slice, "linenumber")) {
+        theme.line_number = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "status_bar_bg") or std.mem.eql(u8, slice, "status_bar_background")) {
+        theme.status_bar_bg = color;
+        return true;
+    } else if (std.mem.eql(u8, slice, "status_bar_fg") or std.mem.eql(u8, slice, "status_bar_foreground") or std.mem.eql(u8, slice, "status_bar_text")) {
+        theme.status_bar_fg = color;
+        return true;
+    }
+
+    return false;
+}
+
+fn normalizeKey(key: []const u8, buffer: []u8) ![]const u8 {
+    const trimmed = std.mem.trim(u8, key, " \t\r\n");
+    if (trimmed.len == 0) {
+        return ThemeRegistryError.InvalidThemeJson;
+    }
+    if (trimmed.len > buffer.len) {
+        return ThemeRegistryError.KeyTooLong;
+    }
+
+    const lower = buffer[0..trimmed.len];
+    _ = std.ascii.lowerString(lower, trimmed);
+    for (lower) |*ch| {
+        if (ch.* == '-' or ch.* == '.' or ch.* == ' ') {
+            ch.* = '_';
+        }
+    }
+    return lower;
+}
+
 test "color from hex" {
     const color = try Color.fromHex("#8aff80");
     try std.testing.expectEqual(@as(u8, 0x8a), color.r);
@@ -387,4 +665,65 @@ test "toml parser basic" {
 
     // Verify mint foreground
     try std.testing.expectEqual(@as(u8, 0x8a), theme.foreground.r);
+}
+
+test "theme registry plugin registration" {
+    var registry = ThemeRegistry.init(std.testing.allocator);
+    defer registry.deinit();
+
+    const plugin_id = "example.plugin";
+    const theme_name = "midnight";
+
+    const colors_json =
+        \\{
+        \\  "syntax": {
+        \\    "keyword": "#ff00ff",
+        \\    "string": "#00ff7f",
+        \\    "number": "#ffaa00"
+        \\  },
+        \\  "ui": {
+        \\    "background": "#101020",
+        \\    "foreground": "#f0f0f0",
+        \\    "status_bar": {
+        \\      "bg": "#1a1a2a",
+        \\      "fg": "#e0e0ff"
+        \\    }
+        \\  },
+        \\  "error": {
+        \\    "bg": "#330000",
+        \\    "fg": "#ffcccc"
+        \\  }
+        \\}
+    ;
+
+    try registry.registerPluginTheme(plugin_id, theme_name, colors_json);
+
+    const theme_value_opt = registry.getPluginTheme(plugin_id, theme_name);
+    try std.testing.expect(theme_value_opt != null);
+    const theme_value = theme_value_opt.?;
+
+    try std.testing.expectEqual(@as(u8, 0xff), theme_value.keyword.r);
+    try std.testing.expectEqual(@as(u8, 0x00), theme_value.keyword.g);
+    try std.testing.expectEqual(@as(u8, 0xff), theme_value.keyword.b);
+
+    try std.testing.expectEqual(@as(u8, 0x10), theme_value.background.r);
+    try std.testing.expectEqual(@as(u8, 0x10), theme_value.background.g);
+    try std.testing.expectEqual(@as(u8, 0x20), theme_value.background.b);
+
+    // Update the theme with a new background color
+    const update_json =
+        \\{ "background": "#222244" }
+    ;
+
+    try registry.registerPluginTheme(plugin_id, theme_name, update_json);
+
+    const updated_opt = registry.getPluginTheme(plugin_id, theme_name);
+    try std.testing.expect(updated_opt != null);
+    const updated = updated_opt.?;
+    try std.testing.expectEqual(@as(u8, 0x22), updated.background.r);
+    try std.testing.expectEqual(@as(u8, 0x22), updated.background.g);
+    try std.testing.expectEqual(@as(u8, 0x44), updated.background.b);
+
+    registry.unregisterPluginTheme(plugin_id, theme_name);
+    try std.testing.expect(registry.getPluginTheme(plugin_id, theme_name) == null);
 }

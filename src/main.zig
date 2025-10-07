@@ -61,10 +61,17 @@ pub fn main() !void {
         }
     }
 
-    // Initialize Simple TUI app with theme
+    // Initialize Simple TUI app
     const SimpleTUI = @import("ui_tui").simple_tui.SimpleTUI;
-    var app = try SimpleTUI.initWithTheme(allocator, theme_name);
+    var app = try SimpleTUI.init(allocator);
     defer app.deinit();
+
+    // Apply theme if specified
+    if (theme_name) |theme| {
+        app.setTheme(theme) catch |err| {
+            std.debug.print("Warning: Failed to set theme '{s}': {}\n", .{theme, err});
+        };
+    }
 
     // Load file if provided
     if (file_to_load) |file_path| {

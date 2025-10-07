@@ -1,90 +1,90 @@
-// AI-powered Git Commit Plugin
-// Generates commit messages using local Ollama models
-//
-// Usage in Grim:
-//   :AICommit - Generate commit message from staged changes
-//   :AIExplain - Explain recent changes
-//   :AIReview - AI code review of current file
+-- AI-powered Git Commit Plugin
+-- Generates commit messages using local Ollama models
+--
+-- Usage in Grim:
+--   :AICommit - Generate commit message from staged changes
+--   :AIExplain - Explain recent changes
+--   :AIReview - AI code review of current file
 
-// Initialize Zap AI if available
-if (!grim_zap_init()) {
-    print("⚠️  Zap AI not available - is Ollama running?");
-    print("   Install: https://ollama.ai");
-    print("   Model: ollama pull deepseek-coder:33b");
-    exit(1);
-}
+-- Initialize Zap AI if available
+if not grim_zap_init() then
+    print("⚠️  Zap AI not available - is Ollama running?")
+    print("   Install: https://ollama.ai")
+    print("   Model: ollama pull deepseek-coder:33b")
+    exit(1)
+end
 
-// Check if Ollama is accessible
-if (!grim_zap_available()) {
-    print("❌ Ollama not running on http://localhost:11434");
-    print("   Start with: ollama serve");
-    exit(1);
-}
+-- Check if Ollama is accessible
+if not grim_zap_available() then
+    print("❌ Ollama not running on http://localhost:11434")
+    print("   Start with: ollama serve")
+    exit(1)
+end
 
-print("✅ Zap AI ready!");
+print("✅ Zap AI ready!")
 
-// Command: Generate AI commit message
-function aiCommit() {
-    // Get git diff of staged changes
-    const diff = grim_git_diff_staged();
+-- Command: Generate AI commit message
+function aiCommit()
+    -- Get git diff of staged changes
+    local diff = grim_git_diff_staged()
 
-    if (diff == "") {
-        print("No staged changes found. Stage files with git add first.");
-        return;
-    }
+    if diff == "" then
+        print("No staged changes found. Stage files with git add first.")
+        return
+    end
 
-    print("🤖 Generating commit message...");
-    const message = grim_zap_commit_message(diff);
+    print("🤖 Generating commit message...")
+    local message = grim_zap_commit_message(diff)
 
-    if (message == "") {
-        print("❌ Failed to generate commit message");
-        return;
-    }
+    if message == "" then
+        print("❌ Failed to generate commit message")
+        return
+    end
 
-    print("\n📝 Suggested commit message:\n");
-    print(message);
-    print("\n💡 Use this? (y/n)");
+    print("\n📝 Suggested commit message:\n")
+    print(message)
+    print("\n💡 Use this? (y/n)")
 
-    // TODO: Add interactive prompt when Ghostlang supports it
-    // For now, just show the message
-}
+    -- TODO: Add interactive prompt when Ghostlang supports it
+    -- For now, just show the message
+end
 
-// Command: Explain recent changes
-function aiExplain() {
-    const changes = grim_git_diff_head();
+-- Command: Explain recent changes
+function aiExplain()
+    local changes = grim_git_diff_head()
 
-    if (changes == "") {
-        print("No recent changes to explain");
-        return;
-    }
+    if changes == "" then
+        print("No recent changes to explain")
+        return
+    end
 
-    print("🔍 Analyzing changes...");
-    const explanation = grim_zap_explain_changes(changes);
+    print("🔍 Analyzing changes...")
+    local explanation = grim_zap_explain_changes(changes)
 
-    print("\n📚 Change explanation:\n");
-    print(explanation);
-}
+    print("\n📚 Change explanation:\n")
+    print(explanation)
+end
 
-// Command: AI code review
-function aiReview() {
-    const filename = getCurrentFile();
-    const code = getFileContent(filename);
+-- Command: AI code review
+function aiReview()
+    local filename = getCurrentFile()
+    local code = getFileContent(filename)
 
-    if (code == "") {
-        print("No file open for review");
-        return;
-    }
+    if code == "" then
+        print("No file open for review")
+        return
+    end
 
-    print("🔬 Reviewing code...");
-    const review = grim_zap_review_code(code);
+    print("🔬 Reviewing code...")
+    local review = grim_zap_review_code(code)
 
-    print("\n✨ Code review:\n");
-    print(review);
-}
+    print("\n✨ Code review:\n")
+    print(review)
+end
 
-// Register commands
-registerCommand("AICommit", aiCommit);
-registerCommand("AIExplain", aiExplain);
-registerCommand("AIReview", aiReview);
+-- Register commands
+registerCommand("AICommit", aiCommit)
+registerCommand("AIExplain", aiExplain)
+registerCommand("AIReview", aiReview)
 
-print("Commands registered: :AICommit, :AIExplain, :AIReview");
+print("Commands registered: :AICommit, :AIExplain, :AIReview")

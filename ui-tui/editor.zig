@@ -529,14 +529,14 @@ pub const Editor = struct {
         }
 
         const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        defer if (content.len > 0) self.allocator.free(content);
+        // Note: Rope owns this memory, don't free it
 
         self.fold_regions = try self.features.getFoldRegions(content);
     }
 
     fn getCurrentLine(self: *const Editor) usize {
         const content = self.rope.slice(.{ .start = 0, .end = self.cursor.offset }) catch return 0;
-        defer if (content.len > 0) std.heap.page_allocator.free(content);
+        // Note: Rope owns this memory, don't free it
 
         var line: usize = 0;
         for (content) |ch| {
@@ -573,7 +573,7 @@ pub const Editor = struct {
     // Future: Try LSP first (requires async handling), fall back to tree-sitter
     fn jumpToDefinition(self: *Editor) !void {
         const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        defer if (content.len > 0) self.allocator.free(content);
+        // Note: Rope owns this memory, don't free it
 
         if (try self.features.findDefinition(content, self.cursor.offset)) |def| {
             self.cursor.offset = def.start_byte;
@@ -585,7 +585,7 @@ pub const Editor = struct {
     // TODO: Add LSP support for cross-file rename
     fn renameSymbol(self: *Editor, new_name: []const u8) !void {
         const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        defer if (content.len > 0) self.allocator.free(content);
+        // Note: Rope owns this memory, don't free it
 
         // Get the identifier at cursor
         const identifier = self.features.getIdentifierAtPosition(content, self.cursor.offset) orelse return;
@@ -646,7 +646,7 @@ pub const Editor = struct {
     // Selection methods
     fn expandSelection(self: *Editor) !void {
         const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        defer if (content.len > 0) self.allocator.free(content);
+        // Note: Rope owns this memory, don't free it
 
         const current_start = self.selection_start orelse self.cursor.offset;
         const current_end = self.selection_end orelse self.cursor.offset;
@@ -662,7 +662,7 @@ pub const Editor = struct {
 
     fn shrinkSelection(self: *Editor) !void {
         const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        defer if (content.len > 0) self.allocator.free(content);
+        // Note: Rope owns this memory, don't free it
 
         const current_start = self.selection_start orelse self.cursor.offset;
         const current_end = self.selection_end orelse self.cursor.offset;
@@ -697,7 +697,7 @@ pub const Editor = struct {
         if (self.cursor.offset >= self.rope.len()) return null;
 
         const content = self.rope.slice(.{ .start = 0, .end = self.rope.len() }) catch return null;
-        defer if (content.len > 0) self.allocator.free(content);
+        // Note: Rope owns this memory, don't free it
 
         const cursor_pos = self.cursor.offset;
         if (cursor_pos >= content.len) return null;
@@ -762,7 +762,7 @@ pub const Editor = struct {
     fn addCursorBelow(self: *Editor) !void {
         const current_line = self.getCurrentLine();
         const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        defer if (content.len > 0) self.allocator.free(content);
+        // Note: Rope owns this memory, don't free it
 
         // Find the start of the next line
         var line: usize = 0;
@@ -786,7 +786,7 @@ pub const Editor = struct {
 
         const current_line = self.getCurrentLine();
         const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        defer if (content.len > 0) self.allocator.free(content);
+        // Note: Rope owns this memory, don't free it
 
         // Find the start of the previous line
         var line: usize = 0;
@@ -811,7 +811,7 @@ pub const Editor = struct {
     fn addCursorAtNextMatch(self: *Editor) !void {
         // Find the word at cursor and add cursor at next occurrence
         const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        defer if (content.len > 0) self.allocator.free(content);
+        // Note: Rope owns this memory, don't free it
 
         const word = self.getWordAtCursor(content) orelse return;
 

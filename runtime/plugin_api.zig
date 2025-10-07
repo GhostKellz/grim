@@ -315,7 +315,9 @@ pub const PluginAPI = struct {
             self.api.editor_context.current_mode.* = mode;
 
             // Emit mode change event
-            try self.api.event_handlers.emit(self, .mode_changed, .{ .mode_changed = .{ .old_mode = old_mode, .new_mode = mode } });
+            try self.api.event_handlers.emit(self, .mode_changed, .{
+                .mode_changed = .{ .old_mode = old_mode, .new_mode = mode }
+            });
         }
 
         // UI operations

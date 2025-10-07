@@ -5,18 +5,13 @@ const core = @import("core");
 pub const SyntaxHighlighter = struct {
     allocator: std.mem.Allocator,
     parser: ?*grove.GroveParser,
-    current_language: grove.GroveParser.LangType,
+    current_language: grove.GroveParser.Language,
     cached_highlights: []grove.GroveParser.Highlight,
     last_parse_hash: u64,
 
     pub const Error = error{
         ParserNotInitialized,
         HighlightingFailed,
-        ParserUnavailable,
-        LanguageNotSet,
-        LanguageUnsupported,
-        InputTooLarge,
-        ParseFailed,
     } || grove.GroveParser.Error || std.mem.Allocator.Error;
 
     pub fn init(allocator: std.mem.Allocator) SyntaxHighlighter {
@@ -60,10 +55,7 @@ pub const SyntaxHighlighter = struct {
     }
 
     pub fn highlight(self: *SyntaxHighlighter, rope: *core.Rope) Error![]grove.GroveParser.Highlight {
-        // If no parser, return empty highlights (graceful degradation)
-        const parser = self.parser orelse {
-            return try self.allocator.alloc(grove.GroveParser.Highlight, 0);
-        };
+        const parser = self.parser orelse return Error.ParserNotInitialized;
 
         // Get rope content
         const content_slice = rope.slice(.{ .start = 0, .end = rope.len() }) catch |err| switch (err) {
@@ -83,7 +75,7 @@ pub const SyntaxHighlighter = struct {
         }
 
         // Parse content
-        _ = try parser.parse(content);
+        try parser.parse(content);
 
         // Get highlights
         const highlights = try parser.getHighlights(self.allocator);
@@ -163,8 +155,7 @@ test "ghostlang highlight smoke" {
     var rope = try core.Rope.init(allocator);
     defer rope.deinit();
 
-    const source =
-        \\const message = "hello world"
+    const source = \\const message = "hello world"
         \\fn main() {
         \\    print(message)
         \\}

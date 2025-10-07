@@ -1,25 +1,17 @@
-// Hello World Plugin
-// Demonstrates basic plugin structure
+-- Hello World Plugin
+-- Simple plugin that registers a command
 
-// Called when plugin loads
-export fn setup() {
-    print("Hello World plugin loaded!")
+function setup()
+    register_command("hello", "hello_handler", "Say hello")
+    show_message("Hello World plugin loaded!")
+    return true
+end
 
-    // Register a command
-    grim.command("Hello", hello_command)
+function hello_handler()
+    show_message("Hello from plugin!")
+end
 
-    // Register a keymap (optional)
-    grim.keymap("n", "<leader>h", hello_command, {
-        desc: "Say hello"
-    })
-}
-
-// Command handler
-fn hello_command() {
-    grim.notify("Hello from Grim plugin!", "info")
-}
-
-// Called when plugin unloads
-export fn teardown() {
-    print("Hello World plugin unloaded!")
-}
+function teardown()
+    show_message("Hello World plugin unloaded")
+    return true
+end

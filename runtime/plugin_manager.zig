@@ -2,17 +2,25 @@ const std = @import("std");
 const runtime = @import("mod.zig");
 const host = @import("host");
 
+const PLUGIN_EXTENSION = ".gza";
+const PLUGIN_MANIFEST_FILE = "plugin.json";
+
+const ThemeCallbacks = struct {
+    pub const RegisterFn = *const fn (ctx: *anyopaque, plugin_id: []const u8, theme_name: []const u8, colors_json: []const u8) anyerror!void;
+    pub const UnregisterFn = *const fn (ctx: *anyopaque, plugin_id: []const u8, theme_name: []const u8) anyerror!void;
+
+    ctx: ?*anyopaque = null,
+    register_fn: ?RegisterFn = null,
+    unregister_fn: ?UnregisterFn = null,
+};
+
+const ThemeError = error{
+    CallbackUnavailable,
+    InvalidName,
+};
+
 const GhostlangLoadedPlugin = struct {
     const Self = @This();
-
-    runtime_plugin: runtime.Plugin,
-    host: host.Host,
-    compiled: host.Host.CompiledPlugin,
-    allocator: std.mem.Allocator,
-    command_bindings: std.ArrayList(CommandBinding),
-    keymap_bindings: std.ArrayList(KeymapBinding),
-    event_bindings: std.ArrayList(EventBinding),
-    host_deinitialized: bool = false,
 
     const CommandBinding = struct {
         name: []u8,
@@ -28,8 +36,8 @@ const GhostlangLoadedPlugin = struct {
 
     const KeymapBinding = struct {
         keys: []u8,
-        handler: []u8,
         mode: ?runtime.PluginAPI.EditorContext.EditorMode,
+        handler: []u8,
         description: ?[]u8,
 
         fn deinit(self: *KeymapBinding, allocator: std.mem.Allocator) void {
@@ -48,11 +56,31 @@ const GhostlangLoadedPlugin = struct {
         }
     };
 
+    const ThemeRegistration = struct {
+        name: []u8,
+
+        fn deinit(self: *ThemeRegistration, allocator: std.mem.Allocator) void {
+            allocator.free(self.name);
+        }
+    };
+
+    runtime_plugin: runtime.Plugin,
+    host: host.Host,
+    compiled: host.Host.CompiledPlugin,
+    allocator: std.mem.Allocator,
+    command_bindings: std.ArrayList(CommandBinding),
+    keymap_bindings: std.ArrayList(KeymapBinding),
+    event_bindings: std.ArrayList(EventBinding),
+    theme_registrations: std.ArrayList(ThemeRegistration),
+    theme_callbacks: *ThemeCallbacks,
+    host_deinitialized: bool,
+
     fn deinitBindings(self: *Self) void {
         self.clearBindings();
         self.command_bindings.deinit();
         self.keymap_bindings.deinit();
         self.event_bindings.deinit();
+        self.theme_registrations.deinit();
     }
 
     fn appendCommandBinding(self: *Self, binding: CommandBinding) !*CommandBinding {
@@ -85,6 +113,8 @@ const GhostlangLoadedPlugin = struct {
             binding.deinit(self.allocator);
         }
         self.event_bindings.clearRetainingCapacity();
+
+        self.unregisterThemes();
     }
 
     fn findCommandBinding(self: *Self, name: []const u8) ?*const CommandBinding {
@@ -141,6 +171,44 @@ const GhostlangLoadedPlugin = struct {
             }
         }
         return null;
+    }
+
+    fn findThemeRegistration(self: *Self, name: []const u8) ?*const ThemeRegistration {
+        for (self.theme_registrations.items) |*registration| {
+            if (std.mem.eql(u8, registration.name, name)) {
+                return registration;
+            }
+        }
+        return null;
+    }
+
+    fn findMutableThemeRegistration(self: *Self, name: []const u8) ?*ThemeRegistration {
+        for (self.theme_registrations.items) |*registration| {
+            if (std.mem.eql(u8, registration.name, name)) {
+                return registration;
+            }
+        }
+        return null;
+    }
+
+    fn unregisterThemes(self: *Self) void {
+        if (self.theme_registrations.items.len == 0) return;
+
+        const callbacks = self.theme_callbacks.*;
+        if (callbacks.unregister_fn) |cb| {
+            if (callbacks.ctx) |ctx| {
+                for (self.theme_registrations.items) |registration| {
+                    cb(ctx, self.runtime_plugin.id, registration.name) catch |err| {
+                        std.log.err("Failed to unregister theme {s} for plugin {s}: {}", .{ registration.name, self.runtime_plugin.id, err });
+                    };
+                }
+            }
+        }
+
+        for (self.theme_registrations.items) |*registration| {
+            registration.deinit(self.allocator);
+        }
+        self.theme_registrations.clearRetainingCapacity();
     }
 };
 
@@ -379,6 +447,39 @@ fn ghostlangRegisterEventHandlerCallback(ctx_ptr: *anyopaque, action: *const hos
     };
 }
 
+fn ghostlangRegisterThemeCallback(ctx_ptr: *anyopaque, action: *const host.Host.CompiledPlugin.ThemeAction) anyerror!void {
+    const plugin_ctx = @as(*runtime.PluginAPI.PluginContext, @ptrCast(@alignCast(ctx_ptr)));
+    var state = pluginStateFromContext(plugin_ctx);
+
+    if (action.name.len == 0) {
+        return ThemeError.InvalidName;
+    }
+
+    const callbacks_ptr = state.theme_callbacks;
+    const register_cb = callbacks_ptr.*.register_fn orelse return ThemeError.CallbackUnavailable;
+    const callback_ctx = callbacks_ptr.*.ctx orelse return ThemeError.CallbackUnavailable;
+
+    if (state.findMutableThemeRegistration(action.name)) |registration| {
+        try register_cb(callback_ctx, plugin_ctx.plugin_id, registration.name, action.colors);
+        return;
+    }
+
+    const name_copy = try state.allocator.dupe(u8, action.name);
+    var name_owned = true;
+    errdefer if (name_owned) state.allocator.free(name_copy);
+
+    const new_registration = GhostlangLoadedPlugin.ThemeRegistration{ .name = name_copy };
+    try state.theme_registrations.append(new_registration);
+    const registration = &state.theme_registrations.items[state.theme_registrations.items.len - 1];
+    name_owned = false;
+
+    register_cb(callback_ctx, plugin_ctx.plugin_id, registration.name, action.colors) catch |err| {
+        const removed = state.theme_registrations.pop();
+        removed.deinit(state.allocator);
+        return err;
+    };
+}
+
 fn ghostlangEventHandler(ctx: *runtime.PluginAPI.PluginContext, data: runtime.PluginAPI.EventData) anyerror!void {
     _ = data;
     const state = pluginStateFromContext(ctx);
@@ -390,7 +491,6 @@ fn ghostlangEventHandler(ctx: *runtime.PluginAPI.PluginContext, data: runtime.Pl
         }
     }
 }
-
 fn ghostlangPluginInit(ctx: *runtime.PluginAPI.PluginContext) anyerror!void {
     var state = pluginStateFromContext(ctx);
 
@@ -403,6 +503,7 @@ fn ghostlangPluginInit(ctx: *runtime.PluginAPI.PluginContext) anyerror!void {
         .register_command = ghostlangRegisterCommandCallback,
         .register_keymap = ghostlangRegisterKeymapCallback,
         .register_event_handler = ghostlangRegisterEventHandlerCallback,
+        .register_theme = ghostlangRegisterThemeCallback,
     };
 
     try state.compiled.executeSetup(callbacks);
@@ -423,6 +524,7 @@ pub const PluginManager = struct {
     plugin_directories: [][]const u8,
     ghostlang_host: host.Host,
     loaded_plugin_states: std.StringHashMap(*GhostlangLoadedPlugin),
+    theme_callbacks: ThemeCallbacks,
 
     pub const Error = error{
         PluginDirectoryNotFound,
@@ -430,9 +532,6 @@ pub const PluginManager = struct {
         PluginLoadFailed,
         SecurityViolation,
     } || runtime.PluginAPI.Error || host.Host.Error || std.fs.File.OpenError || std.mem.Allocator.Error;
-
-    const PLUGIN_EXTENSION = ".gza";
-    const PLUGIN_MANIFEST_FILE = "plugin.json";
 
     pub const PluginManifest = struct {
         id: []const u8,
@@ -470,7 +569,19 @@ pub const PluginManager = struct {
             .plugin_directories = plugin_directories,
             .ghostlang_host = ghostlang_host,
             .loaded_plugin_states = std.StringHashMap(*GhostlangLoadedPlugin).init(allocator),
+            .theme_callbacks = .{},
         };
+    }
+
+    pub fn setThemeCallbacks(
+        self: *PluginManager,
+        ctx: *anyopaque,
+        register_cb: ?ThemeCallbacks.RegisterFn,
+        unregister_cb: ?ThemeCallbacks.UnregisterFn,
+    ) void {
+        self.theme_callbacks.ctx = ctx;
+        self.theme_callbacks.register_fn = register_cb;
+        self.theme_callbacks.unregister_fn = unregister_cb;
     }
 
     pub fn deinit(self: *PluginManager) void {
@@ -792,7 +903,9 @@ pub const PluginManager = struct {
             .command_bindings = std.ArrayList(GhostlangLoadedPlugin.CommandBinding).init(self.allocator),
             .keymap_bindings = std.ArrayList(GhostlangLoadedPlugin.KeymapBinding).init(self.allocator),
             .event_bindings = std.ArrayList(GhostlangLoadedPlugin.EventBinding).init(self.allocator),
+            .theme_registrations = std.ArrayList(GhostlangLoadedPlugin.ThemeRegistration).init(self.allocator),
             .host_deinitialized = false,
+            .theme_callbacks = &self.theme_callbacks,
         };
         state.compiled.host = &state.host;
         host_cleanup = false;

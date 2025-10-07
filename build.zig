@@ -43,17 +43,12 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    // Grove dependency - now always enabled as it's core to syntax highlighting
-    const grove = b.dependency("grove", .{
+    // Grove dependency for Ghostlang integration
+    const ghostlang_enabled = b.option(bool, "ghostlang", "Enable Ghostlang (.gza) support via Grove") orelse false;
+    const grove = if (ghostlang_enabled) b.dependency("grove", .{
         .target = target,
         .optimize = optimize,
-    });
-
-    // Zap dependency for AI-powered git features
-    const zap = b.dependency("zap", .{
-        .target = target,
-        .optimize = optimize,
-    });
+    }) else null;
 
     const core_mod = b.createModule(.{
         .root_source_file = b.path("core/mod.zig"),
@@ -61,7 +56,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "gcode", .module = gcode.module("gcode") },
-            .{ .name = "zap", .module = zap.module("zap") },
         },
     });
 
@@ -69,18 +63,11 @@ pub fn build(b: *std.Build) void {
         .root_source_file = b.path("syntax/mod.zig"),
         .target = target,
         .optimize = optimize,
-        .imports = &.{
-            .{ .name = "grove", .module = grove.module("grove") },
+        .imports = if (ghostlang_enabled and grove != null) &.{
+            .{ .name = "grove", .module = grove.?.module("grove") },
             .{ .name = "core", .module = core_mod },
-        },
-    });
-
-    const lsp_mod = b.createModule(.{
-        .root_source_file = b.path("lsp/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "zsync", .module = zsync.module("zsync") },
+        } else &.{
+            .{ .name = "core", .module = core_mod },
         },
     });
 
@@ -92,7 +79,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "phantom", .module = phantom.module("phantom") },
             .{ .name = "core", .module = core_mod },
             .{ .name = "syntax", .module = syntax_mod },
-            .{ .name = "lsp", .module = lsp_mod },
         },
     });
 
@@ -103,6 +89,15 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "flare", .module = flare.module("flare") },
             .{ .name = "ghostlang", .module = ghostlang_dep.module("ghostlang") },
+        },
+    });
+
+    const lsp_mod = b.createModule(.{
+        .root_source_file = b.path("lsp/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zsync", .module = zsync.module("zsync") },
         },
     });
 
@@ -188,20 +183,6 @@ pub fn build(b: *std.Build) void {
             },
         }),
     });
-
-    // Test ghostls integration
-    const test_ghostls = b.addExecutable(.{
-        .name = "test_ghostls",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test_ghostls.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "lsp", .module = lsp_mod },
-            },
-        }),
-    });
-    b.installArtifact(test_ghostls);
 
     // This declares intent for the executable to be installed into the
     // install prefix when running `zig build` (i.e. when executing the default

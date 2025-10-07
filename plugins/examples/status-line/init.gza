@@ -1,182 +1,182 @@
-// Status Line Plugin
-// Customizable status line with real-time updates
+-- Status Line Plugin
+-- Customizable status line with real-time updates
 
-// Plugin state
+-- Plugin state
 var config = {
-    show_git: true,
-    show_lsp: true,
-    show_mode: true,
-    show_position: true,
-    format: "{mode} {git} {file} {lsp} {position}"
+    show_git = true,
+    show_lsp = true,
+    show_mode = true,
+    show_position = true,
+    format = "{mode} {git} {file} {lsp} {position}"
 }
 
-// Setup plugin
-export fn setup() {
+-- Setup plugin
+function setup()
     print("Status Line plugin loaded!")
 
-    // Load user config if provided
-    if grim.config.exists("status_line") {
+    -- Load user config if provided
+    if grim.config.exists("status_line") then
         config = grim.config.get("status_line")
-    }
+    end
 
-    // Register status line renderer
+    -- Register status line renderer
     grim.status_line.register(render_status_line)
 
-    // Register commands
+    -- Register commands
     grim.command("StatusLineToggleGit", toggle_git)
     grim.command("StatusLineToggleLSP", toggle_lsp)
 
-    // Subscribe to events for live updates
+    -- Subscribe to events for live updates
     grim.on("BufEnter", update_status)
     grim.on("CursorMoved", update_status)
     grim.on("ModeChanged", update_status)
-}
+end
 
-// Main render function
-fn render_status_line() {
+-- Main render function
+function render_status_line()
     var components = []
 
-    // Mode indicator
-    if config.show_mode {
-        const mode = get_mode_component()
+    -- Mode indicator
+    if config.show_mode then
+        local mode = get_mode_component()
         components.push(mode)
-    }
+    end
 
-    // Git branch/status
-    if config.show_git {
-        const git = get_git_component()
-        if git != "" {
+    -- Git branch/status
+    if config.show_git then
+        local git = get_git_component()
+        if git ~= "" then
             components.push(git)
-        }
-    }
+        end
+    end
 
-    // File name
-    const file = get_file_component()
+    -- File name
+    local file = get_file_component()
     components.push(file)
 
-    // LSP status
-    if config.show_lsp {
-        const lsp = get_lsp_component()
-        if lsp != "" {
+    -- LSP status
+    if config.show_lsp then
+        local lsp = get_lsp_component()
+        if lsp ~= "" then
             components.push(lsp)
-        }
-    }
+        end
+    end
 
-    // Cursor position
-    if config.show_position {
-        const pos = get_position_component()
+    -- Cursor position
+    if config.show_position then
+        local pos = get_position_component()
         components.push(pos)
-    }
+    end
 
     return components.join(" | ")
-}
+end
 
-// Mode component
-fn get_mode_component() {
-    const mode = grim.mode.current()
+-- Mode component
+function get_mode_component()
+    local mode = grim.mode.current()
 
-    const mode_map = {
-        "normal": "NORMAL",
-        "insert": "INSERT",
-        "visual": "VISUAL",
-        "command": "COMMAND"
+    local mode_map = {
+        normal = "NORMAL",
+        insert = "INSERT",
+        visual = "VISUAL",
+        command = "COMMAND"
     }
 
     return mode_map[mode] or "UNKNOWN"
-}
+end
 
-// Git component
-fn get_git_component() {
-    if !grim.git.is_available() {
+-- Git component
+function get_git_component()
+    if not grim.git.is_available() then
         return ""
-    }
+    end
 
-    const branch = grim.git.current_branch()
-    if branch == "" {
+    local branch = grim.git.current_branch()
+    if branch == "" then
         return ""
-    }
+    end
 
-    const status = grim.git.status()
+    local status = grim.git.status()
     var indicator = ""
 
-    if status.modified > 0 {
-        indicator = indicator + "~" + status.modified
-    }
-    if status.added > 0 {
-        indicator = indicator + "+" + status.added
-    }
+    if status.modified > 0 then
+        indicator = indicator .. "~" .. status.modified
+    end
+    if status.added > 0 then
+        indicator = indicator .. "+" .. status.added
+    end
 
-    if indicator != "" {
-        return " " + branch + " " + indicator
-    }
+    if indicator ~= "" then
+        return " " .. branch .. " " .. indicator
+    end
 
-    return " " + branch
-}
+    return " " .. branch
+end
 
-// File component
-fn get_file_component() {
-    const file = grim.buffer.current_file()
+-- File component
+function get_file_component()
+    local file = grim.buffer.current_file()
 
-    if file == "" {
+    if file == "" then
         return "[No File]"
-    }
+    end
 
-    // Show basename only
-    const basename = grim.path.basename(file)
+    -- Show basename only
+    local basename = grim.path.basename(file)
 
-    // Add modified indicator
-    if grim.buffer.is_modified() {
-        return basename + " [+]"
-    }
+    -- Add modified indicator
+    if grim.buffer.is_modified() then
+        return basename .. " [+]"
+    end
 
     return basename
-}
+end
 
-// LSP component
-fn get_lsp_component() {
-    if !grim.lsp.is_active() {
+-- LSP component
+function get_lsp_component()
+    if not grim.lsp.is_active() then
         return ""
-    }
+    end
 
-    const diagnostics = grim.lsp.diagnostics()
+    local diagnostics = grim.lsp.diagnostics()
 
-    if diagnostics.error > 0 {
-        return " E:" + diagnostics.error
-    }
-    if diagnostics.warning > 0 {
-        return " W:" + diagnostics.warning
-    }
+    if diagnostics.error > 0 then
+        return " E:" .. diagnostics.error
+    end
+    if diagnostics.warning > 0 then
+        return " W:" .. diagnostics.warning
+    end
 
     return " ✓"
-}
+end
 
-// Position component
-fn get_position_component() {
-    const pos = grim.cursor.position()
-    const total = grim.buffer.line_count()
+-- Position component
+function get_position_component()
+    local pos = grim.cursor.position()
+    local total = grim.buffer.line_count()
 
-    return pos.line + ":" + pos.col + " / " + total
-}
+    return pos.line .. ":" .. pos.col .. " / " .. total
+end
 
-// Update status line
-fn update_status() {
+-- Update status line
+function update_status()
     grim.status_line.refresh()
-}
+end
 
-// Commands
-fn toggle_git() {
-    config.show_git = !config.show_git
+-- Commands
+function toggle_git()
+    config.show_git = not config.show_git
     update_status()
-    grim.notify("Git info " + (config.show_git ? "enabled" : "disabled"))
-}
+    grim.notify("Git info " .. (config.show_git and "enabled" or "disabled"))
+end
 
-fn toggle_lsp() {
-    config.show_lsp = !config.show_lsp
+function toggle_lsp()
+    config.show_lsp = not config.show_lsp
     update_status()
-    grim.notify("LSP info " + (config.show_lsp ? "enabled" : "disabled"))
-}
+    grim.notify("LSP info " .. (config.show_lsp and "enabled" or "disabled"))
+end
 
-// Teardown
-export fn teardown() {
+-- Teardown
+function teardown()
     print("Status Line plugin unloaded!")
-}
+end

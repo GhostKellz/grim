@@ -1,6 +1,6 @@
-// Simple Ghostlang test file
-const message = "Hello from Ghostlang!"
+-- Simple Ghostlang test file
+local message = "Hello from Ghostlang!"
 
-fn main() {
+function main()
     print(message)
-}
+end

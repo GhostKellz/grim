@@ -59,7 +59,7 @@ pub const PluginManifest = struct {
 
     /// Parse plugin.toml file
     pub fn parseFile(allocator: std.mem.Allocator, path: []const u8) !PluginManifest {
-        const content = try std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024);
+        const content = try std.fs.cwd().readFileAlloc(path, allocator, .limited(1024 * 1024));
         defer allocator.free(content);
 
         return try parse(allocator, content);

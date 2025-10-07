@@ -1,0 +1,23 @@
+[plugin]
+name = "native-hello"
+version = "1.0.0"
+author = "Grim Team"
+description = "Example native Zig plugin demonstrating C ABI integration"
+main = "libnative-hello.so"  # Will be libnative-hello.dll on Windows
+type = "native"
+
+[metadata]
+homepage = "https://github.com/yourusername/grim"
+license = "MIT"
+tags = ["example", "native", "ffi"]
+priority = 100
+
+# Native plugins don't have Ghostlang dependencies
+# but can require other plugins
+requires = []
+
+# Optional: Specify platform-specific binaries
+[native]
+linux = "libnative-hello.so"
+windows = "native-hello.dll"
+macos = "libnative-hello.dylib"
