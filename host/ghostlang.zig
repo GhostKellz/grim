@@ -160,25 +160,25 @@ pub const Host = struct {
         }
     };
 
-    const CommandAction = struct {
+    pub const CommandAction = struct {
         name: []u8,
         handler: []u8,
         description: ?[]u8,
     };
 
-    const KeymapAction = struct {
+    pub const KeymapAction = struct {
         keys: []u8,
         handler: []u8,
         mode: ?[]u8,
         description: ?[]u8,
     };
 
-    const EventAction = struct {
+    pub const EventAction = struct {
         event: []u8,
         handler: []u8,
     };
 
-    const ThemeAction = struct {
+    pub const ThemeAction = struct {
         name: []u8,
         colors: []u8,
     };
@@ -208,7 +208,7 @@ pub const Host = struct {
 
         pub fn deinit(self: *CompiledPlugin) void {
             self.clearActions();
-            self.actions.deinit();
+            self.actions.deinit(self.allocator);
             self.script.deinit();
             self.allocator.destroy(self.script);
         }
@@ -245,25 +245,40 @@ pub const Host = struct {
             while (idx < self.actions.items.len) : (idx += 1) {
                 const action_ptr = &self.actions.items[idx];
                 switch (action_ptr.*) {
-                    .show_message => |msg| try callbacks.show_message(callbacks.ctx, msg),
+                    .show_message => |msg| callbacks.show_message(callbacks.ctx, msg) catch |err| {
+                        std.log.err("Plugin show_message callback failed: {}", .{err});
+                        return Host.Error.Unexpected;
+                    },
                     .register_command => |*cmd| {
                         if (callbacks.register_command) |cb| {
-                            try cb(callbacks.ctx, cmd);
+                            cb(callbacks.ctx, cmd) catch |err| {
+                                std.log.err("Plugin register_command callback failed: {}", .{err});
+                                return Host.Error.Unexpected;
+                            };
                         }
                     },
                     .register_keymap => |*km| {
                         if (callbacks.register_keymap) |cb| {
-                            try cb(callbacks.ctx, km);
+                            cb(callbacks.ctx, km) catch |err| {
+                                std.log.err("Plugin register_keymap callback failed: {}", .{err});
+                                return Host.Error.Unexpected;
+                            };
                         }
                     },
                     .register_event_handler => |*ev| {
                         if (callbacks.register_event_handler) |cb| {
-                            try cb(callbacks.ctx, ev);
+                            cb(callbacks.ctx, ev) catch |err| {
+                                std.log.err("Plugin register_event_handler callback failed: {}", .{err});
+                                return Host.Error.Unexpected;
+                            };
                         }
                     },
                     .register_theme => |*theme| {
                         if (callbacks.register_theme) |cb| {
-                            try cb(callbacks.ctx, theme);
+                            cb(callbacks.ctx, theme) catch |err| {
+                                std.log.err("Plugin register_theme callback failed: {}", .{err});
+                                return Host.Error.Unexpected;
+                            };
                         }
                     },
                 }
@@ -277,7 +292,7 @@ pub const Host = struct {
         fn appendShowMessage(self: *CompiledPlugin, message: []const u8) !void {
             const copy = try self.allocator.dupe(u8, message);
             errdefer self.allocator.free(copy);
-            try self.actions.append(.{ .show_message = copy });
+            try self.actions.append(self.allocator, .{ .show_message = copy });
         }
 
         fn appendRegisterCommand(
@@ -299,7 +314,7 @@ pub const Host = struct {
             }
             errdefer if (description_copy) |desc| self.allocator.free(desc);
 
-            try self.actions.append(.{ .register_command = .{
+            try self.actions.append(self.allocator, .{ .register_command = .{
                 .name = name_copy,
                 .handler = handler_copy,
                 .description = description_copy,
@@ -334,7 +349,7 @@ pub const Host = struct {
             }
             errdefer if (description_copy) |desc| self.allocator.free(desc);
 
-            try self.actions.append(.{ .register_keymap = .{
+            try self.actions.append(self.allocator, .{ .register_keymap = .{
                 .keys = keys_copy,
                 .handler = handler_copy,
                 .mode = mode_copy,
@@ -352,7 +367,7 @@ pub const Host = struct {
             const handler_copy = try self.allocator.dupe(u8, handler);
             errdefer self.allocator.free(handler_copy);
 
-            try self.actions.append(.{ .register_event_handler = .{
+            try self.actions.append(self.allocator, .{ .register_event_handler = .{
                 .event = event_copy,
                 .handler = handler_copy,
             } });
@@ -368,7 +383,7 @@ pub const Host = struct {
             const colors_copy = try self.allocator.dupe(u8, colors);
             errdefer self.allocator.free(colors_copy);
 
-            try self.actions.append(.{ .register_theme = .{
+            try self.actions.append(self.allocator, .{ .register_theme = .{
                 .name = name_copy,
                 .colors = colors_copy,
             } });
@@ -519,7 +534,7 @@ pub const Host = struct {
         defer dir.close();
 
         const allocator = self.arena.allocator();
-        const source_buffer = try dir.readFileAlloc(allocator, config_file_name, max_config_size);
+        const source_buffer = try dir.readFileAlloc(config_file_name, allocator, max_config_size);
         const dir_copy = try allocator.dupe(u8, config_dir);
 
         self.config_source = source_buffer;
@@ -579,9 +594,11 @@ pub const Host = struct {
         const engine = try self.ensureEngine();
         self.pending_error = null;
 
-        var actions = std.ArrayList(Action).init(self.allocator);
+        var actions = std.ArrayList(Action).initCapacity(self.allocator, 0) catch |err| {
+            return self.mapAllocatorError(err);
+        };
         var actions_valid = true;
-        errdefer if (actions_valid) actions.deinit();
+        errdefer if (actions_valid) actions.deinit(self.allocator);
 
         const script_ptr = self.allocator.create(ghostlang.Script) catch |err| {
             return self.mapAllocatorError(err);
@@ -606,7 +623,6 @@ pub const Host = struct {
             .actions = actions,
         };
     }
-
 
     pub fn configPath(self: *const Host) ?[]const u8 {
         return self.config_dir;
@@ -789,22 +805,23 @@ pub const Host = struct {
     fn mapExecutionError(self: *Host, err: ghostlang.ExecutionError) Error {
         _ = self;
         return switch (err) {
-            .MemoryLimitExceeded => Error.MemoryLimitExceeded,
-            .ExecutionTimeout => Error.ExecutionTimeout,
-            .IONotAllowed => Error.UnauthorizedFileAccess,
-            .SyscallNotAllowed => Error.SandboxViolation,
-            .SecurityViolation => Error.SandboxViolation,
-            .ParseError => Error.InvalidScript,
-            .TypeError => Error.InvalidScript,
-            .FunctionNotFound => Error.InvalidScript,
-            .NotAFunction => Error.InvalidScript,
-            .UndefinedVariable => Error.InvalidScript,
-            .ScopeUnderflow => Error.InvalidScript,
-            .InvalidFunctionName => Error.InvalidScript,
-            .InvalidGlobalName => Error.InvalidScript,
-            .GlobalNotFound => Error.InvalidScript,
-            .UnsupportedArgumentType => Error.InvalidScript,
-            .OutOfMemory => Error.MemoryLimitExceeded,
+            error.MemoryLimitExceeded => Error.MemoryLimitExceeded,
+            error.ExecutionTimeout => Error.ExecutionTimeout,
+            error.IONotAllowed => Error.UnauthorizedFileAccess,
+            error.SyscallNotAllowed => Error.SandboxViolation,
+            error.SecurityViolation => Error.SandboxViolation,
+            error.ParseError => Error.InvalidScript,
+            error.TypeError => Error.InvalidScript,
+            error.FunctionNotFound => Error.InvalidScript,
+            error.NotAFunction => Error.InvalidScript,
+            error.UndefinedVariable => Error.InvalidScript,
+            error.ScopeUnderflow => Error.InvalidScript,
+            error.InvalidFunctionName => Error.InvalidScript,
+            error.InvalidGlobalName => Error.InvalidScript,
+            error.GlobalNotFound => Error.InvalidScript,
+            error.UnsupportedArgumentType => Error.InvalidScript,
+            error.OutOfMemory => Error.MemoryLimitExceeded,
+            error.ScriptError => Error.InvalidScript,
         };
     }
 
@@ -824,12 +841,11 @@ pub const Host = struct {
     fn matchesPattern(path: []const u8, pattern: []const u8) bool {
         // Simple glob pattern matching - supports * wildcard at end
         if (std.mem.endsWith(u8, pattern, "*")) {
-            const prefix = pattern[0..pattern.len - 1];
+            const prefix = pattern[0 .. pattern.len - 1];
             return std.mem.startsWith(u8, path, prefix);
         }
         return std.mem.eql(u8, path, pattern);
     }
-
 };
 
 test "host loads config and executes script" {
@@ -914,8 +930,8 @@ test "plugin script showMessage action executes" {
 test "sandbox config validates file access" {
     const allocator = std.testing.allocator;
     const sandbox_config = Host.SandboxConfig{
-        .blocked_file_patterns = &.{"/etc/*", "/sys/*"},
-        .allowed_file_patterns = &.{"/home/*", "/tmp/*"},
+        .blocked_file_patterns = &.{ "/etc/*", "/sys/*" },
+        .allowed_file_patterns = &.{ "/home/*", "/tmp/*" },
     };
 
     var host = try Host.initWithSandbox(allocator, sandbox_config);

@@ -80,10 +80,7 @@ test "plugin manager registers and unregisters plugin themes" {
         TestRegistry.unregisterTheme,
     );
 
-    const script_source = "function setup()\n"
-        ++ "    register_theme(\"plugin-theme\", '{\"syntax\": {\"keyword\": \"#00ff00\"}, \"ui\": {\"background\": \"#000000\", \"foreground\": \"#00ff00\"}}')\n"
-        ++ "    return true\n"
-        ++ "end\n";
+    const script_source = "function setup()\n" ++ "    register_theme(\"plugin-theme\", '{\"syntax\": {\"keyword\": \"#00ff00\"}, \"ui\": {\"background\": \"#000000\", \"foreground\": \"#00ff00\"}}')\n" ++ "    return true\n" ++ "end\n";
 
     const manifest = runtime.PluginManager.PluginManifest{
         .id = try allocator.dupe(u8, "test-plugin"),

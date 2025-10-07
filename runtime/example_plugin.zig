@@ -101,20 +101,20 @@ const AutoFormatterPlugin = struct {
         defer ctx.scratch_allocator.free(content);
 
         // Simple formatting example: remove trailing whitespace and ensure newline at EOF
-        var formatted_content = std.ArrayList(u8).init(ctx.scratch_allocator);
-        defer formatted_content.deinit();
+        var formatted_content = std.ArrayList(u8).initCapacity(ctx.scratch_allocator, 0) catch unreachable;
+        defer formatted_content.deinit(ctx.scratch_allocator);
 
         var lines = std.mem.split(u8, content, "\n");
         while (lines.next()) |line| {
             // Remove trailing whitespace
             const trimmed_line = std.mem.trimRight(u8, line, " \t");
-            try formatted_content.appendSlice(trimmed_line);
-            try formatted_content.append('\n');
+            try formatted_content.appendSlice(ctx.scratch_allocator, trimmed_line);
+            try formatted_content.append(ctx.scratch_allocator, '\n');
         }
 
         // Ensure content ends with newline
         if (formatted_content.items.len > 0 and formatted_content.items[formatted_content.items.len - 1] != '\n') {
-            try formatted_content.append('\n');
+            try formatted_content.append(ctx.scratch_allocator, '\n');
         }
 
         // Update buffer content
@@ -171,7 +171,7 @@ pub fn exampleUsage() !void {
     std.log.info("Keystroke handled: {}", .{handled});
 
     // List all commands
-    const commands = try plugin_api.listCommands();
+    const commands = try plugin_api.listCommands(allocator);
     defer allocator.free(commands);
 
     std.log.info("Available commands:");

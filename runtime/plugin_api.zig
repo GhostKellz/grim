@@ -16,6 +16,10 @@ pub const PluginAPI = struct {
         cursor_position: *CursorPosition,
         current_mode: *EditorMode,
         highlighter: *syntax.SyntaxHighlighter,
+        selection_start: ?*?usize = null,
+        selection_end: ?*?usize = null,
+        active_buffer_id: BufferId = 1,
+        bridge: ?EditorBridge = null,
 
         pub const CursorPosition = struct {
             line: usize,
@@ -28,6 +32,39 @@ pub const PluginAPI = struct {
             insert,
             visual,
             command,
+        };
+
+        pub const SelectionRange = struct {
+            start: usize,
+            end: usize,
+        };
+
+        pub const BufferChangeKind = enum {
+            insert,
+            delete,
+            replace,
+        };
+
+        pub const BufferChange = struct {
+            buffer_id: BufferId,
+            range: core.Rope.Range,
+            inserted_len: usize,
+            kind: BufferChangeKind,
+        };
+
+        pub const EditorBridge = struct {
+            ctx: *anyopaque,
+            getCurrentBuffer: *const fn (ctx: *anyopaque) BufferId,
+            getBufferContent: ?*const fn (ctx: *anyopaque, allocator: std.mem.Allocator, buffer_id: BufferId) anyerror![]const u8 = null,
+            setBufferContent: ?*const fn (ctx: *anyopaque, buffer_id: BufferId, content: []const u8) anyerror!void = null,
+            getBufferLine: ?*const fn (ctx: *anyopaque, allocator: std.mem.Allocator, buffer_id: BufferId, line_num: usize) anyerror![]const u8 = null,
+            insertText: ?*const fn (ctx: *anyopaque, buffer_id: BufferId, position: usize, text: []const u8) anyerror!void = null,
+            deleteRange: ?*const fn (ctx: *anyopaque, buffer_id: BufferId, range: core.Rope.Range) anyerror!void = null,
+            getCursorPosition: ?*const fn (ctx: *anyopaque) CursorPosition = null,
+            setCursorPosition: ?*const fn (ctx: *anyopaque, position: CursorPosition) anyerror!void = null,
+            getSelection: ?*const fn (ctx: *anyopaque) ?SelectionRange = null,
+            setSelection: ?*const fn (ctx: *anyopaque, selection: ?SelectionRange) anyerror!void = null,
+            notifyChange: ?*const fn (ctx: *anyopaque, change: BufferChange) anyerror!void = null,
         };
     };
 
@@ -72,14 +109,18 @@ pub const PluginAPI = struct {
             return result;
         }
 
+        pub fn get(self: *CommandRegistry, name: []const u8) ?Command {
+            return self.commands.get(name);
+        }
+
         pub fn unregister(self: *CommandRegistry, allocator: std.mem.Allocator, plugin_id: []const u8) void {
-            var keys_to_remove = std.ArrayList([]const u8).init(allocator);
-            defer keys_to_remove.deinit();
+            var keys_to_remove = std.ArrayList([]const u8).initCapacity(allocator, 0) catch unreachable;
+            defer keys_to_remove.deinit(allocator);
 
             var iterator = self.commands.iterator();
             while (iterator.next()) |entry| {
                 if (std.mem.eql(u8, entry.value_ptr.plugin_id, plugin_id)) {
-                    keys_to_remove.append(entry.key_ptr.*) catch |err| {
+                    keys_to_remove.append(allocator, entry.key_ptr.*) catch |err| {
                         std.log.err("Failed to queue command removal for plugin {s}: {}", .{ plugin_id, err });
                         break;
                     };
@@ -125,6 +166,7 @@ pub const PluginAPI = struct {
     };
 
     pub const BufferId = u32;
+    pub const BufferError = error{ InvalidBuffer };
 
     pub const EventHandler = struct {
         event_type: EventType,
@@ -139,19 +181,19 @@ pub const PluginAPI = struct {
         pub fn init(allocator: std.mem.Allocator) EventHandlers {
             var handlers = std.EnumArray(EventType, std.ArrayList(EventHandler)).initUndefined();
             for (std.meta.tags(EventType)) |event_type| {
-                handlers.set(event_type, std.ArrayList(EventHandler).init(allocator));
+                handlers.set(event_type, std.ArrayList(EventHandler).initCapacity(allocator, 0) catch unreachable);
             }
             return .{ .handlers = handlers, .allocator = allocator };
         }
 
         pub fn deinit(self: *EventHandlers) void {
             for (std.meta.tags(EventType)) |event_type| {
-                self.handlers.getPtr(event_type).deinit();
+                self.handlers.getPtr(event_type).deinit(self.allocator);
             }
         }
 
         pub fn register(self: *EventHandlers, handler: EventHandler) !void {
-            try self.handlers.getPtr(handler.event_type).append(handler);
+            try self.handlers.getPtr(handler.event_type).append(self.allocator, handler);
         }
 
         pub fn emit(self: *EventHandlers, ctx: *PluginContext, event_type: EventType, data: EventData) !void {
@@ -201,17 +243,21 @@ pub const PluginAPI = struct {
 
     pub const KeystrokeHandlers = struct {
         handlers: std.ArrayList(KeystrokeHandler),
+        allocator: std.mem.Allocator,
 
         pub fn init(allocator: std.mem.Allocator) KeystrokeHandlers {
-            return .{ .handlers = std.ArrayList(KeystrokeHandler).init(allocator) };
+            return .{
+                .handlers = std.ArrayList(KeystrokeHandler).initCapacity(allocator, 0) catch unreachable,
+                .allocator = allocator,
+            };
         }
 
         pub fn deinit(self: *KeystrokeHandlers) void {
-            self.handlers.deinit();
+            self.handlers.deinit(self.allocator);
         }
 
         pub fn register(self: *KeystrokeHandlers, handler: KeystrokeHandler) !void {
-            try self.handlers.append(handler);
+            try self.handlers.append(self.allocator, handler);
         }
 
         pub fn handle(self: *KeystrokeHandlers, ctx: *PluginContext, key_combination: []const u8, mode: EditorContext.EditorMode) !bool {
@@ -270,40 +316,194 @@ pub const PluginAPI = struct {
 
         // Editor operations
         pub fn getCurrentBuffer(self: *PluginContext) !BufferId {
-            _ = self;
-            return 1; // Placeholder - would integrate with actual editor
+            if (self.api.editor_context.bridge) |bridge| {
+                return bridge.getCurrentBuffer(bridge.ctx);
+            }
+            return self.api.editor_context.active_buffer_id;
         }
 
         pub fn getBufferContent(self: *PluginContext, buffer_id: BufferId) ![]const u8 {
-            _ = buffer_id;
-            return try self.api.editor_context.rope.slice(.{ .start = 0, .end = self.api.editor_context.rope.len() });
+            try self.ensureFallbackBuffer(buffer_id);
+
+            if (self.api.editor_context.bridge) |bridge| {
+                if (bridge.getBufferContent) |func| {
+                    return try func(bridge.ctx, self.scratch_allocator, buffer_id);
+                }
+            }
+
+            const rope = self.api.editor_context.rope;
+            return try rope.copyRangeAlloc(self.scratch_allocator, .{ .start = 0, .end = rope.len() });
         }
 
         pub fn setBufferContent(self: *PluginContext, buffer_id: BufferId, content: []const u8) !void {
-            _ = buffer_id;
-            // Clear existing content
-            const len = self.api.editor_context.rope.len();
-            if (len > 0) {
-                try self.api.editor_context.rope.delete(0, len);
+            try self.ensureFallbackBuffer(buffer_id);
+
+            const rope = self.api.editor_context.rope;
+            const previous_len = rope.len();
+
+            if (self.api.editor_context.bridge) |bridge| {
+                if (bridge.setBufferContent) |func| {
+                    try func(bridge.ctx, buffer_id, content);
+                } else {
+                    try self.setBufferContentFallback(content);
+                }
+            } else {
+                try self.setBufferContentFallback(content);
             }
-            // Insert new content
-            try self.api.editor_context.rope.insert(0, content);
+
+            const change = EditorContext.BufferChange{
+                .buffer_id = buffer_id,
+                .range = .{ .start = 0, .end = previous_len },
+                .inserted_len = content.len,
+                .kind = .replace,
+            };
+            self.notifyBufferChange(change);
+
+            if (previous_len > 0) {
+                try self.emitTextDeleted(buffer_id, 0, previous_len);
+            }
+            if (content.len > 0) {
+                try self.emitTextInserted(buffer_id, 0, content);
+            }
+
+            self.recomputeCursorFromOffset();
         }
 
         pub fn getBufferLine(self: *PluginContext, buffer_id: BufferId, line_num: usize) ![]const u8 {
-            _ = self;
-            _ = buffer_id;
-            _ = line_num;
-            // TODO: Implement line-based access to rope
-            return ""; // Placeholder
+            try self.ensureFallbackBuffer(buffer_id);
+
+            if (self.api.editor_context.bridge) |bridge| {
+                if (bridge.getBufferLine) |func| {
+                    return try func(bridge.ctx, self.scratch_allocator, buffer_id, line_num);
+                }
+            }
+
+            return try self.api.editor_context.rope.lineSliceAlloc(self.scratch_allocator, line_num);
+        }
+
+        pub fn insertText(self: *PluginContext, buffer_id: BufferId, position: usize, text: []const u8) !void {
+            if (text.len == 0) return;
+            try self.ensureFallbackBuffer(buffer_id);
+
+            if (self.api.editor_context.bridge) |bridge| {
+                if (bridge.insertText) |func| {
+                    try func(bridge.ctx, buffer_id, position, text);
+                } else {
+                    try self.insertTextFallback(position, text);
+                }
+            } else {
+                try self.insertTextFallback(position, text);
+            }
+
+            self.adjustStateForInsert(position, text.len);
+            self.notifyBufferChange(.{
+                .buffer_id = buffer_id,
+                .range = .{ .start = position, .end = position },
+                .inserted_len = text.len,
+                .kind = .insert,
+            });
+            try self.emitTextInserted(buffer_id, position, text);
+        }
+
+        pub fn deleteRange(self: *PluginContext, buffer_id: BufferId, range: core.Rope.Range) !void {
+            if (range.len() == 0) return;
+            try self.ensureFallbackBuffer(buffer_id);
+
+            if (range.end > self.api.editor_context.rope.len()) {
+                return BufferError.InvalidBuffer;
+            }
+
+            if (self.api.editor_context.bridge) |bridge| {
+                if (bridge.deleteRange) |func| {
+                    try func(bridge.ctx, buffer_id, range);
+                } else {
+                    try self.deleteRangeFallback(range);
+                }
+            } else {
+                try self.deleteRangeFallback(range);
+            }
+
+            self.adjustStateForDelete(range.start, range.end);
+            self.notifyBufferChange(.{
+                .buffer_id = buffer_id,
+                .range = range,
+                .inserted_len = 0,
+                .kind = .delete,
+            });
+            try self.emitTextDeleted(buffer_id, range.start, range.len());
+        }
+
+        pub fn replaceRange(self: *PluginContext, buffer_id: BufferId, range: core.Rope.Range, text: []const u8) !void {
+            try self.deleteRange(buffer_id, range);
+            try self.insertText(buffer_id, range.start, text);
+        }
+
+        pub fn getSelectionRange(self: *PluginContext) ?EditorContext.SelectionRange {
+            if (self.api.editor_context.bridge) |bridge| {
+                if (bridge.getSelection) |func| {
+                    return func(bridge.ctx);
+                }
+            }
+
+            if (self.api.editor_context.selection_start) |start_ptr| {
+                if (self.api.editor_context.selection_end) |end_ptr| {
+                    if (start_ptr.*) |start| {
+                        if (end_ptr.*) |end| {
+                            return .{ .start = start, .end = end };
+                        }
+                    }
+                }
+            }
+            return null;
+        }
+
+        pub fn setSelectionRange(self: *PluginContext, selection: ?EditorContext.SelectionRange) !void {
+            if (self.api.editor_context.bridge) |bridge| {
+                if (bridge.setSelection) |func| {
+                    try func(bridge.ctx, selection);
+                }
+            }
+
+            if (self.api.editor_context.selection_start) |start_ptr| {
+                if (self.api.editor_context.selection_end) |end_ptr| {
+                    if (selection) |sel| {
+                        const normalized_start = @min(sel.start, sel.end);
+                        const normalized_end = @max(sel.start, sel.end);
+                        start_ptr.* = normalized_start;
+                        end_ptr.* = normalized_end;
+                    } else {
+                        start_ptr.* = null;
+                        end_ptr.* = null;
+                    }
+                }
+            }
+        }
+
+        pub fn clearSelection(self: *PluginContext) !void {
+            try self.setSelectionRange(null);
         }
 
         pub fn getCursorPosition(self: *PluginContext) EditorContext.CursorPosition {
+            if (self.api.editor_context.bridge) |bridge| {
+                if (bridge.getCursorPosition) |func| {
+                    return func(bridge.ctx);
+                }
+            }
             return self.api.editor_context.cursor_position.*;
         }
 
         pub fn setCursorPosition(self: *PluginContext, position: EditorContext.CursorPosition) !void {
-            self.api.editor_context.cursor_position.* = position;
+            if (self.api.editor_context.bridge) |bridge| {
+                if (bridge.setCursorPosition) |func| {
+                    try func(bridge.ctx, position);
+                }
+            }
+
+            var clamped = position;
+            const rope_len = self.api.editor_context.rope.len();
+            if (clamped.byte_offset > rope_len) clamped.byte_offset = rope_len;
+            self.api.editor_context.cursor_position.* = clamped;
+            self.recomputeCursorFromOffset();
         }
 
         pub fn getCurrentMode(self: *PluginContext) EditorContext.EditorMode {
@@ -315,9 +515,7 @@ pub const PluginAPI = struct {
             self.api.editor_context.current_mode.* = mode;
 
             // Emit mode change event
-            try self.api.event_handlers.emit(self, .mode_changed, .{
-                .mode_changed = .{ .old_mode = old_mode, .new_mode = mode }
-            });
+            try self.api.event_handlers.emit(self, .mode_changed, .{ .mode_changed = .{ .old_mode = old_mode, .new_mode = mode } });
         }
 
         // UI operations
@@ -383,6 +581,117 @@ pub const PluginAPI = struct {
 
         pub fn currentEvent(self: *PluginContext) ?EventType {
             return self.current_event;
+        }
+
+        fn ensureFallbackBuffer(self: *PluginContext, buffer_id: BufferId) !void {
+            if (buffer_id != self.api.editor_context.active_buffer_id) {
+                return BufferError.InvalidBuffer;
+            }
+        }
+
+        fn setBufferContentFallback(self: *PluginContext, content: []const u8) !void {
+            const rope = self.api.editor_context.rope;
+            const existing_len = rope.len();
+            if (existing_len > 0) {
+                try rope.delete(0, existing_len);
+            }
+            if (content.len > 0) {
+                try rope.insert(0, content);
+            }
+        }
+
+        fn insertTextFallback(self: *PluginContext, position: usize, text: []const u8) !void {
+            try self.api.editor_context.rope.insert(position, text);
+        }
+
+        fn deleteRangeFallback(self: *PluginContext, range: core.Rope.Range) !void {
+            try self.api.editor_context.rope.delete(range.start, range.len());
+        }
+
+        fn notifyBufferChange(self: *PluginContext, change: EditorContext.BufferChange) void {
+            if (self.api.editor_context.bridge) |bridge| {
+                if (bridge.notifyChange) |func| {
+                    func(bridge.ctx, change) catch |err| {
+                        std.log.err("Buffer change notification failed: {}", .{err});
+                    };
+                }
+            }
+        }
+
+        fn adjustStateForInsert(self: *PluginContext, position: usize, len: usize) void {
+            var cursor = &self.api.editor_context.cursor_position.*;
+            if (cursor.byte_offset >= position) {
+                cursor.byte_offset += len;
+            }
+
+            if (self.api.editor_context.selection_start) |start_ptr| {
+                if (start_ptr.*) |start| {
+                    if (start >= position) start_ptr.* = start + len;
+                }
+            }
+
+            if (self.api.editor_context.selection_end) |end_ptr| {
+                if (end_ptr.*) |end| {
+                    if (end >= position) end_ptr.* = end + len;
+                }
+            }
+
+            self.recomputeCursorFromOffset();
+        }
+
+        fn adjustStateForDelete(self: *PluginContext, start: usize, end: usize) void {
+            const removed_len = end - start;
+            var cursor = &self.api.editor_context.cursor_position.*;
+            if (cursor.byte_offset > end) {
+                cursor.byte_offset -= removed_len;
+            } else if (cursor.byte_offset > start) {
+                cursor.byte_offset = start;
+            }
+
+            if (self.api.editor_context.selection_start) |start_ptr| {
+                if (start_ptr.*) |sel_start| {
+                    if (sel_start >= end) {
+                        start_ptr.* = sel_start - removed_len;
+                    } else if (sel_start > start) {
+                        start_ptr.* = start;
+                    }
+                }
+            }
+
+            if (self.api.editor_context.selection_end) |end_ptr| {
+                if (end_ptr.*) |sel_end| {
+                    if (sel_end >= end) {
+                        end_ptr.* = sel_end - removed_len;
+                    } else if (sel_end > start) {
+                        end_ptr.* = start;
+                    }
+                }
+            }
+
+            self.recomputeCursorFromOffset();
+        }
+
+        fn recomputeCursorFromOffset(self: *PluginContext) void {
+            const rope = self.api.editor_context.rope;
+            const cursor = self.api.editor_context.cursor_position;
+            const lc = rope.lineColumnAtOffset(cursor.byte_offset) catch |err| {
+                std.log.err("Failed to recompute cursor line/column: {}", .{err});
+                return;
+            };
+            cursor.line = lc.line;
+            cursor.column = lc.column;
+        }
+
+        fn emitTextInserted(self: *PluginContext, buffer_id: BufferId, position: usize, text: []const u8) !void {
+            try self.api.event_handlers.emit(self, .text_inserted, .{
+                .text_inserted = .{ .buffer_id = buffer_id, .position = position, .text = text },
+            });
+        }
+
+        fn emitTextDeleted(self: *PluginContext, buffer_id: BufferId, position: usize, len: usize) !void {
+            try self.api.event_handlers.emit(self, .text_deleted, .{
+                .text_deleted = .{ .buffer_id = buffer_id, .position = position, .length = len },
+            });
         }
     };
 
@@ -550,8 +859,12 @@ pub const PluginAPI = struct {
         return try self.keystroke_handlers.handle(&temp_context, key_combination, mode);
     }
 
-    pub fn listCommands(self: *PluginAPI) ![]Command {
-        return try self.command_registry.list(self.allocator);
+    pub fn listCommands(self: *PluginAPI, allocator: std.mem.Allocator) ![]Command {
+        return try self.command_registry.list(allocator);
+    }
+
+    pub fn findCommand(self: *PluginAPI, name: []const u8) ?Command {
+        return self.command_registry.get(name);
     }
 
     pub fn getLoadedPlugins(self: *PluginAPI, allocator: std.mem.Allocator) ![][]const u8 {

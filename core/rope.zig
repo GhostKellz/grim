@@ -155,6 +155,145 @@ pub const Rope = struct {
         return buffer.?;
     }
 
+    pub fn lineCount(self: *const Rope) usize {
+        if (self.length == 0) return 1;
+
+        var count: usize = 1;
+        for (self.pieces.items) |piece_ptr| {
+            for (piece_ptr.data) |byte| {
+                if (byte == '\n') count += 1;
+            }
+        }
+        return count;
+    }
+
+    pub fn lineRange(self: *const Rope, line_num: usize) Error!Range {
+        if (line_num == 0 and self.length == 0) {
+            return .{ .start = 0, .end = 0 };
+        }
+
+        var current_line: usize = 0;
+        var absolute_offset: usize = 0;
+        var line_start: usize = 0;
+        var start_set = false;
+
+        for (self.pieces.items) |piece_ptr| {
+            const data = piece_ptr.data;
+            var idx: usize = 0;
+            while (idx < data.len) : (idx += 1) {
+                if (!start_set and current_line == line_num) {
+                    line_start = absolute_offset;
+                    start_set = true;
+                }
+
+                if (data[idx] == '\n') {
+                    if (current_line == line_num and start_set) {
+                        return .{ .start = line_start, .end = absolute_offset };
+                    }
+                    current_line += 1;
+                    absolute_offset += 1;
+                    continue;
+                }
+
+                absolute_offset += 1;
+            }
+        }
+
+        if (!start_set) {
+            if (current_line == line_num and line_num != 0) {
+                line_start = absolute_offset;
+                start_set = true;
+            } else if (line_num > current_line) {
+                return Error.OutOfBounds;
+            }
+        }
+
+        if (start_set and current_line >= line_num) {
+            return .{ .start = line_start, .end = absolute_offset };
+        }
+
+        if (line_num == 0 and self.length == 0) {
+            return .{ .start = 0, .end = 0 };
+        }
+
+        return Error.OutOfBounds;
+    }
+
+    pub fn copyRangeAlloc(self: *const Rope, allocator: std.mem.Allocator, range: Range) Error![]u8 {
+        if (range.start > range.end or range.end > self.length) return Error.OutOfBounds;
+        const total_len = range.len();
+        if (total_len == 0) return allocator.alloc(u8, 0);
+
+        var result = try allocator.alloc(u8, total_len);
+        errdefer allocator.free(result);
+
+        var written: usize = 0;
+        var absolute_offset: usize = 0;
+
+        for (self.pieces.items) |piece_ptr| {
+            const data = piece_ptr.data;
+            const piece_len = data.len;
+            const piece_start = absolute_offset;
+            const piece_end = piece_start + piece_len;
+
+            if (piece_end <= range.start) {
+                absolute_offset = piece_end;
+                continue;
+            }
+
+            if (piece_start >= range.end) break;
+
+            const local_start = if (range.start > piece_start) range.start - piece_start else 0;
+            const local_end = if (range.end < piece_end) range.end - piece_start else piece_len;
+
+            const segment = data[local_start..local_end];
+            if (segment.len > 0) {
+                @memcpy(result[written .. written + segment.len], segment);
+                written += segment.len;
+            }
+
+            absolute_offset = piece_end;
+            if (written == total_len) break;
+        }
+
+        return result;
+    }
+
+    pub fn lineSliceAlloc(self: *const Rope, allocator: std.mem.Allocator, line_num: usize) Error![]u8 {
+        const range = try self.lineRange(line_num);
+        if (range.len() == 0) {
+            return allocator.alloc(u8, 0);
+        }
+        return try self.copyRangeAlloc(allocator, range);
+    }
+
+    pub fn lineColumnAtOffset(self: *const Rope, offset: usize) Error!struct { line: usize, column: usize } {
+        if (offset > self.length) return Error.OutOfBounds;
+
+        var line: usize = 0;
+        var column: usize = 0;
+        var processed: usize = 0;
+
+        for (self.pieces.items) |piece_ptr| {
+            const data = piece_ptr.data;
+            var idx: usize = 0;
+            while (idx < data.len and processed < offset) : (idx += 1) {
+                const byte = data[idx];
+                if (byte == '\n') {
+                    line += 1;
+                    column = 0;
+                } else {
+                    column += 1;
+                }
+                processed += 1;
+                if (processed == offset) break;
+            }
+            if (processed == offset) break;
+        }
+
+        return .{ .line = line, .column = column };
+    }
+
     pub fn snapshot(self: *Rope) !Snapshot {
         var arena_alloc = self.arena.allocator();
         const copy = try arena_alloc.alloc(*Piece, self.pieces.len);
@@ -267,4 +406,31 @@ test "rope snapshot and restore" {
     try rope.restore(snap);
     const restored = try rope.slice(.{ .start = 0, .end = rope.len() });
     try std.testing.expectEqualStrings("grim", restored);
+}
+
+test "rope line helpers" {
+    const allocator = std.testing.allocator;
+    var rope = try Rope.init(allocator);
+    defer rope.deinit();
+
+    try rope.insert(0, "first\nsecond line\nthird");
+
+    const range_second = try rope.lineRange(1);
+    try std.testing.expectEqual(@as(usize, "first\n".len), range_second.start);
+    try std.testing.expectEqual(@as(usize, "first\nsecond line".len), range_second.end);
+
+    const second_line = try rope.lineSliceAlloc(allocator, 1);
+    defer allocator.free(second_line);
+    try std.testing.expectEqualStrings("second line", second_line);
+
+    const third_line = try rope.lineSliceAlloc(allocator, 2);
+    defer allocator.free(third_line);
+    try std.testing.expectEqualStrings("third", third_line);
+
+    try std.testing.expectError(Rope.Error.OutOfBounds, rope.lineRange(3));
+
+    const offset = "first\nsecond".len;
+    const lc = try rope.lineColumnAtOffset(offset);
+    try std.testing.expectEqual(@as(usize, 1), lc.line);
+    try std.testing.expectEqual(@as(usize, "second".len), lc.column);
 }

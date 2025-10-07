@@ -71,17 +71,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const ui_tui_mod = b.createModule(.{
-        .root_source_file = b.path("ui-tui/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "phantom", .module = phantom.module("phantom") },
-            .{ .name = "core", .module = core_mod },
-            .{ .name = "syntax", .module = syntax_mod },
-        },
-    });
-
     const host_mod = b.createModule(.{
         .root_source_file = b.path("host/mod.zig"),
         .target = target,
@@ -92,17 +81,32 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const lsp_mod = b.createModule(.{
-        .root_source_file = b.path("lsp/mod.zig"),
+    const runtime_mod = b.createModule(.{
+        .root_source_file = b.path("runtime/mod.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
             .{ .name = "zsync", .module = zsync.module("zsync") },
+            .{ .name = "core", .module = core_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+            .{ .name = "host", .module = host_mod },
         },
     });
 
-    const runtime_mod = b.createModule(.{
-        .root_source_file = b.path("runtime/mod.zig"),
+    const ui_tui_mod = b.createModule(.{
+        .root_source_file = b.path("ui-tui/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "phantom", .module = phantom.module("phantom") },
+            .{ .name = "core", .module = core_mod },
+            .{ .name = "syntax", .module = syntax_mod },
+            .{ .name = "runtime", .module = runtime_mod },
+        },
+    });
+
+    const lsp_mod = b.createModule(.{
+        .root_source_file = b.path("lsp/mod.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{

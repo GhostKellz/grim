@@ -77,24 +77,24 @@ const GhostlangLoadedPlugin = struct {
 
     fn deinitBindings(self: *Self) void {
         self.clearBindings();
-        self.command_bindings.deinit();
-        self.keymap_bindings.deinit();
-        self.event_bindings.deinit();
-        self.theme_registrations.deinit();
+        self.command_bindings.deinit(self.allocator);
+        self.keymap_bindings.deinit(self.allocator);
+        self.event_bindings.deinit(self.allocator);
+        self.theme_registrations.deinit(self.allocator);
     }
 
     fn appendCommandBinding(self: *Self, binding: CommandBinding) !*CommandBinding {
-        try self.command_bindings.append(binding);
+        try self.command_bindings.append(self.allocator, binding);
         return &self.command_bindings.items[self.command_bindings.items.len - 1];
     }
 
     fn appendKeymapBinding(self: *Self, binding: KeymapBinding) !*KeymapBinding {
-        try self.keymap_bindings.append(binding);
+        try self.keymap_bindings.append(self.allocator, binding);
         return &self.keymap_bindings.items[self.keymap_bindings.items.len - 1];
     }
 
     fn appendEventBinding(self: *Self, binding: EventBinding) !*EventBinding {
-        try self.event_bindings.append(binding);
+        try self.event_bindings.append(self.allocator, binding);
         return &self.event_bindings.items[self.event_bindings.items.len - 1];
     }
 
@@ -242,7 +242,7 @@ fn ghostlangShowMessageCallback(ctx_ptr: *anyopaque, message: []const u8) anyerr
     try plugin_ctx.showMessage(message);
 }
 
-fn ghostlangRegisterCommandCallback(ctx_ptr: *anyopaque, action: *const host.Host.CompiledPlugin.CommandAction) anyerror!void {
+fn ghostlangRegisterCommandCallback(ctx_ptr: *anyopaque, action: *const host.Host.CommandAction) anyerror!void {
     const plugin_ctx = @as(*runtime.PluginAPI.PluginContext, @ptrCast(@alignCast(ctx_ptr)));
     var state = pluginStateFromContext(plugin_ctx);
 
@@ -287,8 +287,7 @@ fn ghostlangRegisterCommandCallback(ctx_ptr: *anyopaque, action: *const host.Hos
         .description = description_copy,
     };
 
-    try state.appendCommandBinding(new_binding);
-    const binding_ptr = &state.command_bindings.items[state.command_bindings.items.len - 1];
+    const binding_ptr = try state.appendCommandBinding(new_binding);
 
     name_owned = false;
     handler_owned = false;
@@ -301,7 +300,7 @@ fn ghostlangRegisterCommandCallback(ctx_ptr: *anyopaque, action: *const host.Hos
         .handler = ghostlangCommandHandler,
         .plugin_id = plugin_ctx.plugin_id,
     }) catch |err| {
-        const removed = state.command_bindings.pop();
+        var removed = state.command_bindings.pop() orelse unreachable;
         removed.deinit(state.allocator);
         return err;
     };
@@ -323,7 +322,7 @@ fn ghostlangCommandHandler(ctx: *runtime.PluginAPI.PluginContext, args: []const 
     try state.compiled.callVoid(binding.handler);
 }
 
-fn ghostlangRegisterKeymapCallback(ctx_ptr: *anyopaque, action: *const host.Host.CompiledPlugin.KeymapAction) anyerror!void {
+fn ghostlangRegisterKeymapCallback(ctx_ptr: *anyopaque, action: *const host.Host.KeymapAction) anyerror!void {
     const plugin_ctx = @as(*runtime.PluginAPI.PluginContext, @ptrCast(@alignCast(ctx_ptr)));
     var state = pluginStateFromContext(plugin_ctx);
 
@@ -379,8 +378,7 @@ fn ghostlangRegisterKeymapCallback(ctx_ptr: *anyopaque, action: *const host.Host
         .description = description_copy,
     };
 
-    try state.appendKeymapBinding(new_binding);
-    const binding_ptr = &state.keymap_bindings.items[state.keymap_bindings.items.len - 1];
+    const binding_ptr = try state.appendKeymapBinding(new_binding);
 
     keys_owned = false;
     handler_owned = false;
@@ -394,7 +392,7 @@ fn ghostlangRegisterKeymapCallback(ctx_ptr: *anyopaque, action: *const host.Host
         .description = description_slice,
         .plugin_id = plugin_ctx.plugin_id,
     }) catch |err| {
-        const removed = state.keymap_bindings.pop();
+        var removed = state.keymap_bindings.pop() orelse unreachable;
         removed.deinit(state.allocator);
         return err;
     };
@@ -407,7 +405,7 @@ fn ghostlangKeystrokeHandler(ctx: *runtime.PluginAPI.PluginContext) anyerror!boo
     return try state.compiled.callBool(binding.handler);
 }
 
-fn ghostlangRegisterEventHandlerCallback(ctx_ptr: *anyopaque, action: *const host.Host.CompiledPlugin.EventAction) anyerror!void {
+fn ghostlangRegisterEventHandlerCallback(ctx_ptr: *anyopaque, action: *const host.Host.EventAction) anyerror!void {
     const plugin_ctx = @as(*runtime.PluginAPI.PluginContext, @ptrCast(@alignCast(ctx_ptr)));
     var state = pluginStateFromContext(plugin_ctx);
 
@@ -433,7 +431,7 @@ fn ghostlangRegisterEventHandlerCallback(ctx_ptr: *anyopaque, action: *const hos
         .handler = handler_copy,
     };
 
-    try state.appendEventBinding(new_binding);
+    _ = try state.appendEventBinding(new_binding);
     handler_owned = false;
 
     plugin_ctx.api.registerEventHandler(.{
@@ -441,13 +439,13 @@ fn ghostlangRegisterEventHandlerCallback(ctx_ptr: *anyopaque, action: *const hos
         .handler = ghostlangEventHandler,
         .plugin_id = plugin_ctx.plugin_id,
     }) catch |err| {
-        const removed = state.event_bindings.pop();
+        var removed = state.event_bindings.pop() orelse unreachable;
         removed.deinit(state.allocator);
         return err;
     };
 }
 
-fn ghostlangRegisterThemeCallback(ctx_ptr: *anyopaque, action: *const host.Host.CompiledPlugin.ThemeAction) anyerror!void {
+fn ghostlangRegisterThemeCallback(ctx_ptr: *anyopaque, action: *const host.Host.ThemeAction) anyerror!void {
     const plugin_ctx = @as(*runtime.PluginAPI.PluginContext, @ptrCast(@alignCast(ctx_ptr)));
     var state = pluginStateFromContext(plugin_ctx);
 
@@ -469,12 +467,12 @@ fn ghostlangRegisterThemeCallback(ctx_ptr: *anyopaque, action: *const host.Host.
     errdefer if (name_owned) state.allocator.free(name_copy);
 
     const new_registration = GhostlangLoadedPlugin.ThemeRegistration{ .name = name_copy };
-    try state.theme_registrations.append(new_registration);
+    try state.theme_registrations.append(state.allocator, new_registration);
     const registration = &state.theme_registrations.items[state.theme_registrations.items.len - 1];
     name_owned = false;
 
     register_cb(callback_ctx, plugin_ctx.plugin_id, registration.name, action.colors) catch |err| {
-        const removed = state.theme_registrations.pop();
+        var removed = state.theme_registrations.pop() orelse unreachable;
         removed.deinit(state.allocator);
         return err;
     };
@@ -542,6 +540,7 @@ pub const PluginManager = struct {
         entry_point: []const u8,
         dependencies: [][]const u8,
         permissions: PluginPermissions,
+        enable_on_startup: bool = true,
 
         pub const PluginPermissions = struct {
             file_system_access: bool = false,
@@ -551,6 +550,30 @@ pub const PluginManager = struct {
             allowed_directories: [][]const u8 = &.{},
             blocked_directories: [][]const u8 = &.{},
         };
+
+        pub fn deinit(self: *PluginManifest, allocator: std.mem.Allocator) void {
+            allocator.free(self.id);
+            allocator.free(self.name);
+            allocator.free(self.version);
+            allocator.free(self.author);
+            allocator.free(self.description);
+            allocator.free(self.entry_point);
+
+            if (self.dependencies.len > 0) {
+                for (self.dependencies) |dep| allocator.free(dep);
+                allocator.free(self.dependencies);
+            }
+
+            if (self.permissions.allowed_directories.len > 0) {
+                for (self.permissions.allowed_directories) |dir| allocator.free(dir);
+                allocator.free(self.permissions.allowed_directories);
+            }
+
+            if (self.permissions.blocked_directories.len > 0) {
+                for (self.permissions.blocked_directories) |dir| allocator.free(dir);
+                allocator.free(self.permissions.blocked_directories);
+            }
+        }
     };
 
     pub const PluginInfo = struct {
@@ -594,20 +617,20 @@ pub const PluginManager = struct {
     }
 
     pub fn discoverPlugins(self: *PluginManager) ![]PluginInfo {
-        var discovered_plugins = std.ArrayList(PluginInfo).init(self.allocator);
+        var discovered_plugins = std.ArrayList(PluginInfo).initCapacity(self.allocator, 0) catch unreachable;
         errdefer {
             for (discovered_plugins.items) |plugin_info| {
                 self.allocator.free(plugin_info.plugin_path);
                 self.allocator.free(plugin_info.script_content);
             }
-            discovered_plugins.deinit();
+            discovered_plugins.deinit(self.allocator);
         }
 
         for (self.plugin_directories) |plugin_dir| {
             try self.discoverPluginsInDirectory(plugin_dir, &discovered_plugins);
         }
 
-        return discovered_plugins.toOwnedSlice();
+        return discovered_plugins.toOwnedSlice(self.allocator);
     }
 
     fn discoverPluginsInDirectory(self: *PluginManager, directory: []const u8, plugins: *std.ArrayList(PluginInfo)) !void {
@@ -628,7 +651,7 @@ pub const PluginManager = struct {
                 defer self.allocator.free(plugin_path);
 
                 if (try self.loadPluginFromDirectory(plugin_path)) |plugin_info| {
-                    try plugins.append(plugin_info);
+                    try plugins.append(self.allocator, plugin_info);
                 }
             } else if (entry.kind == .file and std.mem.endsWith(u8, entry.name, PLUGIN_EXTENSION)) {
                 // Single-file plugin
@@ -636,7 +659,7 @@ pub const PluginManager = struct {
                 defer self.allocator.free(plugin_path);
 
                 if (try self.loadSingleFilePlugin(plugin_path)) |plugin_info| {
-                    try plugins.append(plugin_info);
+                    try plugins.append(self.allocator, plugin_info);
                 }
             }
         }
@@ -647,7 +670,7 @@ pub const PluginManager = struct {
         const manifest_path = try std.fs.path.join(self.allocator, &.{ plugin_dir, PLUGIN_MANIFEST_FILE });
         defer self.allocator.free(manifest_path);
 
-        const manifest_content = std.fs.cwd().readFileAlloc(self.allocator, manifest_path, 1024 * 1024) catch |err| {
+        const manifest_content = std.fs.cwd().readFileAlloc(manifest_path, self.allocator, .limited(1024 * 1024)) catch |err| {
             if (err == error.FileNotFound) {
                 return null; // No manifest, skip this directory
             }
@@ -661,7 +684,7 @@ pub const PluginManager = struct {
         const script_path = try std.fs.path.join(self.allocator, &.{ plugin_dir, manifest.entry_point });
         defer self.allocator.free(script_path);
 
-        const script_content = try std.fs.cwd().readFileAlloc(self.allocator, script_path, 10 * 1024 * 1024);
+        const script_content = try std.fs.cwd().readFileAlloc(script_path, self.allocator, .limited(10 * 1024 * 1024));
 
         return PluginInfo{
             .manifest = manifest,
@@ -672,7 +695,7 @@ pub const PluginManager = struct {
     }
 
     fn loadSingleFilePlugin(self: *PluginManager, plugin_path: []const u8) !?PluginInfo {
-        const script_content = try std.fs.cwd().readFileAlloc(self.allocator, plugin_path, 10 * 1024 * 1024);
+        const script_content = try std.fs.cwd().readFileAlloc(plugin_path, self.allocator, .limited(10 * 1024 * 1024));
         errdefer self.allocator.free(script_content);
 
         // Parse embedded manifest from script comments
@@ -709,6 +732,7 @@ pub const PluginManager = struct {
             entry_point: []const u8,
             dependencies: ?[]const []const u8 = null,
             permissions: ?PermissionsDTO = null,
+            enable_on_startup: ?bool = null,
         };
 
         var parsed = try std.json.parseFromSlice(ManifestDTO, self.allocator, manifest_content, .{ .ignore_unknown_fields = true });
@@ -725,9 +749,10 @@ pub const PluginManager = struct {
             .entry_point = try self.allocator.dupe(u8, dto.entry_point),
             .dependencies = if (dto.dependencies) |deps| try duplicateStringSlice(self.allocator, deps) else &.{},
             .permissions = .{},
+            .enable_on_startup = dto.enable_on_startup orelse true,
         };
 
-        errdefer freeManifest(self.allocator, &manifest);
+        errdefer manifest.deinit(self.allocator);
 
         if (dto.permissions) |perms| {
             manifest.permissions.file_system_access = perms.file_system_access orelse manifest.permissions.file_system_access;
@@ -765,33 +790,9 @@ pub const PluginManager = struct {
         return dest;
     }
 
-    fn freeManifest(allocator: std.mem.Allocator, manifest: *PluginManifest) void {
-        allocator.free(manifest.id);
-        allocator.free(manifest.name);
-        allocator.free(manifest.version);
-        allocator.free(manifest.author);
-        allocator.free(manifest.description);
-        allocator.free(manifest.entry_point);
-
-        if (manifest.dependencies.len > 0) {
-            for (manifest.dependencies) |dep| allocator.free(dep);
-            allocator.free(manifest.dependencies);
-        }
-
-        if (manifest.permissions.allowed_directories.len > 0) {
-            for (manifest.permissions.allowed_directories) |dir| allocator.free(dir);
-            allocator.free(manifest.permissions.allowed_directories);
-        }
-
-        if (manifest.permissions.blocked_directories.len > 0) {
-            for (manifest.permissions.blocked_directories) |dir| allocator.free(dir);
-            allocator.free(manifest.permissions.blocked_directories);
-        }
-    }
-
     fn validatePermissions(self: *PluginManager, permissions: *PluginManifest.PluginPermissions) !void {
         _ = self;
-        const forbidden = &.{ "..", "~", "//" };
+        const forbidden = [_][]const u8{ "..", "~", "//" };
         for (permissions.allowed_directories) |dir| {
             for (forbidden) |marker| {
                 if (std.mem.indexOf(u8, dir, marker)) |_| {
@@ -823,7 +824,7 @@ pub const PluginManager = struct {
         var author: ?[]const u8 = null;
         var description: ?[]const u8 = null;
 
-        var lines = std.mem.split(u8, script_content, "\n");
+        var lines = std.mem.splitSequence(u8, script_content, "\n");
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t");
 
@@ -855,6 +856,7 @@ pub const PluginManager = struct {
             .entry_point = "main.gza",
             .dependencies = &.{},
             .permissions = .{},
+            .enable_on_startup = true,
         };
     }
 
@@ -900,10 +902,10 @@ pub const PluginManager = struct {
             .host = plugin_host,
             .compiled = compiled,
             .allocator = self.allocator,
-            .command_bindings = std.ArrayList(GhostlangLoadedPlugin.CommandBinding).init(self.allocator),
-            .keymap_bindings = std.ArrayList(GhostlangLoadedPlugin.KeymapBinding).init(self.allocator),
-            .event_bindings = std.ArrayList(GhostlangLoadedPlugin.EventBinding).init(self.allocator),
-            .theme_registrations = std.ArrayList(GhostlangLoadedPlugin.ThemeRegistration).init(self.allocator),
+            .command_bindings = std.ArrayList(GhostlangLoadedPlugin.CommandBinding).initCapacity(self.allocator, 0) catch unreachable,
+            .keymap_bindings = std.ArrayList(GhostlangLoadedPlugin.KeymapBinding).initCapacity(self.allocator, 0) catch unreachable,
+            .event_bindings = std.ArrayList(GhostlangLoadedPlugin.EventBinding).initCapacity(self.allocator, 0) catch unreachable,
+            .theme_registrations = std.ArrayList(GhostlangLoadedPlugin.ThemeRegistration).initCapacity(self.allocator, 0) catch unreachable,
             .host_deinitialized = false,
             .theme_callbacks = &self.theme_callbacks,
         };
@@ -941,9 +943,30 @@ pub const PluginManager = struct {
 
         // Reload script content
         self.allocator.free(plugin_info.script_content);
-        plugin_info.script_content = try std.fs.cwd().readFileAlloc(self.allocator, plugin_info.plugin_path, 10 * 1024 * 1024);
+        plugin_info.script_content = try std.fs.cwd().readFileAlloc(plugin_info.plugin_path, self.allocator, .limited(10 * 1024 * 1024));
 
         try self.loadPlugin(plugin_info);
+    }
+
+    pub fn listCommands(self: *PluginManager, allocator: std.mem.Allocator) ![]runtime.PluginAPI.Command {
+        return try self.plugin_api.listCommands(allocator);
+    }
+
+    pub fn executeCommand(self: *PluginManager, command_name: []const u8, args: []const []const u8) !void {
+        const command = self.plugin_api.findCommand(command_name) orelse return runtime.PluginAPI.Error.CommandNotFound;
+        try self.plugin_api.executeCommand(command.name, command.plugin_id, args);
+    }
+
+    pub fn emitEvent(self: *PluginManager, event_type: runtime.PluginAPI.EventType, data: runtime.PluginAPI.EventData) !void {
+        try self.plugin_api.emitEvent(event_type, data);
+    }
+
+    pub fn handleKeystroke(self: *PluginManager, key_combination: []const u8, mode: runtime.PluginAPI.EditorContext.EditorMode) !bool {
+        return try self.plugin_api.handleKeystroke(key_combination, mode);
+    }
+
+    pub fn listLoadedPlugins(self: *PluginManager, allocator: std.mem.Allocator) ![][]const u8 {
+        return try self.plugin_api.getLoadedPlugins(allocator);
     }
 
     pub fn getPluginStats(self: *PluginManager) host.Host.ExecutionStats {

@@ -12,14 +12,19 @@ pub const SimpleTUI = struct {
     stdout: std.fs.File,
     theme_registry: theme_mod.ThemeRegistry,
     active_theme: theme_mod.Theme,
+    plugin_manager: ?*runtime.PluginManager,
     highlight_cache: []syntax.HighlightRange,
     highlight_dirty: bool,
     highlight_error: ?[]u8,
     highlight_error_flash: bool,
     highlight_error_flash_state: bool,
     highlight_error_logged: bool,
+    command_buffer: std.ArrayList(u8),
+    status_message: ?[]u8,
+    plugin_cursor: ?*runtime.PluginAPI.EditorContext.CursorPosition,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
+        const command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
         const self = try allocator.create(SimpleTUI);
         self.* = .{
             .allocator = allocator,
@@ -29,12 +34,16 @@ pub const SimpleTUI = struct {
             .stdout = std.fs.File.stdout(),
             .theme_registry = theme_mod.ThemeRegistry.init(allocator),
             .active_theme = theme_mod.Theme.defaultDark(),
+            .plugin_manager = null,
             .highlight_cache = &.{},
             .highlight_dirty = true,
             .highlight_error = null,
             .highlight_error_flash = false,
             .highlight_error_flash_state = false,
             .highlight_error_logged = false,
+            .command_buffer = command_buffer,
+            .status_message = null,
+            .plugin_cursor = null,
         };
         return self;
     }
@@ -46,6 +55,10 @@ pub const SimpleTUI = struct {
         if (self.highlight_error) |msg| {
             self.allocator.free(msg);
         }
+        if (self.status_message) |msg| {
+            self.allocator.free(msg);
+        }
+        self.command_buffer.deinit(self.allocator);
         self.theme_registry.deinit();
         self.editor.deinit();
         self.allocator.destroy(self);
@@ -67,6 +80,12 @@ pub const SimpleTUI = struct {
     pub fn loadFile(self: *SimpleTUI, path: []const u8) !void {
         try self.editor.loadFile(path);
         self.markHighlightsDirty();
+
+        if (self.plugin_manager) |manager| {
+            manager.emitEvent(.file_opened, .{ .file_opened = path }) catch |err| {
+                std.log.err("Failed to emit file_opened event: {}", .{err});
+            };
+        }
     }
 
     pub fn setTheme(self: *SimpleTUI, name: []const u8) !void {
@@ -92,7 +111,27 @@ pub const SimpleTUI = struct {
         self.markHighlightsDirty();
     }
 
+    fn setStatusMessage(self: *SimpleTUI, message: []const u8) void {
+        if (self.status_message) |existing| {
+            self.allocator.free(existing);
+        }
+        const duped = self.allocator.dupe(u8, message) catch |err| {
+            std.log.warn("Failed to allocate status message: {}", .{err});
+            self.status_message = null;
+            return;
+        };
+        self.status_message = duped;
+    }
+
+    fn clearStatusMessage(self: *SimpleTUI) void {
+        if (self.status_message) |existing| {
+            self.allocator.free(existing);
+            self.status_message = null;
+        }
+    }
+
     pub fn attachPluginManager(self: *SimpleTUI, manager: *runtime.PluginManager) void {
+        self.plugin_manager = manager;
         manager.setThemeCallbacks(
             @as(*anyopaque, @ptrCast(&self.theme_registry)),
             theme_mod.registerThemeCallback,
@@ -109,6 +148,7 @@ pub const SimpleTUI = struct {
         try self.setCursor(1, 1);
 
         self.refreshHighlights();
+    self.updatePluginCursorFromEditor();
 
         if (self.highlight_error_flash) {
             self.highlight_error_flash_state = !self.highlight_error_flash_state;
@@ -205,16 +245,43 @@ pub const SimpleTUI = struct {
             }
         }
 
-        const status_slice = status_buf[0..status_len];
+        if (self.status_message) |msg| {
+            const max_msg_len: usize = 48;
+            const trimmed_len = if (msg.len > max_msg_len) max_msg_len else msg.len;
+            const msg_slice = try std.fmt.bufPrint(status_buf[status_len..], " | {s}", .{msg[0..trimmed_len]});
+            status_len += msg_slice.len;
+            if (msg.len > max_msg_len) {
+                const ellipsis_slice = try std.fmt.bufPrint(status_buf[status_len..], "…", .{});
+                status_len += ellipsis_slice.len;
+            }
+        }
+
+        var status_slice: []const u8 = status_buf[0..status_len];
+        var command_line_buf: [512]u8 = undefined;
+        if (self.editor.mode == .command) {
+            const input = self.command_buffer.items;
+            const max_input_len = if (command_line_buf.len > 4) command_line_buf.len - 4 else 0;
+            const needs_ellipsis = input.len > max_input_len;
+            if (needs_ellipsis) {
+                status_slice = try std.fmt.bufPrint(&command_line_buf, ":{s}...", .{input[0..max_input_len]});
+            } else {
+                status_slice = try std.fmt.bufPrint(&command_line_buf, ":{s}", .{input});
+            }
+        }
 
         // Pad with spaces to fill width
         const padding_len = if (status_slice.len < width) width - status_slice.len else 0;
         var final_status_buf: [512]u8 = undefined;
-        @memcpy(final_status_buf[0..status_slice.len], status_slice);
-        if (padding_len > 0) {
-            @memset(final_status_buf[status_slice.len .. status_slice.len + padding_len], ' ');
+        const max_status_len: usize = final_status_buf.len;
+        const copy_len: usize = @min(status_slice.len, max_status_len);
+        @memcpy(final_status_buf[0..copy_len], status_slice[0..copy_len]);
+        var total_len: usize = copy_len;
+        if (padding_len > 0 and total_len < max_status_len) {
+            const pad_count: usize = @min(padding_len, max_status_len - total_len);
+            @memset(final_status_buf[total_len .. total_len + pad_count], ' ');
+            total_len += pad_count;
         }
-        const status = final_status_buf[0 .. status_slice.len + padding_len];
+        const status = final_status_buf[0..total_len];
 
         try self.stdout.writeAll(status[0..@min(status.len, width)]);
         try self.resetColor();
@@ -297,26 +364,26 @@ pub const SimpleTUI = struct {
             'j' => self.editor.moveCursorDown(),
             'k' => self.editor.moveCursorUp(),
             'l' => self.editor.moveCursorRight(),
-            'i' => self.editor.mode = .insert,
+            'i' => self.switchMode(.insert),
             'I' => {
                 self.editor.moveCursorToLineStart();
-                self.editor.mode = .insert;
+                self.switchMode(.insert);
             },
             'a' => {
                 self.editor.moveCursorRight();
-                self.editor.mode = .insert;
+                self.switchMode(.insert);
             },
             'A' => {
                 self.editor.moveCursorToLineEnd();
-                self.editor.mode = .insert;
+                self.switchMode(.insert);
             },
             'o' => {
                 try self.editor.insertNewlineAfter();
-                self.editor.mode = .insert;
+                self.switchMode(.insert);
             },
             'O' => {
                 try self.editor.insertNewlineBefore();
-                self.editor.mode = .insert;
+                self.switchMode(.insert);
             },
             'x' => try self.editor.deleteChar(),
             'w' => self.editor.moveWordForward(),
@@ -327,8 +394,8 @@ pub const SimpleTUI = struct {
                 // TODO: Handle 'gg' for goto top
             },
             'G' => self.editor.moveCursorToEnd(),
-            ':' => self.editor.mode = .command,
-            'v' => self.editor.mode = .visual,
+            ':' => self.startCommandMode(),
+            'v' => self.switchMode(.visual),
             'q' => self.running = false, // Simple quit
             else => {}, // Ignore unhandled keys
         }
@@ -336,7 +403,7 @@ pub const SimpleTUI = struct {
 
     fn handleInsertMode(self: *SimpleTUI, key: u8) !void {
         switch (key) {
-            27 => self.editor.mode = .normal, // ESC
+            27 => self.switchMode(.normal), // ESC
             8, 127 => try self.editor.backspace(), // Backspace/Delete
             13 => try self.editor.insertChar('\n'), // Enter
             else => {
@@ -349,18 +416,18 @@ pub const SimpleTUI = struct {
 
     fn handleVisualMode(self: *SimpleTUI, key: u8) !void {
         switch (key) {
-            27 => self.editor.mode = .normal, // ESC
+            27 => self.switchMode(.normal), // ESC
             'h' => self.editor.moveCursorLeft(),
             'j' => self.editor.moveCursorDown(),
             'k' => self.editor.moveCursorUp(),
             'l' => self.editor.moveCursorRight(),
             'd' => {
                 // TODO: Delete selection
-                self.editor.mode = .normal;
+                self.switchMode(.normal);
             },
             'y' => {
                 // TODO: Yank selection
-                self.editor.mode = .normal;
+                self.switchMode(.normal);
             },
             else => {},
         }
@@ -368,21 +435,346 @@ pub const SimpleTUI = struct {
 
     fn handleCommandMode(self: *SimpleTUI, key: u8) !void {
         switch (key) {
-            27 => self.editor.mode = .normal, // ESC
-            13 => { // Enter
-                // TODO: Execute command
-                self.editor.mode = .normal;
+            27 => {
+                self.exitCommandMode();
+                self.clearStatusMessage();
+            },
+            13 => try self.submitCommandLine(),
+            8, 127 => {
+                if (self.command_buffer.items.len > 0) {
+                    _ = self.command_buffer.pop();
+                }
             },
             else => {
-                // TODO: Build command string
+                if (key >= 32 and key < 127) {
+                    try self.command_buffer.append(self.allocator, key);
+                }
             },
         }
+    }
+
+    fn modeToPluginMode(mode: Editor.Mode) runtime.PluginAPI.EditorContext.EditorMode {
+        return switch (mode) {
+            .normal => .normal,
+            .insert => .insert,
+            .visual => .visual,
+            .command => .command,
+        };
+    }
+
+    fn switchMode(self: *SimpleTUI, new_mode: Editor.Mode) void {
+        const current = self.editor.mode;
+        if (current == new_mode) return;
+        self.editor.mode = new_mode;
+
+        if (self.plugin_manager) |manager| {
+            const event_data = runtime.PluginAPI.EventData{
+                .mode_changed = .{
+                    .old_mode = modeToPluginMode(current),
+                    .new_mode = modeToPluginMode(new_mode),
+                },
+            };
+            manager.emitEvent(.mode_changed, event_data) catch |err| {
+                std.log.err("Failed to emit mode_changed event: {}", .{err});
+            };
+        }
+    }
+
+    fn startCommandMode(self: *SimpleTUI) void {
+        self.command_buffer.clearRetainingCapacity();
+        self.switchMode(.command);
+    }
+
+    fn exitCommandMode(self: *SimpleTUI) void {
+        self.command_buffer.clearRetainingCapacity();
+        self.switchMode(.normal);
+    }
+
+    fn submitCommandLine(self: *SimpleTUI) !void {
+        const trimmed = std.mem.trim(u8, self.command_buffer.items, " \t");
+        if (trimmed.len == 0) {
+            self.exitCommandMode();
+            return;
+        }
+
+        var tokenizer = std.mem.tokenizeAny(u8, trimmed, " \t");
+        const head = tokenizer.next() orelse {
+            self.exitCommandMode();
+            return;
+        };
+
+        if (std.mem.eql(u8, head, "q") or std.mem.eql(u8, head, "quit")) {
+            self.running = false;
+            self.setStatusMessage("Quit");
+            self.exitCommandMode();
+            return;
+        }
+
+        if (std.mem.eql(u8, head, "wq")) {
+            self.saveCurrentFile() catch |err| {
+                switch (err) {
+                    error.NoActiveFile => self.setStatusMessage("No file to write"),
+                    else => {
+                        self.setStatusMessage("Write failed");
+                        std.log.err("Failed to write file: {}", .{err});
+                    },
+                }
+                self.exitCommandMode();
+                return;
+            };
+            self.setStatusMessage("Wrote file");
+            self.running = false;
+            self.exitCommandMode();
+            return;
+        }
+
+        if (std.mem.eql(u8, head, "w") or std.mem.eql(u8, head, "write")) {
+            self.saveCurrentFile() catch |err| {
+                switch (err) {
+                    error.NoActiveFile => self.setStatusMessage("No file to write"),
+                    else => {
+                        self.setStatusMessage("Write failed");
+                        std.log.err("Failed to write file: {}", .{err});
+                    },
+                }
+                self.exitCommandMode();
+                return;
+            };
+            self.setStatusMessage("Wrote file");
+            self.exitCommandMode();
+            return;
+        }
+
+        if (std.mem.eql(u8, head, "commands")) {
+            self.showAvailableCommands() catch |err| {
+                if (err != error.PluginUnavailable) {
+                    std.log.err("Failed to show command list: {}", .{err});
+                    self.setStatusMessage("Unable to list commands");
+                }
+            };
+            self.exitCommandMode();
+            return;
+        }
+
+        if (std.mem.eql(u8, head, "plugins")) {
+            self.showLoadedPlugins() catch |err| {
+                if (err != error.PluginUnavailable) {
+                    std.log.err("Failed to show plugins: {}", .{err});
+                    self.setStatusMessage("Unable to list plugins");
+                }
+            };
+            self.exitCommandMode();
+            return;
+        }
+
+        var args_builder = std.ArrayList([]const u8).initCapacity(self.allocator, 0) catch |err| {
+            std.log.err("Failed to allocate command arguments: {}", .{err});
+            self.setStatusMessage("Unable to process command arguments");
+            self.exitCommandMode();
+            return;
+        };
+        defer args_builder.deinit(self.allocator);
+        while (tokenizer.next()) |token| {
+            try args_builder.append(self.allocator, token);
+        }
+
+        const args = args_builder.items;
+        self.executePluginCommand(head, args) catch |err| {
+            switch (err) {
+                error.PluginUnavailable => {},
+                else => {
+                    var msg_buf: [160]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "Command '{s}' failed", .{head}) catch "Command failed";
+                    self.setStatusMessage(msg);
+                    std.log.err("Plugin command '{s}' failed: {}", .{ head, err });
+                },
+            }
+            self.exitCommandMode();
+            return;
+        };
+
+        self.exitCommandMode();
+    }
+
+    fn saveCurrentFile(self: *SimpleTUI) !void {
+        const path = self.editor.current_filename orelse {
+            self.setStatusMessage("No file to write");
+            return error.NoActiveFile;
+        };
+        try self.editor.saveFile(path);
+
+        if (self.plugin_manager) |manager| {
+            manager.emitEvent(.file_saved, .{ .file_saved = path }) catch |err| {
+                std.log.err("Failed to emit file_saved event: {}", .{err});
+            };
+        }
+    }
+
+    fn executePluginCommand(self: *SimpleTUI, name: []const u8, args: []const []const u8) !void {
+        const manager = self.plugin_manager orelse {
+            self.setStatusMessage("No plugin manager attached");
+            return error.PluginUnavailable;
+        };
+        try manager.executeCommand(name, args);
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Executed {s}", .{name}) catch "Command executed";
+        self.setStatusMessage(msg);
+    }
+
+    fn showAvailableCommands(self: *SimpleTUI) !void {
+        const manager = self.plugin_manager orelse {
+            self.setStatusMessage("No plugin manager attached");
+            return error.PluginUnavailable;
+        };
+
+        const commands = manager.listCommands(self.allocator) catch |err| {
+            std.log.err("Failed to list plugin commands: {}", .{err});
+            self.setStatusMessage("Unable to list commands");
+            return;
+        };
+        defer self.allocator.free(commands);
+
+        if (commands.len == 0) {
+            self.setStatusMessage("No plugin commands registered");
+            return;
+        }
+
+        var builder = std.ArrayList(u8).initCapacity(self.allocator, 0) catch |err| {
+            std.log.err("Failed to allocate command list buffer: {}", .{err});
+            self.setStatusMessage("Unable to list commands");
+            return;
+        };
+        defer builder.deinit(self.allocator);
+        try builder.appendSlice(self.allocator, "Commands: ");
+
+        const max_display: usize = 5;
+        for (commands, 0..) |command, idx| {
+            if (idx >= max_display) {
+                try builder.appendSlice(self.allocator, "...");
+                break;
+            }
+
+            if (idx > 0) {
+                try builder.appendSlice(self.allocator, ", ");
+            }
+
+            try builder.appendSlice(self.allocator, command.name);
+            try builder.appendSlice(self.allocator, " (");
+            try builder.appendSlice(self.allocator, command.plugin_id);
+            try builder.appendSlice(self.allocator, ")");
+        }
+
+        self.setStatusMessage(builder.items);
+    }
+
+    fn showLoadedPlugins(self: *SimpleTUI) !void {
+        const manager = self.plugin_manager orelse {
+            self.setStatusMessage("No plugin manager attached");
+            return error.PluginUnavailable;
+        };
+
+        const plugins = manager.listLoadedPlugins(self.allocator) catch |err| {
+            std.log.err("Failed to list plugins: {}", .{err});
+            self.setStatusMessage("Unable to list plugins");
+            return;
+        };
+        defer self.allocator.free(plugins);
+
+        if (plugins.len == 0) {
+            self.setStatusMessage("No plugins loaded");
+            return;
+        }
+
+        var builder = std.ArrayList(u8).initCapacity(self.allocator, 0) catch |err| {
+            std.log.err("Failed to allocate plugin list buffer: {}", .{err});
+            self.setStatusMessage("Unable to list plugins");
+            return;
+        };
+        defer builder.deinit(self.allocator);
+        try builder.appendSlice(self.allocator, "Plugins: ");
+        for (plugins, 0..) |plugin_id, idx| {
+            if (idx > 0) try builder.appendSlice(self.allocator, ", ");
+            try builder.appendSlice(self.allocator, plugin_id);
+        }
+
+        self.setStatusMessage(builder.items);
     }
 
     fn enableRawMode(self: *SimpleTUI) !void {
         _ = self;
         // Platform-specific raw mode setup would go here
         // For now, just a placeholder
+    }
+
+    fn bridgeGetCurrentBuffer(ctx: *anyopaque) runtime.PluginAPI.BufferId {
+        const self = @as(*SimpleTUI, @ptrCast(@alignCast(ctx)));
+        _ = self;
+        return 1;
+    }
+
+    fn bridgeGetCursorPosition(ctx: *anyopaque) runtime.PluginAPI.EditorContext.CursorPosition {
+        const self = @as(*SimpleTUI, @ptrCast(@alignCast(ctx)));
+        const offset = self.editor.cursor.offset;
+        const lc = self.editor.rope.lineColumnAtOffset(offset) catch {
+            const fallback = .{ .line = 0, .column = 0, .byte_offset = offset };
+            if (self.plugin_cursor) |cursor_ptr| {
+                cursor_ptr.* = fallback;
+            }
+            return fallback;
+        };
+        const position = .{ .line = lc.line, .column = lc.column, .byte_offset = offset };
+        if (self.plugin_cursor) |cursor_ptr| {
+            cursor_ptr.* = position;
+        }
+        return position;
+    }
+
+    fn bridgeSetCursorPosition(ctx: *anyopaque, position: runtime.PluginAPI.EditorContext.CursorPosition) anyerror!void {
+        const self = @as(*SimpleTUI, @ptrCast(@alignCast(ctx)));
+        const rope_len = self.editor.rope.len();
+        const new_offset = if (position.byte_offset > rope_len) rope_len else position.byte_offset;
+        self.editor.cursor.offset = new_offset;
+        if (self.plugin_cursor) |cursor_ptr| {
+            cursor_ptr.* = .{
+                .line = position.line,
+                .column = position.column,
+                .byte_offset = new_offset,
+            };
+        }
+    }
+
+    fn bridgeNotifyChange(ctx: *anyopaque, change: runtime.PluginAPI.EditorContext.BufferChange) anyerror!void {
+        const self = @as(*SimpleTUI, @ptrCast(@alignCast(ctx)));
+        _ = change;
+        self.markHighlightsDirty();
+        if (self.plugin_cursor) |cursor_ptr| {
+            self.editor.cursor.offset = cursor_ptr.byte_offset;
+            self.updatePluginCursorFromEditor();
+        }
+    }
+
+    pub fn makeEditorBridge(self: *SimpleTUI) runtime.PluginAPI.EditorContext.EditorBridge {
+        return .{
+            .ctx = @as(*anyopaque, @ptrCast(self)),
+            .getCurrentBuffer = bridgeGetCurrentBuffer,
+            .getCursorPosition = bridgeGetCursorPosition,
+            .setCursorPosition = bridgeSetCursorPosition,
+            .notifyChange = bridgeNotifyChange,
+        };
+    }
+
+    fn updatePluginCursorFromEditor(self: *SimpleTUI) void {
+        if (self.plugin_cursor) |cursor_ptr| {
+            const offset = self.editor.cursor.offset;
+            cursor_ptr.byte_offset = offset;
+            const lc = self.editor.rope.lineColumnAtOffset(offset) catch {
+                cursor_ptr.line = 0;
+                cursor_ptr.column = 0;
+                return;
+            };
+            cursor_ptr.line = lc.line;
+            cursor_ptr.column = lc.column;
+        }
     }
 
     fn disableRawMode(self: *SimpleTUI) !void {

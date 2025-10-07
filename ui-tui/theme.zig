@@ -441,9 +441,10 @@ pub fn unregisterThemeCallback(
     ctx: *anyopaque,
     plugin_id: []const u8,
     theme_name: []const u8,
-) void {
+) ParseThemeError!void {
     const registry = @as(*ThemeRegistry, @ptrCast(@alignCast(ctx)));
     registry.unregisterPluginTheme(plugin_id, theme_name);
+    return;
 }
 
 fn allocPluginKey(allocator: std.mem.Allocator, plugin_id: []const u8, theme_name: []const u8) ![]u8 {

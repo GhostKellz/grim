@@ -4,8 +4,8 @@ const PluginManifest = @import("plugin_manifest.zig").PluginManifest;
 /// Discovered plugin (not yet loaded)
 pub const DiscoveredPlugin = struct {
     name: []const u8,
-    path: []const u8,  // Full path to plugin directory
-    manifest_path: []const u8,  // Full path to plugin.toml
+    path: []const u8, // Full path to plugin directory
+    manifest_path: []const u8, // Full path to plugin.toml
     manifest: PluginManifest,
     allocator: std.mem.Allocator,
 
@@ -167,7 +167,7 @@ test "discover example plugins" {
         for (plugins.items) |*plugin| {
             plugin.deinit();
         }
-        plugins.deinit();
+        plugins.deinit(allocator);
     }
 
     // Should discover at least hello-world

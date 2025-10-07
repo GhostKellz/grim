@@ -1,0 +1,55 @@
+  Grove vs Grim Responsibility
+
+  Issue 1: "Grove parser keeps returning fallback highlights"
+
+  Likely a Grim integration issue, but needs investigation:
+
+  - Grove provides: grove.Highlight.HighlightEngine that runs tree-sitter highlight queries and
+  returns HighlightSpan results with proper capture names and byte ranges (see
+  src/editor/highlight.zig)
+  - Grove provides: All bundled grammars ship with .scm highlight queries in
+  vendor/tree-sitter-*/queries/highlights.scm
+  - Grim must: Load the appropriate highlight query, execute it via Grove's engine, and map the
+  returned capture names to actual colors/styles
+
+  To debug: Check if Grim is:
+  1. Loading the correct .scm file for each language
+  2. Calling grove.Highlight.collectHighlights() properly
+  3. Mapping capture names (like @keyword, @function.call) to visual styles instead of falling back
+  to default
+
+  ---
+  Issue 2: "LSP client/server manager only partly implemented"
+
+  Definitely a Grim issue:
+
+  - Grove provides: LSP helper utilities in src/lsp.zig:
+    - Data structures (Position, Range, Location, DocumentSymbol, etc.)
+    - LanguageServer struct with methods like hover(), gotoDefinition(), foldingRanges(),
+  documentSymbols()
+    - Factory for creating language-specific servers
+  - Grove does NOT provide:
+    - JSON-RPC transport layer
+    - LSP message parsing/serialization
+    - didOpen/didChange/didSave notification handlers
+    - Document synchronization state management
+    - Client/server lifecycle management
+
+  Grim must implement:
+  1. JSON-RPC message handling (parse incoming requests, serialize responses)
+  2. Document state tracking (maintain buffers for open documents)
+  3. Wire up LSP notifications to Grove's utilities:
+  // Example: didChange should trigger incremental parse
+  fn handleDidChange(params: DidChangeParams) void {
+      tree.edit(edits);
+      new_tree = parser.parse(updated_source);
+      // Then use new_tree with grove.Highlight, grove.LSP.hover(), etc.
+  }
+  4. Expose Grove's LSP helper methods via JSON-RPC endpoints
+
+  ---
+  TL;DR:
+  - Highlights → Probably Grim (Grove provides the engine, Grim must wire it up correctly)
+  - LSP client/server → Definitely Grim (Grove only provides semantic analysis helpers, not the
+  protocol layer)
+

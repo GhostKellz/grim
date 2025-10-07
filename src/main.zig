@@ -1,5 +1,6 @@
 const std = @import("std");
 const grim = @import("grim");
+const runtime = grim.runtime;
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -66,10 +67,62 @@ pub fn main() !void {
     var app = try SimpleTUI.init(allocator);
     defer app.deinit();
 
+    // Build plugin directories list
+    var plugin_dirs = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+    defer {
+        for (plugin_dirs.items) |dir| allocator.free(dir);
+        plugin_dirs.deinit(allocator);
+    }
+    try collectPluginDirectories(&plugin_dirs, allocator);
+
+    // Initialize plugin API editor context
+    var plugin_cursor_position = runtime.PluginAPI.EditorContext.CursorPosition{
+        .line = 0,
+        .column = 0,
+        .byte_offset = 0,
+    };
+    var plugin_mode = runtime.PluginAPI.EditorContext.EditorMode.normal;
+    app.plugin_cursor = &plugin_cursor_position;
+    var editor_context = runtime.PluginAPI.EditorContext{
+        .rope = &app.editor.rope,
+        .cursor_position = &plugin_cursor_position,
+        .current_mode = &plugin_mode,
+        .highlighter = &app.editor.highlighter,
+        .selection_start = &app.editor.selection_start,
+        .selection_end = &app.editor.selection_end,
+        .active_buffer_id = 1,
+        .bridge = app.makeEditorBridge(),
+    };
+
+    var plugin_api = runtime.PluginAPI.init(allocator, &editor_context);
+    defer plugin_api.deinit();
+
+    // Initialize plugin manager and discovery
+    var plugin_manager = try runtime.PluginManager.init(allocator, &plugin_api, plugin_dirs.items);
+    defer plugin_manager.deinit();
+
+    app.attachPluginManager(&plugin_manager);
+
+    const discovered_plugins = try plugin_manager.discoverPlugins();
+    defer cleanupDiscoveredPlugins(allocator, &plugin_manager, discovered_plugins);
+
+    for (discovered_plugins) |*plugin_info| {
+        if (!plugin_info.manifest.enable_on_startup) continue;
+        plugin_manager.loadPlugin(plugin_info) catch |err| {
+            std.log.err("Failed to load plugin '{s}' ({s}): {}", .{
+                plugin_info.manifest.name,
+                plugin_info.plugin_path,
+                err,
+            });
+            continue;
+        };
+        std.log.info("Loaded plugin {s} v{s}", .{ plugin_info.manifest.name, plugin_info.manifest.version });
+    }
+
     // Apply theme if specified
     if (theme_name) |theme| {
         app.setTheme(theme) catch |err| {
-            std.debug.print("Warning: Failed to set theme '{s}': {}\n", .{theme, err});
+            std.debug.print("Warning: Failed to set theme '{s}': {}\n", .{ theme, err });
         };
     }
 
@@ -126,4 +179,53 @@ test "fuzz example" {
         }
     };
     try std.testing.fuzz(Context{}, Context.testOne, .{});
+}
+
+fn collectPluginDirectories(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator) !void {
+    try appendPath(list, allocator, "plugins/examples");
+    try appendPath(list, allocator, "plugins");
+
+    if (std.posix.getenv("HOME")) |home| {
+        try appendJoinedPath(list, allocator, &.{ home, ".config", "grim", "plugins" });
+        try appendJoinedPath(list, allocator, &.{ home, ".local", "share", "phantom.grim", "plugins" });
+    }
+
+    try appendPath(list, allocator, "/usr/share/grim/plugins");
+    try appendPath(list, allocator, "/usr/local/share/grim/plugins");
+}
+
+fn appendPath(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, path: []const u8) !void {
+    const owned = try allocator.dupe(u8, path);
+    list.append(allocator, owned) catch |err| {
+        allocator.free(owned);
+        return err;
+    };
+}
+
+fn appendJoinedPath(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, parts: []const []const u8) !void {
+    const joined = try std.fs.path.join(allocator, parts);
+    list.append(allocator, joined) catch |err| {
+        allocator.free(joined);
+        return err;
+    };
+}
+
+fn cleanupDiscoveredPlugins(
+    allocator: std.mem.Allocator,
+    manager: *runtime.PluginManager,
+    plugins: []runtime.PluginManager.PluginInfo,
+) void {
+    for (plugins) |*info| {
+        if (info.loaded) {
+            manager.unloadPlugin(info.manifest.id) catch |err| {
+                std.log.err("Failed to unload plugin '{s}': {}", .{ info.manifest.id, err });
+            };
+        }
+
+        allocator.free(info.plugin_path);
+        allocator.free(info.script_content);
+        info.manifest.deinit(allocator);
+    }
+
+    allocator.free(plugins);
 }
