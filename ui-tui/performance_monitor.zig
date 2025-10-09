@@ -239,8 +239,8 @@ pub const EditorPerformanceMonitor = struct {
     };
 
     fn assessHealth(self: *const EditorPerformanceMonitor) SystemHealth {
-    var recommendations = std.ArrayList([]const u8).empty;
-    recommendations.allocator = self.allocator;
+        var recommendations = std.ArrayList([]const u8).empty;
+        recommendations.allocator = self.allocator;
 
         // Assess memory health
         const memory_health = if (self.stats.peak_memory_usage > 100 * 1024 * 1024) // 100MB
@@ -306,8 +306,8 @@ pub const EditorPerformanceMonitor = struct {
 
     /// Performance optimization suggestions
     pub fn getOptimizationSuggestions(self: *const EditorPerformanceMonitor, allocator: std.mem.Allocator) ![][]const u8 {
-    var suggestions = try std.ArrayList([]const u8).initCapacity(allocator, 0);
-    errdefer suggestions.deinit();
+        var suggestions = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+        errdefer suggestions.deinit();
 
         if (self.rope_optimizer.needsOptimization()) {
             const strategy = self.rope_optimizer.suggestStrategy();

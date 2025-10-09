@@ -45,15 +45,15 @@ pub fn main() !void {
 fn printUsage() void {
     std.debug.print(
         "grim-pkg <command> [options]\n\n" ++
-        "Commands:\n" ++
-        "  build [path] [--out dir]    Build a Phantom.grim plugin\n" ++
-        "  install <name>              Install plugin from registry\n" ++
-        "  publish                     Publish plugin to registry\n" ++
-        "  search <query>              Search plugin registry\n" ++
-        "  info <name>                 Inspect plugin manifest\n" ++
-        "  list                        List installed plugins\n" ++
-        "  update [name]               Update plugins to latest\n" ++
-        "  help                        Show this message\n",
+            "Commands:\n" ++
+            "  build [path] [--out dir]    Build a Phantom.grim plugin\n" ++
+            "  install <name>              Install plugin from registry\n" ++
+            "  publish                     Publish plugin to registry\n" ++
+            "  search <query>              Search plugin registry\n" ++
+            "  info <name>                 Inspect plugin manifest\n" ++
+            "  list                        List installed plugins\n" ++
+            "  update [name]               Update plugins to latest\n" ++
+            "  help                        Show this message\n",
         .{},
     );
 }
@@ -200,7 +200,6 @@ fn writeManifestJson(allocator: std.mem.Allocator, manifest: *const PluginManife
             .conflicts = manifest.conflicts,
         },
     };
-
 
     const rendered = try std.json.Stringify.valueAlloc(allocator, data, .{});
     defer allocator.free(rendered);

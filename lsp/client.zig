@@ -320,9 +320,9 @@ pub const Client = struct {
             self.pending_mutex.lock();
             defer self.pending_mutex.unlock();
             try self.pending_requests.append(self.allocator, .{
-            .id = id,
-            .kind = .hover,
-        });
+                .id = id,
+                .kind = .hover,
+            });
         }
 
         return id;
@@ -362,9 +362,9 @@ pub const Client = struct {
             self.pending_mutex.lock();
             defer self.pending_mutex.unlock();
             try self.pending_requests.append(self.allocator, .{
-            .id = id,
-            .kind = .definition,
-        });
+                .id = id,
+                .kind = .definition,
+            });
         }
 
         return id;

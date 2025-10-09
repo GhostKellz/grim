@@ -5,234 +5,227 @@ const syntax = @import("syntax");
 const Editor = @import("editor.zig").Editor;
 
 pub const Diagnostic = struct {
-test "editor lsp uri to path" {
-    const allocator = std.testing.allocator;
+    test "editor lsp uri to path" {
+        const allocator = std.testing.allocator;
 
-    var editor = try Editor.init(allocator);
-    defer editor.deinit();
+        var editor = try Editor.init(allocator);
+        defer editor.deinit();
 
-    var editor_lsp = try EditorLSP.init(allocator, &editor);
-    defer editor_lsp.deinit();
+        var editor_lsp = try EditorLSP.init(allocator, &editor);
+        defer editor_lsp.deinit();
 
-    const uri = "file:///tmp/sample.zig";
-    const path = try editor_lsp.uriToPath(uri);
-    defer editor_lsp.allocator.free(path);
+        const uri = "file:///tmp/sample.zig";
+        const path = try editor_lsp.uriToPath(uri);
+        defer editor_lsp.allocator.free(path);
 
-    try std.testing.expectEqualStrings("/tmp/sample.zig", path);
-}
+        try std.testing.expectEqualStrings("/tmp/sample.zig", path);
+    }
 
-test "editor lsp offset from position" {
-    const allocator = std.testing.allocator;
+    test "editor lsp offset from position" {
+        const allocator = std.testing.allocator;
 
-    var editor = try Editor.init(allocator);
-    defer editor.deinit();
+        var editor = try Editor.init(allocator);
+        defer editor.deinit();
 
-    try editor.rope.insert(0, "first line\nsecond\n");
+        try editor.rope.insert(0, "first line\nsecond\n");
 
-    var editor_lsp = try EditorLSP.init(allocator, &editor);
-    defer editor_lsp.deinit();
+        var editor_lsp = try EditorLSP.init(allocator, &editor);
+        defer editor_lsp.deinit();
 
-    const offset = editor_lsp.offsetFromPosition(1, 3);
-    try std.testing.expectEqual(@as(usize, 14), offset);
-}
+        const offset = editor_lsp.offsetFromPosition(1, 3);
+        try std.testing.expectEqual(@as(usize, 14), offset);
+    }
 
-test "editor lsp definition result lifecycle" {
-    const allocator = std.testing.allocator;
+    test "editor lsp definition result lifecycle" {
+        const allocator = std.testing.allocator;
 
-    var editor = try Editor.init(allocator);
-    defer editor.deinit();
+        var editor = try Editor.init(allocator);
+        defer editor.deinit();
 
-    var editor_lsp = try EditorLSP.init(allocator, &editor);
-    defer editor_lsp.deinit();
+        var editor_lsp = try EditorLSP.init(allocator, &editor);
+        defer editor_lsp.deinit();
 
-    editor_lsp.storeDefinitionResult("file:///workspace/lib.zig", 2, 4);
+        editor_lsp.storeDefinitionResult("file:///workspace/lib.zig", 2, 4);
 
-    const result = editor_lsp.takeDefinitionResult() orelse {
-        return std.testing.expect(false);
-    };
-    defer editor_lsp.freeDefinitionResult(result);
+        const result = editor_lsp.takeDefinitionResult() orelse {
+            return std.testing.expect(false);
+        };
+        defer editor_lsp.freeDefinitionResult(result);
 
-    try std.testing.expectEqualStrings("/workspace/lib.zig", result.path);
-    try std.testing.expectEqual(@as(u32, 2), result.line);
-    try std.testing.expectEqual(@as(u32, 4), result.character);
-    try std.testing.expect(editor_lsp.takeDefinitionResult() == null);
-}
+        try std.testing.expectEqualStrings("/workspace/lib.zig", result.path);
+        try std.testing.expectEqual(@as(u32, 2), result.line);
+        try std.testing.expectEqual(@as(u32, 4), result.character);
+        try std.testing.expect(editor_lsp.takeDefinitionResult() == null);
+    }
 
-test "editor lsp stores and clears diagnostics" {
-    const allocator = std.testing.allocator;
+    test "editor lsp stores and clears diagnostics" {
+        const allocator = std.testing.allocator;
 
-    var editor = try Editor.init(allocator);
-    defer editor.deinit();
+        var editor = try Editor.init(allocator);
+        defer editor.deinit();
 
-    var editor_lsp = try EditorLSP.init(allocator, &editor);
-    defer editor_lsp.deinit();
+        var editor_lsp = try EditorLSP.init(allocator, &editor);
+        defer editor_lsp.deinit();
 
-    const payload =
-        "{\"uri\":\"file:///tmp/sample.zig\",\"diagnostics\":[{"
-        ++ "\"range\":{\"start\":{\"line\":1,\"character\":2},\"end\":{\"line\":1,\"character\":5}},"
-        ++ "\"severity\":1,\"message\":\"oops\",\"source\":\"zls\",\"code\":123}]}";
+        const payload =
+            "{\"uri\":\"file:///tmp/sample.zig\",\"diagnostics\":[{" ++ "\"range\":{\"start\":{\"line\":1,\"character\":2},\"end\":{\"line\":1,\"character\":5}}," ++ "\"severity\":1,\"message\":\"oops\",\"source\":\"zls\",\"code\":123}]}";
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
-    defer parsed.deinit();
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+        defer parsed.deinit();
 
-    try DiagnosticsSink.handle(@as(*anyopaque, @ptrCast(&editor_lsp.diagnostics_sink)), parsed.value);
+        try DiagnosticsSink.handle(@as(*anyopaque, @ptrCast(&editor_lsp.diagnostics_sink)), parsed.value);
 
-    const diagnostics = editor_lsp.getDiagnostics("/tmp/sample.zig") orelse return std.testing.expect(false);
-    try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
-    try std.testing.expectEqual(@as(u32, 1), diagnostics[0].range.start.line);
-    try std.testing.expectEqual(@as(u32, 2), diagnostics[0].range.start.character);
-    try std.testing.expectEqual(Diagnostic.Severity.error_sev, diagnostics[0].severity);
-    try std.testing.expectEqualStrings("oops", diagnostics[0].message);
-    try std.testing.expectEqualStrings("zls", diagnostics[0].source.?);
-    try std.testing.expectEqualStrings("123", diagnostics[0].code.?);
+        const diagnostics = editor_lsp.getDiagnostics("/tmp/sample.zig") orelse return std.testing.expect(false);
+        try std.testing.expectEqual(@as(usize, 1), diagnostics.len);
+        try std.testing.expectEqual(@as(u32, 1), diagnostics[0].range.start.line);
+        try std.testing.expectEqual(@as(u32, 2), diagnostics[0].range.start.character);
+        try std.testing.expectEqual(Diagnostic.Severity.error_sev, diagnostics[0].severity);
+        try std.testing.expectEqualStrings("oops", diagnostics[0].message);
+        try std.testing.expectEqualStrings("zls", diagnostics[0].source.?);
+        try std.testing.expectEqualStrings("123", diagnostics[0].code.?);
 
-    const clear_payload = "{\"uri\":\"file:///tmp/sample.zig\",\"diagnostics\":[]}";
-    const clear_parsed = try std.json.parseFromSlice(std.json.Value, allocator, clear_payload, .{});
-    defer clear_parsed.deinit();
+        const clear_payload = "{\"uri\":\"file:///tmp/sample.zig\",\"diagnostics\":[]}";
+        const clear_parsed = try std.json.parseFromSlice(std.json.Value, allocator, clear_payload, .{});
+        defer clear_parsed.deinit();
 
-    try DiagnosticsSink.handle(@as(*anyopaque, @ptrCast(&editor_lsp.diagnostics_sink)), clear_parsed.value);
+        try DiagnosticsSink.handle(@as(*anyopaque, @ptrCast(&editor_lsp.diagnostics_sink)), clear_parsed.value);
 
-    try std.testing.expect(editor_lsp.getDiagnostics("/tmp/sample.zig") == null);
-}
+        try std.testing.expect(editor_lsp.getDiagnostics("/tmp/sample.zig") == null);
+    }
 
-test "editor lsp detects workspace root with marker" {
-    const allocator = std.testing.allocator;
+    test "editor lsp detects workspace root with marker" {
+        const allocator = std.testing.allocator;
 
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
 
-    try tmp.dir.makeDir("project");
-    try tmp.dir.makeDir("project/src");
-    try tmp.dir.writeFile("project/build.zig", "// root marker");
+        try tmp.dir.makeDir("project");
+        try tmp.dir.makeDir("project/src");
+        try tmp.dir.writeFile("project/build.zig", "// root marker");
 
-    const project_path = try std.fs.path.join(allocator, &[_][]const u8{ tmp.path, "project" });
-    defer allocator.free(project_path);
+        const project_path = try std.fs.path.join(allocator, &[_][]const u8{ tmp.path, "project" });
+        defer allocator.free(project_path);
 
-    const file_path = try std.fs.path.join(allocator, &[_][]const u8{ project_path, "src", "main.zig" });
-    defer allocator.free(file_path);
+        const file_path = try std.fs.path.join(allocator, &[_][]const u8{ project_path, "src", "main.zig" });
+        defer allocator.free(file_path);
 
-    var editor = try Editor.init(allocator);
-    defer editor.deinit();
+        var editor = try Editor.init(allocator);
+        defer editor.deinit();
 
-    var editor_lsp = try EditorLSP.init(allocator, &editor);
-    defer editor_lsp.deinit();
+        var editor_lsp = try EditorLSP.init(allocator, &editor);
+        defer editor_lsp.deinit();
 
-    const root = try editor_lsp.detectWorkspaceRoot(file_path);
-    defer allocator.free(root);
+        const root = try editor_lsp.detectWorkspaceRoot(file_path);
+        defer allocator.free(root);
 
-    try std.testing.expectEqualStrings(project_path, root);
-}
+        try std.testing.expectEqualStrings(project_path, root);
+    }
 
-test "editor lsp detects workspace root fallback" {
-    const allocator = std.testing.allocator;
+    test "editor lsp detects workspace root fallback" {
+        const allocator = std.testing.allocator;
 
-    var tmp = std.testing.tmpDir(.{});
-    defer tmp.cleanup();
+        var tmp = std.testing.tmpDir(.{});
+        defer tmp.cleanup();
 
-    try tmp.dir.makeDir("workspace");
-    try tmp.dir.makeDir("workspace/nested");
+        try tmp.dir.makeDir("workspace");
+        try tmp.dir.makeDir("workspace/nested");
 
-    const nested_dir = try std.fs.path.join(allocator, &[_][]const u8{ tmp.path, "workspace", "nested" });
-    defer allocator.free(nested_dir);
+        const nested_dir = try std.fs.path.join(allocator, &[_][]const u8{ tmp.path, "workspace", "nested" });
+        defer allocator.free(nested_dir);
 
-    const file_path = try std.fs.path.join(allocator, &[_][]const u8{ nested_dir, "file.zig" });
-    defer allocator.free(file_path);
+        const file_path = try std.fs.path.join(allocator, &[_][]const u8{ nested_dir, "file.zig" });
+        defer allocator.free(file_path);
 
-    var editor = try Editor.init(allocator);
-    defer editor.deinit();
+        var editor = try Editor.init(allocator);
+        defer editor.deinit();
 
-    var editor_lsp = try EditorLSP.init(allocator, &editor);
-    defer editor_lsp.deinit();
+        var editor_lsp = try EditorLSP.init(allocator, &editor);
+        defer editor_lsp.deinit();
 
-    const root = try editor_lsp.detectWorkspaceRoot(file_path);
-    defer allocator.free(root);
+        const root = try editor_lsp.detectWorkspaceRoot(file_path);
+        defer allocator.free(root);
 
-    try std.testing.expectEqualStrings(nested_dir, root);
-}
+        try std.testing.expectEqualStrings(nested_dir, root);
+    }
 
-test "editor lsp stores completion items" {
-    const allocator = std.testing.allocator;
+    test "editor lsp stores completion items" {
+        const allocator = std.testing.allocator;
 
-    var editor = try Editor.init(allocator);
-    defer editor.deinit();
+        var editor = try Editor.init(allocator);
+        defer editor.deinit();
 
-    var editor_lsp = try EditorLSP.init(allocator, &editor);
-    defer editor_lsp.deinit();
+        var editor_lsp = try EditorLSP.init(allocator, &editor);
+        defer editor_lsp.deinit();
 
-    const payload =
-        "{\"items\":[{"
-        ++ "\"label\":\"greet\","
-        ++ "\"kind\":3,"
-        ++ "\"detail\":\"fn greet()\","
-        ++ "\"documentation\":\"Greets the user\","
-        ++ "\"insertText\":\"greet()\"" ++ "}]}";
+        const payload =
+            "{\"items\":[{" ++ "\"label\":\"greet\"," ++ "\"kind\":3," ++ "\"detail\":\"fn greet()\"," ++ "\"documentation\":\"Greets the user\"," ++ "\"insertText\":\"greet()\"" ++ "}]}";
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
-    defer parsed.deinit();
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+        defer parsed.deinit();
 
-    editor_lsp.pending_completion = 42;
-    try editor_lsp.processCompletionResponse(.{ .request_id = 42, .result = parsed.value });
+        editor_lsp.pending_completion = 42;
+        try editor_lsp.processCompletionResponse(.{ .request_id = 42, .result = parsed.value });
 
-    const completions = editor_lsp.getCompletions();
-    try std.testing.expectEqual(@as(usize, 1), completions.len);
-    try std.testing.expectEqualStrings("greet", completions[0].label);
-    try std.testing.expectEqual(Completion.CompletionKind.function, completions[0].kind);
-    try std.testing.expectEqualStrings("fn greet()", completions[0].detail.?);
-    try std.testing.expectEqualStrings("Greets the user", completions[0].documentation.?);
-    try std.testing.expectEqualStrings("greet()", completions[0].insert_text.?);
-    try std.testing.expect(editor_lsp.pending_completion == null);
-}
+        const completions = editor_lsp.getCompletions();
+        try std.testing.expectEqual(@as(usize, 1), completions.len);
+        try std.testing.expectEqualStrings("greet", completions[0].label);
+        try std.testing.expectEqual(Completion.CompletionKind.function, completions[0].kind);
+        try std.testing.expectEqualStrings("fn greet()", completions[0].detail.?);
+        try std.testing.expectEqualStrings("Greets the user", completions[0].documentation.?);
+        try std.testing.expectEqualStrings("greet()", completions[0].insert_text.?);
+        try std.testing.expect(editor_lsp.pending_completion == null);
+    }
 
-test "editor lsp ignores stale completion responses" {
-    const allocator = std.testing.allocator;
+    test "editor lsp ignores stale completion responses" {
+        const allocator = std.testing.allocator;
 
-    var editor = try Editor.init(allocator);
-    defer editor.deinit();
+        var editor = try Editor.init(allocator);
+        defer editor.deinit();
 
-    var editor_lsp = try EditorLSP.init(allocator, &editor);
-    defer editor_lsp.deinit();
+        var editor_lsp = try EditorLSP.init(allocator, &editor);
+        defer editor_lsp.deinit();
 
-    const payload = "{\"items\":[]}";
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
-    defer parsed.deinit();
+        const payload = "{\"items\":[]}";
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+        defer parsed.deinit();
 
-    editor_lsp.pending_completion = 7;
-    try editor_lsp.processCompletionResponse(.{ .request_id = 99, .result = parsed.value });
+        editor_lsp.pending_completion = 7;
+        try editor_lsp.processCompletionResponse(.{ .request_id = 99, .result = parsed.value });
 
-    try std.testing.expectEqual(@as(usize, 0), editor_lsp.getCompletions().len);
-    try std.testing.expectEqual(@as(?u32, 7), editor_lsp.pending_completion);
-}
+        try std.testing.expectEqual(@as(usize, 0), editor_lsp.getCompletions().len);
+        try std.testing.expectEqual(@as(?u32, 7), editor_lsp.pending_completion);
+    }
 
-test "editor lsp parses snippet text edit completions" {
-    const allocator = std.testing.allocator;
+    test "editor lsp parses snippet text edit completions" {
+        const allocator = std.testing.allocator;
 
-    var editor = try Editor.init(allocator);
-    defer editor.deinit();
+        var editor = try Editor.init(allocator);
+        defer editor.deinit();
 
-    var editor_lsp = try EditorLSP.init(allocator, &editor);
-    defer editor_lsp.deinit();
+        var editor_lsp = try EditorLSP.init(allocator, &editor);
+        defer editor_lsp.deinit();
 
-    const payload = "{\"items\":[{\"label\":\"wrap\",\"insertTextFormat\":2,\"textEdit\":{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":3}},\"newText\":\"${1:foo}\"}}]}";
+        const payload = "{\"items\":[{\"label\":\"wrap\",\"insertTextFormat\":2,\"textEdit\":{\"range\":{\"start\":{\"line\":0,\"character\":0},\"end\":{\"line\":0,\"character\":3}},\"newText\":\"${1:foo}\"}}]}";
 
-    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
-    defer parsed.deinit();
+        const parsed = try std.json.parseFromSlice(std.json.Value, allocator, payload, .{});
+        defer parsed.deinit();
 
-    editor_lsp.pending_completion = 5;
-    try editor_lsp.processCompletionResponse(.{ .request_id = 5, .result = parsed.value });
+        editor_lsp.pending_completion = 5;
+        try editor_lsp.processCompletionResponse(.{ .request_id = 5, .result = parsed.value });
 
-    const completions = editor_lsp.getCompletions();
-    try std.testing.expectEqual(@as(usize, 1), completions.len);
-    const comp = completions[0];
-    try std.testing.expectEqualStrings("wrap", comp.label);
-    try std.testing.expect(comp.text_edit != null);
-    try std.testing.expectEqual(Completion.InsertTextFormat.snippet, comp.insert_text_format);
-    const edit = comp.text_edit.?;
-    try std.testing.expectEqual(@as(u32, 0), edit.range.start.line);
-    try std.testing.expectEqual(@as(u32, 0), edit.range.start.character);
-    try std.testing.expectEqual(@as(u32, 0), edit.range.end.line);
-    try std.testing.expectEqual(@as(u32, 3), edit.range.end.character);
-    try std.testing.expectEqualStrings("${1:foo}", edit.new_text);
-}
+        const completions = editor_lsp.getCompletions();
+        try std.testing.expectEqual(@as(usize, 1), completions.len);
+        const comp = completions[0];
+        try std.testing.expectEqualStrings("wrap", comp.label);
+        try std.testing.expect(comp.text_edit != null);
+        try std.testing.expectEqual(Completion.InsertTextFormat.snippet, comp.insert_text_format);
+        const edit = comp.text_edit.?;
+        try std.testing.expectEqual(@as(u32, 0), edit.range.start.line);
+        try std.testing.expectEqual(@as(u32, 0), edit.range.start.character);
+        try std.testing.expectEqual(@as(u32, 0), edit.range.end.line);
+        try std.testing.expectEqual(@as(u32, 3), edit.range.end.character);
+        try std.testing.expectEqualStrings("${1:foo}", edit.new_text);
+    }
 
     range: Range,
     severity: Severity,
@@ -362,7 +355,7 @@ pub const EditorLSP = struct {
 
         // Free completions
         self.clearCompletions();
-    self.completions.deinit(self.allocator);
+        self.completions.deinit(self.allocator);
 
         for (self.documents.items) |doc| {
             self.allocator.free(doc.path);
@@ -451,7 +444,7 @@ pub const EditorLSP = struct {
 
     pub fn notifyBufferChange(self: *EditorLSP, path: []const u8) !void {
         var doc = self.getDocument(path) orelse return;
-    const server = try self.getOrStartServer(doc.language, doc.path);
+        const server = try self.getOrStartServer(doc.language, doc.path);
 
         const uri = try self.pathToUri(path);
         defer self.allocator.free(uri);
@@ -473,7 +466,7 @@ pub const EditorLSP = struct {
 
     pub fn notifyFileSaved(self: *EditorLSP, path: []const u8) !void {
         const doc = self.getDocument(path) orelse return;
-    const server = try self.getOrStartServer(doc.language, doc.path);
+        const server = try self.getOrStartServer(doc.language, doc.path);
 
         const uri = try self.pathToUri(path);
         defer self.allocator.free(uri);
@@ -566,8 +559,8 @@ pub const EditorLSP = struct {
             return;
         }
 
-            var list = try std.ArrayList(Diagnostic).initCapacity(self.allocator, 0);
-            errdefer list.deinit(self.allocator);
+        var list = try std.ArrayList(Diagnostic).initCapacity(self.allocator, 0);
+        errdefer list.deinit(self.allocator);
 
         for (diagnostics_node.array.items) |diag_node| {
             if (diag_node != .object) continue;
@@ -626,7 +619,7 @@ pub const EditorLSP = struct {
                 };
             }
 
-                list.append(self.allocator, entry) catch |err| {
+            list.append(self.allocator, entry) catch |err| {
                 self.freeDiagnostic(entry);
                 return err;
             };
@@ -639,7 +632,7 @@ pub const EditorLSP = struct {
             return;
         }
 
-            const diagnostics_slice = try list.toOwnedSlice(self.allocator);
+        const diagnostics_slice = try list.toOwnedSlice(self.allocator);
         errdefer self.freeDiagnosticSlice(diagnostics_slice);
 
         try self.storeDiagnostics(path, diagnostics_slice);
@@ -683,7 +676,7 @@ pub const EditorLSP = struct {
             return;
         }
 
-    const gop = try self.diagnostics.getOrPut(path);
+        const gop = try self.diagnostics.getOrPut(path);
         if (gop.found_existing) {
             self.freeDiagnosticSlice(gop.value_ptr.*);
             self.allocator.free(path);
@@ -784,7 +777,7 @@ pub const EditorLSP = struct {
         const obj = node.object;
 
         const range_node = obj.get("range") orelse return null;
-    const range = parseRange(range_node) orelse return null;
+        const range = parseRange(range_node) orelse return null;
 
         const new_text_node = obj.get("newText") orelse return null;
         if (new_text_node != .string) return null;
@@ -920,9 +913,9 @@ pub const EditorLSP = struct {
 
         const command = self.getServerCommand(language) orelse return error.ServerNotAvailable;
 
-    const root_path = try self.detectWorkspaceRoot(document_path);
-    const root_uri = try self.pathToUri(root_path);
-    self.allocator.free(root_path);
+        const root_path = try self.detectWorkspaceRoot(document_path);
+        const root_uri = try self.pathToUri(root_path);
+        self.allocator.free(root_path);
 
         errdefer self.allocator.free(root_uri);
 
@@ -953,8 +946,8 @@ pub const EditorLSP = struct {
     }
 
     fn detectWorkspaceRoot(self: *EditorLSP, file_path: []const u8) ![]u8 {
-    const absolute_path = try self.makeAbsolutePath(file_path);
-    defer self.allocator.free(absolute_path);
+        const absolute_path = try self.makeAbsolutePath(file_path);
+        defer self.allocator.free(absolute_path);
 
         const start_dir = std.fs.path.dirname(absolute_path) orelse absolute_path;
         var current = try self.allocator.dupe(u8, start_dir);
@@ -987,8 +980,8 @@ pub const EditorLSP = struct {
     }
 
     fn directoryHasRootMarker(dir_path: []const u8) bool {
-    var dir = std.fs.openDirAbsolute(dir_path, .{}) catch return false;
-    defer dir.close();
+        var dir = std.fs.openDirAbsolute(dir_path, .{}) catch return false;
+        defer dir.close();
 
         const markers = workspaceMarkers();
         for (markers) |marker| {
@@ -1199,7 +1192,7 @@ pub const EditorLSP = struct {
     pub fn renderDiagnostics(self: *EditorLSP, path: []const u8, start_line: u32, end_line: u32) ![]DiagnosticRender {
         const diagnostics = self.getDiagnostics(path) orelse return &[_]DiagnosticRender{};
 
-    var renders = try std.ArrayList(DiagnosticRender).initCapacity(self.allocator, 0);
+        var renders = try std.ArrayList(DiagnosticRender).initCapacity(self.allocator, 0);
         errdefer renders.deinit();
 
         for (diagnostics) |diag| {
@@ -1240,8 +1233,8 @@ pub const EditorLSP = struct {
     pub fn filterCompletions(self: *EditorLSP, allocator: std.mem.Allocator, prefix: []const u8) ![]Completion {
         if (prefix.len == 0) return try allocator.dupe(Completion, self.completions.items);
 
-    var filtered = try std.ArrayList(Completion).initCapacity(allocator, 0);
-    errdefer filtered.deinit(allocator);
+        var filtered = try std.ArrayList(Completion).initCapacity(allocator, 0);
+        errdefer filtered.deinit(allocator);
 
         for (self.completions.items) |comp| {
             if (std.mem.startsWith(u8, comp.label, prefix)) {
@@ -1249,7 +1242,7 @@ pub const EditorLSP = struct {
             }
         }
 
-    return filtered.toOwnedSlice(allocator);
+        return filtered.toOwnedSlice(allocator);
     }
 };
 

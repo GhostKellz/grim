@@ -185,7 +185,7 @@ pub const LanguageServer = struct {
             .params = .{},
         };
 
-    const body = try jsonStringifyAlloc(self.allocator, notification);
+        const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -201,7 +201,7 @@ pub const LanguageServer = struct {
 
         self.client.next_id += 1;
 
-    const body = try jsonStringifyAlloc(self.allocator, request);
+        const body = try jsonStringifyAlloc(self.allocator, request);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -214,7 +214,7 @@ pub const LanguageServer = struct {
             .params = null,
         };
 
-    const body = try jsonStringifyAlloc(self.allocator, notification);
+        const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -245,7 +245,7 @@ pub const LanguageServer = struct {
             },
         };
 
-    const body = try jsonStringifyAlloc(self.allocator, notification);
+        const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -264,7 +264,7 @@ pub const LanguageServer = struct {
             },
         };
 
-    const body = try jsonStringifyAlloc(self.allocator, notification);
+        const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -281,7 +281,7 @@ pub const LanguageServer = struct {
             },
         };
 
-    const body = try jsonStringifyAlloc(self.allocator, notification);
+        const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -299,7 +299,7 @@ pub const LanguageServer = struct {
             },
         };
 
-    const body = try jsonStringifyAlloc(self.allocator, notification);
+        const body = try jsonStringifyAlloc(self.allocator, notification);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -343,7 +343,7 @@ pub const LanguageServer = struct {
             },
         };
 
-    const body = try jsonStringifyAlloc(self.allocator, request);
+        const body = try jsonStringifyAlloc(self.allocator, request);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -364,7 +364,7 @@ pub const LanguageServer = struct {
             },
         };
 
-    const body = try jsonStringifyAlloc(self.allocator, request);
+        const body = try jsonStringifyAlloc(self.allocator, request);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);
@@ -385,7 +385,7 @@ pub const LanguageServer = struct {
             },
         };
 
-    const body = try jsonStringifyAlloc(self.allocator, request);
+        const body = try jsonStringifyAlloc(self.allocator, request);
         defer self.allocator.free(body);
 
         try self.sendMessage(body);

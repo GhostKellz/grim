@@ -405,7 +405,7 @@ pub const PluginAPI = struct {
             try self.emitTextInserted(buffer_id, position, text);
         }
 
-    pub fn deleteRange(self: *PluginContext, buffer_id: BufferId, range: core.Range) !void {
+        pub fn deleteRange(self: *PluginContext, buffer_id: BufferId, range: core.Range) !void {
             if (range.len() == 0) return;
             try self.ensureFallbackBuffer(buffer_id);
 
@@ -433,7 +433,7 @@ pub const PluginAPI = struct {
             try self.emitTextDeleted(buffer_id, range.start, range.len());
         }
 
-    pub fn replaceRange(self: *PluginContext, buffer_id: BufferId, range: core.Range, text: []const u8) !void {
+        pub fn replaceRange(self: *PluginContext, buffer_id: BufferId, range: core.Range, text: []const u8) !void {
             try self.deleteRange(buffer_id, range);
             try self.insertText(buffer_id, range.start, text);
         }
@@ -604,7 +604,7 @@ pub const PluginAPI = struct {
             try self.api.editor_context.rope.insert(position, text);
         }
 
-    fn deleteRangeFallback(self: *PluginContext, range: core.Range) !void {
+        fn deleteRangeFallback(self: *PluginContext, range: core.Range) !void {
             try self.api.editor_context.rope.delete(range.start, range.len());
         }
 
@@ -885,157 +885,157 @@ pub const PluginAPI = struct {
     }
 };
 
-    test "PluginContext routes editor bridge callbacks" {
-        const allocator = std.testing.allocator;
+test "PluginContext routes editor bridge callbacks" {
+    const allocator = std.testing.allocator;
 
-        var rope = try core.Rope.init(allocator);
-        defer rope.deinit();
-        try rope.insert(0, "hello");
+    var rope = try core.Rope.init(allocator);
+    defer rope.deinit();
+    try rope.insert(0, "hello");
 
-        var highlighter = syntax.SyntaxHighlighter.init(allocator);
-        defer highlighter.deinit();
+    var highlighter = syntax.SyntaxHighlighter.init(allocator);
+    defer highlighter.deinit();
 
-        var cursor_storage = PluginAPI.EditorContext.CursorPosition{
-            .line = 0,
-            .column = 0,
-            .byte_offset = 0,
-        };
-        var mode_storage = PluginAPI.EditorContext.EditorMode.normal;
-        var selection_start_opt: ?usize = null;
-        var selection_end_opt: ?usize = null;
+    var cursor_storage = PluginAPI.EditorContext.CursorPosition{
+        .line = 0,
+        .column = 0,
+        .byte_offset = 0,
+    };
+    var mode_storage = PluginAPI.EditorContext.EditorMode.normal;
+    var selection_start_opt: ?usize = null;
+    var selection_end_opt: ?usize = null;
 
-        const TestBridge = struct {
-            current_buffer: PluginAPI.BufferId,
-            get_buffer_calls: usize = 0,
-            get_cursor_calls: usize = 0,
-            set_cursor_calls: usize = 0,
-            get_selection_calls: usize = 0,
-            set_selection_calls: usize = 0,
-            set_selection_null_calls: usize = 0,
-            notify_calls: usize = 0,
-            cursor_to_return: PluginAPI.EditorContext.CursorPosition,
-            selection_to_return: ?PluginAPI.EditorContext.SelectionRange = null,
-            last_set_cursor: ?PluginAPI.EditorContext.CursorPosition = null,
-            last_set_selection: ?PluginAPI.EditorContext.SelectionRange = null,
-            last_notify: ?PluginAPI.EditorContext.BufferChange = null,
+    const TestBridge = struct {
+        current_buffer: PluginAPI.BufferId,
+        get_buffer_calls: usize = 0,
+        get_cursor_calls: usize = 0,
+        set_cursor_calls: usize = 0,
+        get_selection_calls: usize = 0,
+        set_selection_calls: usize = 0,
+        set_selection_null_calls: usize = 0,
+        notify_calls: usize = 0,
+        cursor_to_return: PluginAPI.EditorContext.CursorPosition,
+        selection_to_return: ?PluginAPI.EditorContext.SelectionRange = null,
+        last_set_cursor: ?PluginAPI.EditorContext.CursorPosition = null,
+        last_set_selection: ?PluginAPI.EditorContext.SelectionRange = null,
+        last_notify: ?PluginAPI.EditorContext.BufferChange = null,
 
-            fn getCurrentBuffer(ctx: *anyopaque) PluginAPI.BufferId {
-                const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
-                self.get_buffer_calls += 1;
-                return self.current_buffer;
+        fn getCurrentBuffer(ctx: *anyopaque) PluginAPI.BufferId {
+            const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
+            self.get_buffer_calls += 1;
+            return self.current_buffer;
+        }
+
+        fn getCursorPosition(ctx: *anyopaque) PluginAPI.EditorContext.CursorPosition {
+            const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
+            self.get_cursor_calls += 1;
+            return self.cursor_to_return;
+        }
+
+        fn setCursorPosition(ctx: *anyopaque, position: PluginAPI.EditorContext.CursorPosition) anyerror!void {
+            const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
+            self.set_cursor_calls += 1;
+            self.last_set_cursor = position;
+        }
+
+        fn getSelection(ctx: *anyopaque) ?PluginAPI.EditorContext.SelectionRange {
+            const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
+            self.get_selection_calls += 1;
+            return self.selection_to_return;
+        }
+
+        fn setSelection(ctx: *anyopaque, selection: ?PluginAPI.EditorContext.SelectionRange) anyerror!void {
+            const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
+            if (selection) |sel| {
+                self.set_selection_calls += 1;
+                self.last_set_selection = sel;
+            } else {
+                self.set_selection_null_calls += 1;
+                self.last_set_selection = null;
             }
+        }
 
-            fn getCursorPosition(ctx: *anyopaque) PluginAPI.EditorContext.CursorPosition {
-                const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
-                self.get_cursor_calls += 1;
-                return self.cursor_to_return;
-            }
+        fn notifyChange(ctx: *anyopaque, change: PluginAPI.EditorContext.BufferChange) anyerror!void {
+            const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
+            self.notify_calls += 1;
+            self.last_notify = change;
+        }
+    };
 
-            fn setCursorPosition(ctx: *anyopaque, position: PluginAPI.EditorContext.CursorPosition) anyerror!void {
-                const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
-                self.set_cursor_calls += 1;
-                self.last_set_cursor = position;
-            }
+    var bridge_state = TestBridge{
+        .current_buffer = 1,
+        .cursor_to_return = .{ .line = 2, .column = 3, .byte_offset = 4 },
+        .selection_to_return = .{ .start = 1, .end = 3 },
+    };
 
-            fn getSelection(ctx: *anyopaque) ?PluginAPI.EditorContext.SelectionRange {
-                const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
-                self.get_selection_calls += 1;
-                return self.selection_to_return;
-            }
+    var editor_context = PluginAPI.EditorContext{
+        .rope = &rope,
+        .cursor_position = &cursor_storage,
+        .current_mode = &mode_storage,
+        .highlighter = &highlighter,
+        .selection_start = &selection_start_opt,
+        .selection_end = &selection_end_opt,
+        .active_buffer_id = 1,
+        .bridge = .{
+            .ctx = @as(*anyopaque, @ptrCast(&bridge_state)),
+            .getCurrentBuffer = TestBridge.getCurrentBuffer,
+            .getCursorPosition = TestBridge.getCursorPosition,
+            .setCursorPosition = TestBridge.setCursorPosition,
+            .getSelection = TestBridge.getSelection,
+            .setSelection = TestBridge.setSelection,
+            .notifyChange = TestBridge.notifyChange,
+        },
+    };
 
-            fn setSelection(ctx: *anyopaque, selection: ?PluginAPI.EditorContext.SelectionRange) anyerror!void {
-                const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
-                if (selection) |sel| {
-                    self.set_selection_calls += 1;
-                    self.last_set_selection = sel;
-                } else {
-                    self.set_selection_null_calls += 1;
-                    self.last_set_selection = null;
-                }
-            }
+    var plugin_api = PluginAPI.init(allocator, &editor_context);
+    defer plugin_api.deinit();
 
-            fn notifyChange(ctx: *anyopaque, change: PluginAPI.EditorContext.BufferChange) anyerror!void {
-                const self = @as(*@This(), @ptrCast(@alignCast(ctx)));
-                self.notify_calls += 1;
-                self.last_notify = change;
-            }
-        };
+    var plugin_context = PluginAPI.PluginContext{
+        .plugin_id = "test",
+        .api = &plugin_api,
+        .scratch_allocator = allocator,
+        .user_data = null,
+        .current_command = null,
+        .current_keystroke = null,
+        .current_event = null,
+    };
 
-        var bridge_state = TestBridge{
-            .current_buffer = 1,
-            .cursor_to_return = .{ .line = 2, .column = 3, .byte_offset = 4 },
-            .selection_to_return = .{ .start = 1, .end = 3 },
-        };
+    const buffer_id = try plugin_context.getCurrentBuffer();
+    try std.testing.expectEqual(@as(PluginAPI.BufferId, 1), buffer_id);
+    try std.testing.expectEqual(@as(usize, 1), bridge_state.get_buffer_calls);
 
-        var editor_context = PluginAPI.EditorContext{
-            .rope = &rope,
-            .cursor_position = &cursor_storage,
-            .current_mode = &mode_storage,
-            .highlighter = &highlighter,
-            .selection_start = &selection_start_opt,
-            .selection_end = &selection_end_opt,
-            .active_buffer_id = 1,
-            .bridge = .{
-                .ctx = @as(*anyopaque, @ptrCast(&bridge_state)),
-                .getCurrentBuffer = TestBridge.getCurrentBuffer,
-                .getCursorPosition = TestBridge.getCursorPosition,
-                .setCursorPosition = TestBridge.setCursorPosition,
-                .getSelection = TestBridge.getSelection,
-                .setSelection = TestBridge.setSelection,
-                .notifyChange = TestBridge.notifyChange,
-            },
-        };
+    const cursor_from_bridge = plugin_context.getCursorPosition();
+    try std.testing.expectEqual(bridge_state.cursor_to_return, cursor_from_bridge);
+    try std.testing.expectEqual(@as(usize, 1), bridge_state.get_cursor_calls);
 
-        var plugin_api = PluginAPI.init(allocator, &editor_context);
-        defer plugin_api.deinit();
+    try plugin_context.setCursorPosition(.{ .line = 10, .column = 0, .byte_offset = 999 });
+    try std.testing.expectEqual(@as(usize, 1), bridge_state.set_cursor_calls);
+    try std.testing.expectEqual(@as(usize, rope.len()), editor_context.cursor_position.byte_offset);
+    try std.testing.expectEqual(@as(usize, 999), bridge_state.last_set_cursor.?.byte_offset);
 
-        var plugin_context = PluginAPI.PluginContext{
-            .plugin_id = "test",
-            .api = &plugin_api,
-            .scratch_allocator = allocator,
-            .user_data = null,
-            .current_command = null,
-            .current_keystroke = null,
-            .current_event = null,
-        };
+    try plugin_context.setSelectionRange(.{ .start = 20, .end = 5 });
+    try std.testing.expectEqual(@as(usize, 1), bridge_state.set_selection_calls);
+    try std.testing.expectEqual(@as(usize, rope.len()), selection_start_opt.?);
+    try std.testing.expectEqual(@as(usize, rope.len()), selection_end_opt.?);
+    try std.testing.expectEqual(@as(usize, rope.len()), bridge_state.last_set_selection.?.start);
+    try std.testing.expectEqual(@as(usize, rope.len()), bridge_state.last_set_selection.?.end);
 
-        const buffer_id = try plugin_context.getCurrentBuffer();
-        try std.testing.expectEqual(@as(PluginAPI.BufferId, 1), buffer_id);
-        try std.testing.expectEqual(@as(usize, 1), bridge_state.get_buffer_calls);
+    bridge_state.selection_to_return = .{ .start = 2, .end = 4 };
+    const selection_from_bridge = plugin_context.getSelectionRange().?;
+    try std.testing.expectEqual(bridge_state.selection_to_return.?, selection_from_bridge);
+    try std.testing.expectEqual(@as(usize, 1), bridge_state.get_selection_calls);
 
-        const cursor_from_bridge = plugin_context.getCursorPosition();
-        try std.testing.expectEqual(bridge_state.cursor_to_return, cursor_from_bridge);
-        try std.testing.expectEqual(@as(usize, 1), bridge_state.get_cursor_calls);
+    try plugin_context.clearSelection();
+    try std.testing.expect(selection_start_opt == null);
+    try std.testing.expect(selection_end_opt == null);
+    try std.testing.expectEqual(@as(usize, 1), bridge_state.set_selection_null_calls);
 
-        try plugin_context.setCursorPosition(.{ .line = 10, .column = 0, .byte_offset = 999 });
-        try std.testing.expectEqual(@as(usize, 1), bridge_state.set_cursor_calls);
-        try std.testing.expectEqual(@as(usize, rope.len()), editor_context.cursor_position.byte_offset);
-        try std.testing.expectEqual(@as(usize, 999), bridge_state.last_set_cursor.?.byte_offset);
-
-        try plugin_context.setSelectionRange(.{ .start = 20, .end = 5 });
-        try std.testing.expectEqual(@as(usize, 1), bridge_state.set_selection_calls);
-        try std.testing.expectEqual(@as(usize, rope.len()), selection_start_opt.?);
-        try std.testing.expectEqual(@as(usize, rope.len()), selection_end_opt.?);
-        try std.testing.expectEqual(@as(usize, rope.len()), bridge_state.last_set_selection.?.start);
-        try std.testing.expectEqual(@as(usize, rope.len()), bridge_state.last_set_selection.?.end);
-
-        bridge_state.selection_to_return = .{ .start = 2, .end = 4 };
-        const selection_from_bridge = plugin_context.getSelectionRange().?;
-        try std.testing.expectEqual(bridge_state.selection_to_return.?, selection_from_bridge);
-        try std.testing.expectEqual(@as(usize, 1), bridge_state.get_selection_calls);
-
-        try plugin_context.clearSelection();
-        try std.testing.expect(selection_start_opt == null);
-        try std.testing.expect(selection_end_opt == null);
-        try std.testing.expectEqual(@as(usize, 1), bridge_state.set_selection_null_calls);
-
-        const text = "abc";
-        try plugin_context.insertText(1, 0, text);
-        try std.testing.expectEqual(@as(usize, 1), bridge_state.notify_calls);
-        try std.testing.expectEqual(PluginAPI.EditorContext.BufferChangeKind.insert, bridge_state.last_notify.?.kind);
-        try std.testing.expectEqual(@as(usize, text.len), bridge_state.last_notify.?.inserted_len);
-        try std.testing.expectEqual(@as(usize, 0), bridge_state.last_notify.?.range.start);
-        try std.testing.expectEqual(@as(usize, 0), bridge_state.last_notify.?.range.end - bridge_state.last_notify.?.range.start);
-        try std.testing.expectEqual(@as(usize, rope.len()), editor_context.cursor_position.byte_offset);
-        try std.testing.expectEqual(@as(usize, 1), bridge_state.last_notify.?.buffer_id);
-    }
+    const text = "abc";
+    try plugin_context.insertText(1, 0, text);
+    try std.testing.expectEqual(@as(usize, 1), bridge_state.notify_calls);
+    try std.testing.expectEqual(PluginAPI.EditorContext.BufferChangeKind.insert, bridge_state.last_notify.?.kind);
+    try std.testing.expectEqual(@as(usize, text.len), bridge_state.last_notify.?.inserted_len);
+    try std.testing.expectEqual(@as(usize, 0), bridge_state.last_notify.?.range.start);
+    try std.testing.expectEqual(@as(usize, 0), bridge_state.last_notify.?.range.end - bridge_state.last_notify.?.range.start);
+    try std.testing.expectEqual(@as(usize, rope.len()), editor_context.cursor_position.byte_offset);
+    try std.testing.expectEqual(@as(usize, 1), bridge_state.last_notify.?.buffer_id);
+}

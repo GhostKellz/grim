@@ -591,8 +591,8 @@ pub const Editor = struct {
         const identifier = self.features.getIdentifierAtPosition(content, self.cursor.offset) orelse return;
 
         // Find all occurrences of this identifier
-    var occurrences = try std.ArrayList(struct { start: usize, end: usize }).initCapacity(self.allocator, 0);
-    defer occurrences.deinit(self.allocator);
+        var occurrences = try std.ArrayList(struct { start: usize, end: usize }).initCapacity(self.allocator, 0);
+        defer occurrences.deinit(self.allocator);
 
         // Simple text-based search for now (tree-sitter-based would be more accurate)
         var i: usize = 0;

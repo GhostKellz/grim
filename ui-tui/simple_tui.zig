@@ -37,10 +37,10 @@ pub const SimpleTUI = struct {
     completion_dirty: bool,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
-    var command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
-    errdefer command_buffer.deinit(allocator);
-    var completion_prefix = try std.ArrayList(u8).initCapacity(allocator, 0);
-    errdefer completion_prefix.deinit(allocator);
+        var command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
+        errdefer command_buffer.deinit(allocator);
+        var completion_prefix = try std.ArrayList(u8).initCapacity(allocator, 0);
+        errdefer completion_prefix.deinit(allocator);
         const self = try allocator.create(SimpleTUI);
         self.* = .{
             .allocator = allocator,
@@ -116,7 +116,7 @@ pub const SimpleTUI = struct {
         };
 
         try self.editor.loadFile(path);
-    self.closeCompletionPopup();
+        self.closeCompletionPopup();
         self.markHighlightsDirty();
 
         const filename = self.editor.current_filename orelse path;
@@ -304,7 +304,7 @@ pub const SimpleTUI = struct {
 
         const content_width: usize = if (width > 6) width - 6 else 0;
 
-    var diagnostics_entries: []const editor_lsp_mod.Diagnostic = &[_]editor_lsp_mod.Diagnostic{};
+        var diagnostics_entries: []const editor_lsp_mod.Diagnostic = &[_]editor_lsp_mod.Diagnostic{};
         if (self.editor_lsp) |lsp| {
             if (self.editor.current_filename) |filename| {
                 diagnostics_entries = lsp.getDiagnostics(filename) orelse diagnostics_entries;
@@ -376,9 +376,9 @@ pub const SimpleTUI = struct {
             .command => "COMMAND",
         };
 
-    const cursor_line = self.getCursorLine();
-    const cursor_col = self.getCursorColumn();
-    const cursor_diag = selectLineDiagnostic(diagnostics_entries, cursor_line);
+        const cursor_line = self.getCursorLine();
+        const cursor_col = self.getCursorColumn();
+        const cursor_diag = selectLineDiagnostic(diagnostics_entries, cursor_line);
 
         const language = self.editor.getLanguageName();
 
@@ -1615,10 +1615,10 @@ pub const SimpleTUI = struct {
 
     fn applyTextEditCompletion(
         self: *SimpleTUI,
-    edit: editor_lsp_mod.Completion.TextEdit,
-    format: editor_lsp_mod.Completion.InsertTextFormat,
+        edit: editor_lsp_mod.Completion.TextEdit,
+        format: editor_lsp_mod.Completion.InsertTextFormat,
     ) !?SelectionRange {
-    if (self.editor_lsp == null) return null;
+        if (self.editor_lsp == null) return null;
 
         const lsp = self.editor_lsp.?;
         const start_offset = lsp.offsetFromPosition(edit.range.start.line, edit.range.start.character);
@@ -1679,8 +1679,8 @@ pub const SimpleTUI = struct {
     };
 
     fn expandSnippet(self: *SimpleTUI, snippet: []const u8) !SnippetExpansion {
-    var buffer = try std.ArrayList(u8).initCapacity(self.allocator, 0);
-    errdefer buffer.deinit(self.allocator);
+        var buffer = try std.ArrayList(u8).initCapacity(self.allocator, 0);
+        errdefer buffer.deinit(self.allocator);
 
         const PlaceholderInfo = struct {
             id: u32,
@@ -1793,7 +1793,7 @@ pub const SimpleTUI = struct {
         else
             fallback;
 
-    const text = try buffer.toOwnedSlice(self.allocator);
+        const text = try buffer.toOwnedSlice(self.allocator);
         const caret = chosen.offset + chosen.length;
         const selection = if (chosen.length > 0)
             SelectionRange{ .start = chosen.offset, .end = chosen.offset + chosen.length }
@@ -1908,7 +1908,7 @@ pub const SimpleTUI = struct {
     }
 
     const LineDiagnostic = struct {
-    severity: editor_lsp_mod.Diagnostic.Severity,
+        severity: editor_lsp_mod.Diagnostic.Severity,
         message: []const u8,
     };
 
