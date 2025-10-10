@@ -16,6 +16,7 @@ pub const buffer_picker = @import("buffer_picker.zig");
 pub const config_watcher = @import("config_watcher.zig");
 pub const window_manager = @import("window_manager.zig");
 pub const theme_customizer = @import("theme_customizer.zig");
+pub const buffer_sessions = @import("buffer_sessions.zig");
 
 pub const App = app.App;
 pub const Mode = app.Mode;
@@ -39,3 +40,4 @@ pub const BufferPicker = buffer_picker.BufferPicker;
 pub const ConfigWatcher = config_watcher.ConfigWatcher;
 pub const WindowManager = window_manager.WindowManager;
 pub const ThemeCustomizer = theme_customizer.ThemeCustomizer;
+pub const BufferSessions = buffer_sessions.BufferSessions;

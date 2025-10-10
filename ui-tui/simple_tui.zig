@@ -4,6 +4,9 @@ const syntax = @import("syntax");
 const theme_mod = @import("theme.zig");
 const Editor = @import("editor.zig").Editor;
 const editor_lsp_mod = @import("editor_lsp.zig");
+const buffer_manager_mod = @import("buffer_manager.zig");
+const window_manager_mod = @import("window_manager.zig");
+const buffer_picker_mod = @import("buffer_picker.zig");
 
 pub const SimpleTUI = struct {
     allocator: std.mem.Allocator,
@@ -35,6 +38,12 @@ pub const SimpleTUI = struct {
     completion_anchor_offset: ?usize,
     completion_generation_seen: u64,
     completion_dirty: bool,
+    // New integration components
+    buffer_manager: ?*buffer_manager_mod.BufferManager,
+    window_manager: ?*window_manager_mod.WindowManager,
+    buffer_picker: ?*buffer_picker_mod.BufferPicker,
+    buffer_picker_active: bool,
+    window_command_pending: bool,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
         var command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
@@ -72,6 +81,11 @@ pub const SimpleTUI = struct {
             .completion_anchor_offset = null,
             .completion_generation_seen = 0,
             .completion_dirty = false,
+            .buffer_manager = null,
+            .window_manager = null,
+            .buffer_picker = null,
+            .buffer_picker_active = false,
+            .window_command_pending = false,
         };
         return self;
     }
@@ -87,6 +101,18 @@ pub const SimpleTUI = struct {
         }
         if (self.status_message) |msg| {
             self.allocator.free(msg);
+        }
+        if (self.buffer_picker) |picker| {
+            picker.deinit();
+            self.allocator.destroy(picker);
+        }
+        if (self.window_manager) |win_mgr| {
+            win_mgr.deinit();
+            self.allocator.destroy(win_mgr);
+        }
+        if (self.buffer_manager) |buf_mgr| {
+            buf_mgr.deinit();
+            self.allocator.destroy(buf_mgr);
         }
         self.command_buffer.deinit(self.allocator);
         self.theme_registry.deinit();
@@ -568,6 +594,11 @@ pub const SimpleTUI = struct {
     fn handleNormalMode(self: *SimpleTUI, key: u8) !void {
         switch (key) {
             27 => {}, // ESC in normal mode - already in normal
+            2 => self.activateBufferPicker(), // Ctrl+B - buffer picker
+            23 => { // Ctrl+W - window commands
+                self.window_command_pending = true;
+                self.setStatusMessage("Window command (s=split h, v=split v, c=close, h/j/k/l=navigate)");
+            },
             'h' => self.editor.moveCursorLeft(),
             'j' => self.editor.moveCursorDown(),
             'k' => self.editor.moveCursorUp(),
@@ -594,7 +625,14 @@ pub const SimpleTUI = struct {
                 self.switchMode(.insert);
             },
             'x' => try self.editor.deleteChar(),
-            'w' => self.editor.moveWordForward(),
+            'w' => {
+                if (self.window_command_pending) {
+                    self.window_command_pending = false;
+                    self.clearStatusMessage();
+                } else {
+                    self.editor.moveWordForward();
+                }
+            },
             'b' => self.editor.moveWordBackward(),
             '0' => self.editor.moveCursorToLineStart(),
             '$' => self.editor.moveCursorToLineEnd(),
@@ -604,10 +642,33 @@ pub const SimpleTUI = struct {
             'G' => self.editor.moveCursorToEnd(),
             'H' => self.requestLspHover(),
             'D' => self.requestLspDefinition(),
+            's' => {
+                if (self.window_command_pending) {
+                    self.window_command_pending = false;
+                    self.clearStatusMessage();
+                    // 's' means split - next key determines direction
+                    self.setStatusMessage("Split (h=horizontal, v=vertical)");
+                }
+            },
+            'c' => {
+                if (self.window_command_pending) {
+                    self.window_command_pending = false;
+                    self.clearStatusMessage();
+                    self.closeWindow() catch |err| {
+                        std.log.warn("Failed to close window: {}", .{err});
+                        self.setStatusMessage("Cannot close last window");
+                    };
+                }
+            },
             ':' => self.startCommandMode(),
             'v' => self.switchMode(.visual),
             'q' => self.running = false, // Simple quit
-            else => {}, // Ignore unhandled keys
+            else => {
+                if (self.window_command_pending) {
+                    self.window_command_pending = false;
+                    self.clearStatusMessage();
+                }
+            },
         }
     }
 
@@ -2096,6 +2157,39 @@ pub const SimpleTUI = struct {
         while (written < max_width) : (written += 1) {
             try self.stdout.writeAll(" ");
         }
+    }
+
+    // Buffer picker and window management functions
+
+    fn activateBufferPicker(self: *SimpleTUI) void {
+        self.setStatusMessage("Buffer picker: Ctrl+B - not yet implemented");
+        // TODO: Initialize buffer picker if needed
+        // if (self.buffer_picker == null) {
+        //     const buf_mgr = self.buffer_manager orelse return;
+        //     const picker = self.allocator.create(buffer_picker_mod.BufferPicker) catch {
+        //         self.setStatusMessage("Failed to create buffer picker");
+        //         return;
+        //     };
+        //     picker.* = buffer_picker_mod.BufferPicker.init(self.allocator, buf_mgr) catch {
+        //         self.allocator.destroy(picker);
+        //         self.setStatusMessage("Failed to initialize buffer picker");
+        //         return;
+        //     };
+        //     self.buffer_picker = picker;
+        // }
+        // self.buffer_picker_active = true;
+    }
+
+    fn closeWindow(self: *SimpleTUI) !void {
+        _ = self;
+        return error.NotImplemented;
+        // TODO: Implement window closing
+        // if (self.window_manager) |win_mgr| {
+        //     try win_mgr.closeWindow();
+        //     self.setStatusMessage("Window closed");
+        // } else {
+        //     return error.NoWindowManager;
+        // }
     }
 };
 
