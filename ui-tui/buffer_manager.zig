@@ -84,23 +84,24 @@ pub const BufferManager = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator) !BufferManager {
-        var buffers = std.ArrayList(Buffer).init(allocator);
-
         // Create initial buffer
         const initial_buffer = try Buffer.init(allocator, 0);
-        try buffers.append(initial_buffer);
 
-        return BufferManager{
+        var manager = BufferManager{
             .allocator = allocator,
-            .buffers = buffers,
+            .buffers = std.ArrayList(Buffer){},
         };
+
+        try manager.buffers.append(allocator, initial_buffer);
+
+        return manager;
     }
 
     pub fn deinit(self: *BufferManager) void {
         for (self.buffers.items) |*buffer| {
             buffer.deinit(self.allocator);
         }
-        self.buffers.deinit();
+        self.buffers.deinit(self.allocator);
     }
 
     /// Get the currently active buffer
@@ -329,7 +330,9 @@ pub const BufferManager = struct {
 
     fn countLines(self: *BufferManager, rope: *const core.Rope) usize {
         _ = self;
-        const content = rope.slice(.{ .start = 0, .end = rope.len() }) catch return 0;
+        // Cast to mutable for slice operation
+        const mutable_rope: *core.Rope = @constCast(rope);
+        const content = mutable_rope.slice(.{ .start = 0, .end = rope.len() }) catch return 0;
 
         var count: usize = 1;
         for (content) |ch| {

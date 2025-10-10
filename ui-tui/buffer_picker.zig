@@ -26,8 +26,8 @@ pub const BufferPicker = struct {
         return BufferPicker{
             .allocator = allocator,
             .buffer_manager = buffer_manager_ptr,
-            .search_query = std.ArrayList(u8).init(allocator),
-            .filtered_buffers = std.ArrayList(FilteredBuffer).init(allocator),
+            .search_query = std.ArrayList(u8){},
+            .filtered_buffers = std.ArrayList(FilteredBuffer){},
             .selected_index = 0,
             .visible_start = 0,
             .visible_height = 10,
@@ -35,8 +35,8 @@ pub const BufferPicker = struct {
     }
 
     pub fn deinit(self: *BufferPicker) void {
-        self.search_query.deinit();
-        self.filtered_buffers.deinit();
+        self.search_query.deinit(self.allocator);
+        self.filtered_buffers.deinit(self.allocator);
     }
 
     /// Update search query and refresh filtered list
@@ -48,7 +48,7 @@ pub const BufferPicker = struct {
 
     /// Append character to search query
     pub fn appendToQuery(self: *BufferPicker, char: u8) !void {
-        try self.search_query.append(char);
+        try self.search_query.append(self.allocator, char);
         try self.refreshFilteredBuffers();
     }
 
@@ -147,7 +147,7 @@ pub const BufferPicker = struct {
             // If query is empty, show all buffers
             // Otherwise only show matches
             if (query.len == 0 or final_score > 0) {
-                try self.filtered_buffers.append(.{
+                try self.filtered_buffers.append(self.allocator, .{
                     .buffer_id = info.id,
                     .display_name = info.display_name,
                     .file_path = info.file_path,

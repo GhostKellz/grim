@@ -940,7 +940,7 @@ pub const EditorLSP = struct {
             .javascript, .typescript => &[_][]const u8{ "typescript-language-server", "--stdio" },
             .python => &[_][]const u8{"pylsp"},
             .c, .cpp => &[_][]const u8{"clangd"},
-            .ghostlang => &[_][]const u8{"ghostlang-lsp"},
+            .ghostlang => &[_][]const u8{"ghostls"}, // ghostls v0.3.0 LSP server
             else => null,
         };
     }
@@ -1113,6 +1113,10 @@ pub const EditorLSP = struct {
             .onHover = handleHoverCallback,
             .onDefinition = handleDefinitionCallback,
             .onCompletion = handleCompletionCallback,
+            .onSignatureHelp = handleSignatureHelpCallback,
+            .onInlayHints = handleInlayHintsCallback,
+            .onSelectionRange = handleSelectionRangeCallback,
+            .onCodeActions = handleCodeActionsCallback,
         });
     }
 
@@ -1178,6 +1182,38 @@ pub const EditorLSP = struct {
         self.processCompletionResponse(response) catch |err| {
             std.log.warn("Failed to process completion response: {}", .{err});
         };
+    }
+
+    fn handleSignatureHelpCallback(ctx: *anyopaque, response: lsp.SignatureHelpResponse) void {
+        const self = @as(*EditorLSP, @ptrCast(@alignCast(ctx)));
+        _ = self;
+        _ = response;
+        // TODO: Store signature help results for UI rendering
+        std.log.debug("Received signature help response (not yet implemented)", .{});
+    }
+
+    fn handleInlayHintsCallback(ctx: *anyopaque, response: lsp.InlayHintsResponse) void {
+        const self = @as(*EditorLSP, @ptrCast(@alignCast(ctx)));
+        _ = self;
+        _ = response;
+        // TODO: Store inlay hints for inline type annotations
+        std.log.debug("Received inlay hints response (not yet implemented)", .{});
+    }
+
+    fn handleSelectionRangeCallback(ctx: *anyopaque, response: lsp.SelectionRangeResponse) void {
+        const self = @as(*EditorLSP, @ptrCast(@alignCast(ctx)));
+        _ = self;
+        _ = response;
+        // TODO: Store selection range for smart text objects
+        std.log.debug("Received selection range response (not yet implemented)", .{});
+    }
+
+    fn handleCodeActionsCallback(ctx: *anyopaque, response: lsp.CodeActionsResponse) void {
+        const self = @as(*EditorLSP, @ptrCast(@alignCast(ctx)));
+        _ = self;
+        _ = response;
+        // TODO: Store code actions for quick fixes menu
+        std.log.debug("Received code actions response (not yet implemented)", .{});
     }
 
     fn processCompletionResponse(self: *EditorLSP, response: lsp.CompletionResponse) std.mem.Allocator.Error!void {

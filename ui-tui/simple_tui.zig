@@ -2214,11 +2214,7 @@ pub const SimpleTUI = struct {
                 self.setStatusMessage("Failed to create buffer picker");
                 return;
             };
-            picker.* = buffer_picker_mod.BufferPicker.init(self.allocator, buf_mgr) catch {
-                self.allocator.destroy(picker);
-                self.setStatusMessage("Failed to initialize buffer picker");
-                return;
-            };
+            picker.* = buffer_picker_mod.BufferPicker.init(self.allocator, buf_mgr);
             self.buffer_picker = picker;
         }
 

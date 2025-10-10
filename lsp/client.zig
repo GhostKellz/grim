@@ -30,11 +30,35 @@ pub const CompletionResponse = struct {
     result: std.json.Value,
 };
 
+pub const SignatureHelpResponse = struct {
+    request_id: u32,
+    result: std.json.Value,
+};
+
+pub const InlayHintsResponse = struct {
+    request_id: u32,
+    result: std.json.Value,
+};
+
+pub const SelectionRangeResponse = struct {
+    request_id: u32,
+    result: std.json.Value,
+};
+
+pub const CodeActionsResponse = struct {
+    request_id: u32,
+    result: std.json.Value,
+};
+
 pub const ResponseCallback = struct {
     ctx: *anyopaque,
     onHover: ?*const fn (ctx: *anyopaque, response: HoverResponse) void,
     onDefinition: ?*const fn (ctx: *anyopaque, response: DefinitionResponse) void,
     onCompletion: ?*const fn (ctx: *anyopaque, response: CompletionResponse) void,
+    onSignatureHelp: ?*const fn (ctx: *anyopaque, response: SignatureHelpResponse) void,
+    onInlayHints: ?*const fn (ctx: *anyopaque, response: InlayHintsResponse) void,
+    onSelectionRange: ?*const fn (ctx: *anyopaque, response: SelectionRangeResponse) void,
+    onCodeActions: ?*const fn (ctx: *anyopaque, response: CodeActionsResponse) void,
 };
 
 pub const PendingRequest = struct {
@@ -45,6 +69,10 @@ pub const PendingRequest = struct {
         hover,
         definition,
         completion,
+        signature_help,
+        inlay_hints,
+        selection_range,
+        code_actions,
     };
 };
 
@@ -370,6 +398,191 @@ pub const Client = struct {
         return id;
     }
 
+    pub fn requestSignatureHelp(self: *Client, uri: []const u8, line: u32, character: u32) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/signatureHelp",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+                position: struct { line: u32, character: u32 },
+            };
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .position = .{ .line = line, .character = character },
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        // Track pending request for response handling
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
+                .id = id,
+                .kind = .signature_help,
+            });
+        }
+
+        return id;
+    }
+
+    pub fn requestInlayHints(self: *Client, uri: []const u8, start_line: u32, end_line: u32) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/inlayHint",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+                range: struct {
+                    start: struct { line: u32, character: u32 },
+                    end: struct { line: u32, character: u32 },
+                },
+            };
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .range = .{
+                    .start = .{ .line = start_line, .character = 0 },
+                    .end = .{ .line = end_line, .character = 0 },
+                },
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
+                .id = id,
+                .kind = .inlay_hints,
+            });
+        }
+
+        return id;
+    }
+
+    pub fn requestSelectionRange(self: *Client, uri: []const u8, line: u32, character: u32) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/selectionRange",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+                positions: []const struct { line: u32, character: u32 },
+            };
+        };
+
+        const positions = [_]struct { line: u32, character: u32 }{
+            .{ .line = line, .character = character },
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .positions = &positions,
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
+                .id = id,
+                .kind = .selection_range,
+            });
+        }
+
+        return id;
+    }
+
+    pub fn requestCodeActions(self: *Client, uri: []const u8, start_line: u32, start_char: u32, end_line: u32, end_char: u32) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/codeAction",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+                range: struct {
+                    start: struct { line: u32, character: u32 },
+                    end: struct { line: u32, character: u32 },
+                },
+                context: struct {
+                    diagnostics: []const u8 = &[_]u8{},
+                },
+            };
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .range = .{
+                    .start = .{ .line = start_line, .character = start_char },
+                    .end = .{ .line = end_line, .character = end_char },
+                },
+                .context = .{},
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
+                .id = id,
+                .kind = .code_actions,
+            });
+        }
+
+        return id;
+    }
+
     pub fn poll(self: *Client) Error!void {
         const payload = try self.readMessage();
         defer self.allocator.free(payload);
@@ -493,6 +706,10 @@ pub const Client = struct {
             .hover => try self.handleHoverResponse(id, result),
             .definition => try self.handleDefinitionResponse(id, result),
             .completion => try self.handleCompletionResponse(id, result),
+            .signature_help => try self.handleSignatureHelpResponse(id, result),
+            .inlay_hints => try self.handleInlayHintsResponse(id, result),
+            .selection_range => try self.handleSelectionRangeResponse(id, result),
+            .code_actions => try self.handleCodeActionsResponse(id, result),
         }
     }
 
@@ -582,6 +799,54 @@ pub const Client = struct {
         };
 
         callback.onCompletion.?(callback.ctx, response);
+    }
+
+    fn handleSignatureHelpResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        const callback = self.response_callback orelse return;
+        if (callback.onSignatureHelp == null) return;
+
+        const response = SignatureHelpResponse{
+            .request_id = id,
+            .result = result,
+        };
+
+        callback.onSignatureHelp.?(callback.ctx, response);
+    }
+
+    fn handleInlayHintsResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        const callback = self.response_callback orelse return;
+        if (callback.onInlayHints == null) return;
+
+        const response = InlayHintsResponse{
+            .request_id = id,
+            .result = result,
+        };
+
+        callback.onInlayHints.?(callback.ctx, response);
+    }
+
+    fn handleSelectionRangeResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        const callback = self.response_callback orelse return;
+        if (callback.onSelectionRange == null) return;
+
+        const response = SelectionRangeResponse{
+            .request_id = id,
+            .result = result,
+        };
+
+        callback.onSelectionRange.?(callback.ctx, response);
+    }
+
+    fn handleCodeActionsResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        const callback = self.response_callback orelse return;
+        if (callback.onCodeActions == null) return;
+
+        const response = CodeActionsResponse{
+            .request_id = id,
+            .result = result,
+        };
+
+        callback.onCodeActions.?(callback.ctx, response);
     }
 
     fn handleDiagnostics(self: *Client, params: std.json.Value) Error!void {
