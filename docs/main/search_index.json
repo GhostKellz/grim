@@ -1,0 +1,73 @@
+{
+  "version": "1.0",
+  "entries": [
+    {
+      "name": "std",
+      "type": "variable",
+      "file": "src/main.zig",
+      "line": 1,
+      "keywords": ["std", "variable"]
+    },
+    {
+      "name": "grim",
+      "type": "variable",
+      "file": "src/main.zig",
+      "line": 2,
+      "keywords": ["grim", "variable"]
+    },
+    {
+      "name": "runtime",
+      "type": "variable",
+      "file": "src/main.zig",
+      "line": 3,
+      "keywords": ["runtime", "variable"]
+    },
+    {
+      "name": "EditorLSP",
+      "type": "variable",
+      "file": "src/main.zig",
+      "line": 4,
+      "keywords": ["EditorLSP", "variable"]
+    },
+    {
+      "name": "main",
+      "type": "function",
+      "file": "src/main.zig",
+      "line": 6,
+      "signature": "fn() void",
+      "keywords": ["main", "function"]
+    },
+    {
+      "name": "collectPluginDirectories",
+      "type": "function",
+      "file": "src/main.zig",
+      "line": 195,
+      "signature": "fn(, ) void",
+      "keywords": ["collectPluginDirectories", "function"]
+    },
+    {
+      "name": "appendPath",
+      "type": "function",
+      "file": "src/main.zig",
+      "line": 208,
+      "signature": "fn(, path: [, ) void",
+      "keywords": ["appendPath", "function"]
+    },
+    {
+      "name": "appendJoinedPath",
+      "type": "function",
+      "file": "src/main.zig",
+      "line": 216,
+      "signature": "fn(, parts: [, ) void",
+      "keywords": ["appendJoinedPath", "function"]
+    },
+    {
+      "name": "cleanupDiscoveredPlugins",
+      "type": "function",
+      "file": "src/main.zig",
+      "line": 224,
+      "signature": "fn(manager: *, plugins: [, ) void",
+      "keywords": ["cleanupDiscoveredPlugins", "function"]
+    }
+  ]
+}

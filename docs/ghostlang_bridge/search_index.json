@@ -1,0 +1,47 @@
+{
+  "version": "1.0",
+  "entries": [
+    {
+      "name": "std",
+      "type": "variable",
+      "file": "src/ghostlang_bridge.zig",
+      "line": 1,
+      "keywords": ["std", "variable"]
+    },
+    {
+      "name": "core",
+      "type": "variable",
+      "file": "src/ghostlang_bridge.zig",
+      "line": 2,
+      "keywords": ["core", "variable"]
+    },
+    {
+      "name": "syntax",
+      "type": "variable",
+      "file": "src/ghostlang_bridge.zig",
+      "line": 3,
+      "keywords": ["syntax", "variable"]
+    },
+    {
+      "name": "ui_tui",
+      "type": "variable",
+      "file": "src/ghostlang_bridge.zig",
+      "line": 4,
+      "keywords": ["ui_tui", "variable"]
+    },
+    {
+      "name": "Theme",
+      "type": "variable",
+      "file": "src/ghostlang_bridge.zig",
+      "line": 5,
+      "keywords": ["Theme", "variable"]
+    },
+    {
+      "name": "GhostlangBridge",
+      "type": "struct",
+      "file": "src/ghostlang_bridge.zig",
+      "line": 9,
+      "keywords": ["GhostlangBridge", "struct"]
+    }
+  ]
+}

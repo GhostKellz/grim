@@ -1,0 +1,78 @@
+{
+  "version": "1.0",
+  "entries": [
+    {
+      "name": "std",
+      "type": "variable",
+      "file": "src/root.zig",
+      "line": 2,
+      "description": "By convention, root.zig is the root source file when making a library.",
+      "keywords": ["std", "variable", "convention", "root", "zig", "the", "root", "source", "file", "when", "making", "library"]
+    },
+    {
+      "name": "core",
+      "type": "variable",
+      "file": "src/root.zig",
+      "line": 4,
+      "keywords": ["core", "variable"]
+    },
+    {
+      "name": "ui_tui",
+      "type": "variable",
+      "file": "src/root.zig",
+      "line": 6,
+      "keywords": ["ui_tui", "variable"]
+    },
+    {
+      "name": "ui",
+      "type": "struct",
+      "file": "src/root.zig",
+      "line": 7,
+      "keywords": ["ui", "struct"]
+    },
+    {
+      "name": "host",
+      "type": "variable",
+      "file": "src/root.zig",
+      "line": 11,
+      "keywords": ["host", "variable"]
+    },
+    {
+      "name": "lsp",
+      "type": "variable",
+      "file": "src/root.zig",
+      "line": 13,
+      "keywords": ["lsp", "variable"]
+    },
+    {
+      "name": "runtime",
+      "type": "variable",
+      "file": "src/root.zig",
+      "line": 15,
+      "keywords": ["runtime", "variable"]
+    },
+    {
+      "name": "syntax",
+      "type": "variable",
+      "file": "src/root.zig",
+      "line": 17,
+      "keywords": ["syntax", "variable"]
+    },
+    {
+      "name": "bufferedPrint",
+      "type": "function",
+      "file": "src/root.zig",
+      "line": 19,
+      "signature": "fn() void",
+      "keywords": ["bufferedPrint", "function"]
+    },
+    {
+      "name": "add",
+      "type": "function",
+      "file": "src/root.zig",
+      "line": 32,
+      "signature": "fn(i32, i32) i32",
+      "keywords": ["add", "function"]
+    }
+  ]
+}
