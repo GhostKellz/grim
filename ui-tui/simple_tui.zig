@@ -550,6 +550,12 @@ pub const SimpleTUI = struct {
                 else => {},
             }
 
+            // Buffer picker mode takes precedence
+            if (self.buffer_picker_active) {
+                try self.handleBufferPickerInput(key);
+                return;
+            }
+
             // Mode-specific commands
             switch (self.editor.mode) {
                 .normal => try self.handleNormalMode(key),
@@ -646,8 +652,20 @@ pub const SimpleTUI = struct {
                 if (self.window_command_pending) {
                     self.window_command_pending = false;
                     self.clearStatusMessage();
-                    // 's' means split - next key determines direction
-                    self.setStatusMessage("Split (h=horizontal, v=vertical)");
+                    self.splitWindow(.horizontal) catch |err| {
+                        std.log.warn("Failed to split window: {}", .{err});
+                    };
+                }
+            },
+            'v' => {
+                if (self.window_command_pending) {
+                    self.window_command_pending = false;
+                    self.clearStatusMessage();
+                    self.splitWindow(.vertical) catch |err| {
+                        std.log.warn("Failed to split window: {}", .{err});
+                    };
+                } else {
+                    self.switchMode(.visual);
                 }
             },
             'c' => {
@@ -660,9 +678,22 @@ pub const SimpleTUI = struct {
                     };
                 }
             },
-            ':' => self.startCommandMode(),
-            'v' => self.switchMode(.visual),
-            'q' => self.running = false, // Simple quit
+            ':' => {
+                if (self.window_command_pending) {
+                    self.window_command_pending = false;
+                    self.clearStatusMessage();
+                } else {
+                    self.startCommandMode();
+                }
+            },
+            'q' => {
+                if (self.window_command_pending) {
+                    self.window_command_pending = false;
+                    self.clearStatusMessage();
+                } else {
+                    self.running = false;
+                }
+            },
             else => {
                 if (self.window_command_pending) {
                     self.window_command_pending = false;
@@ -2162,34 +2193,144 @@ pub const SimpleTUI = struct {
     // Buffer picker and window management functions
 
     fn activateBufferPicker(self: *SimpleTUI) void {
-        self.setStatusMessage("Buffer picker: Ctrl+B - not yet implemented");
-        // TODO: Initialize buffer picker if needed
-        // if (self.buffer_picker == null) {
-        //     const buf_mgr = self.buffer_manager orelse return;
-        //     const picker = self.allocator.create(buffer_picker_mod.BufferPicker) catch {
-        //         self.setStatusMessage("Failed to create buffer picker");
-        //         return;
-        //     };
-        //     picker.* = buffer_picker_mod.BufferPicker.init(self.allocator, buf_mgr) catch {
-        //         self.allocator.destroy(picker);
-        //         self.setStatusMessage("Failed to initialize buffer picker");
-        //         return;
-        //     };
-        //     self.buffer_picker = picker;
-        // }
-        // self.buffer_picker_active = true;
+        // Initialize buffer manager if needed
+        if (self.buffer_manager == null) {
+            const buf_mgr = self.allocator.create(buffer_manager_mod.BufferManager) catch {
+                self.setStatusMessage("Failed to create buffer manager");
+                return;
+            };
+            buf_mgr.* = buffer_manager_mod.BufferManager.init(self.allocator) catch {
+                self.allocator.destroy(buf_mgr);
+                self.setStatusMessage("Failed to initialize buffer manager");
+                return;
+            };
+            self.buffer_manager = buf_mgr;
+        }
+
+        // Initialize buffer picker if needed
+        if (self.buffer_picker == null) {
+            const buf_mgr = self.buffer_manager.?;
+            const picker = self.allocator.create(buffer_picker_mod.BufferPicker) catch {
+                self.setStatusMessage("Failed to create buffer picker");
+                return;
+            };
+            picker.* = buffer_picker_mod.BufferPicker.init(self.allocator, buf_mgr) catch {
+                self.allocator.destroy(picker);
+                self.setStatusMessage("Failed to initialize buffer picker");
+                return;
+            };
+            self.buffer_picker = picker;
+        }
+
+        self.buffer_picker_active = true;
+        self.setStatusMessage("Buffer picker active (ESC to cancel, Enter to select)");
+    }
+
+    fn handleBufferPickerInput(self: *SimpleTUI, key: u8) !void {
+        const picker = self.buffer_picker orelse return;
+
+        switch (key) {
+            27 => { // ESC
+                self.buffer_picker_active = false;
+                self.clearStatusMessage();
+            },
+            13 => { // Enter
+                if (picker.getSelectedBuffer()) |selected_id| {
+                    self.buffer_picker_active = false;
+                    self.clearStatusMessage();
+                    // Switch to selected buffer
+                    if (self.buffer_manager) |buf_mgr| {
+                        buf_mgr.switchToBuffer(selected_id) catch |err| {
+                            std.log.warn("Failed to switch buffer: {}", .{err});
+                            self.setStatusMessage("Failed to switch buffer");
+                        };
+                    }
+                }
+            },
+            8, 127 => { // Backspace
+                picker.backspace();
+            },
+            else => {
+                if (key >= 32 and key < 127) { // Printable ASCII
+                    picker.addChar(key) catch |err| {
+                        std.log.warn("Buffer picker input error: {}", .{err});
+                    };
+                }
+            },
+        }
     }
 
     fn closeWindow(self: *SimpleTUI) !void {
-        _ = self;
-        return error.NotImplemented;
-        // TODO: Implement window closing
-        // if (self.window_manager) |win_mgr| {
-        //     try win_mgr.closeWindow();
-        //     self.setStatusMessage("Window closed");
-        // } else {
-        //     return error.NoWindowManager;
-        // }
+        if (self.window_manager) |win_mgr| {
+            win_mgr.closeWindow() catch |err| {
+                switch (err) {
+                    error.CannotCloseLastWindow => {
+                        self.setStatusMessage("Cannot close last window");
+                        return;
+                    },
+                    else => return err,
+                }
+            };
+            self.setStatusMessage("Window closed");
+        } else {
+            self.setStatusMessage("No window manager active");
+        }
+    }
+
+    fn splitWindow(self: *SimpleTUI, direction: window_manager_mod.WindowManager.SplitDirection) !void {
+        // Initialize buffer manager if needed
+        if (self.buffer_manager == null) {
+            const buf_mgr = self.allocator.create(buffer_manager_mod.BufferManager) catch {
+                self.setStatusMessage("Failed to create buffer manager");
+                return;
+            };
+            buf_mgr.* = buffer_manager_mod.BufferManager.init(self.allocator) catch {
+                self.allocator.destroy(buf_mgr);
+                self.setStatusMessage("Failed to initialize buffer manager");
+                return;
+            };
+            self.buffer_manager = buf_mgr;
+        }
+
+        // Initialize window manager if needed
+        if (self.window_manager == null) {
+            const buf_mgr = self.buffer_manager.?;
+            const win_mgr = self.allocator.create(window_manager_mod.WindowManager) catch {
+                self.setStatusMessage("Failed to create window manager");
+                return;
+            };
+            win_mgr.* = window_manager_mod.WindowManager.init(self.allocator, buf_mgr) catch {
+                self.allocator.destroy(win_mgr);
+                self.setStatusMessage("Failed to initialize window manager");
+                return;
+            };
+            self.window_manager = win_mgr;
+        }
+
+        const win_mgr = self.window_manager.?;
+        win_mgr.splitWindow(direction) catch |err| {
+            std.log.warn("Failed to split window: {}", .{err});
+            self.setStatusMessage("Failed to split window");
+            return;
+        };
+
+        const dir_name = if (direction == .horizontal) "horizontal" else "vertical";
+        var msg_buf: [64]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "Split {s}", .{dir_name}) catch "Split complete";
+        self.setStatusMessage(msg);
+    }
+
+    fn navigateWindow(self: *SimpleTUI, direction: window_manager_mod.WindowManager.Direction) !void {
+        if (self.window_manager) |win_mgr| {
+            win_mgr.navigateWindow(direction) catch |err| {
+                std.log.warn("Failed to navigate window: {}", .{err});
+                self.setStatusMessage("Navigation failed");
+                return;
+            };
+            self.setStatusMessage("Window navigated");
+        } else {
+            self.setStatusMessage("No window manager active");
+        }
     }
 };
 
