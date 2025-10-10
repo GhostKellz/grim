@@ -99,6 +99,8 @@ pub const SyntaxHighlights = struct {
         start_line: u32,
         end_line: u32,
     ) !void {
+        _ = start_line;
+        _ = end_line;
         // For now, re-highlight entire buffer
         // TODO: Implement incremental parsing with Grove
         try self.applyHighlights(buffer_id, rope);
@@ -209,7 +211,7 @@ test "SyntaxHighlights apply to buffer" {
     try syntax_hl.applyHighlights(1, &rope);
 
     // Verify highlights were added to namespace
-    const ns = syntax_hl.highlight_api.namespaces.get(NAMESPACE_NAME).?;
+    const ns = syntax_hl.highlight_api.namespaces.get("syntax").?;
     try std.testing.expect(ns.highlights.items.len > 0);
 }
 

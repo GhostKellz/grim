@@ -6,6 +6,17 @@ pub const editor_lsp = @import("editor_lsp.zig");
 pub const vim_commands = @import("vim_commands.zig");
 pub const theme = @import("theme.zig");
 
+// New integration modules
+pub const lsp_highlights = @import("lsp_highlights.zig");
+pub const syntax_highlights = @import("syntax_highlights.zig");
+pub const buffer_manager = @import("buffer_manager.zig");
+pub const config = @import("config.zig");
+pub const editor_integration = @import("editor_integration.zig");
+pub const buffer_picker = @import("buffer_picker.zig");
+pub const config_watcher = @import("config_watcher.zig");
+pub const window_manager = @import("window_manager.zig");
+pub const theme_customizer = @import("theme_customizer.zig");
+
 pub const App = app.App;
 pub const Mode = app.Mode;
 pub const Command = app.Command;
@@ -17,3 +28,14 @@ pub const EditorLSP = editor_lsp.EditorLSP;
 pub const VimEngine = vim_commands.VimEngine;
 pub const Theme = theme.Theme;
 pub const Color = theme.Color;
+
+// New exports
+pub const LSPHighlights = lsp_highlights.LSPHighlights;
+pub const SyntaxHighlights = syntax_highlights.SyntaxHighlights;
+pub const BufferManager = buffer_manager.BufferManager;
+pub const Config = config.Config;
+pub const EditorIntegration = editor_integration.EditorIntegration;
+pub const BufferPicker = buffer_picker.BufferPicker;
+pub const ConfigWatcher = config_watcher.ConfigWatcher;
+pub const WindowManager = window_manager.WindowManager;
+pub const ThemeCustomizer = theme_customizer.ThemeCustomizer;
