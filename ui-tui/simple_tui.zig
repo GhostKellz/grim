@@ -2235,7 +2235,7 @@ pub const SimpleTUI = struct {
                 self.clearStatusMessage();
             },
             13 => { // Enter
-                if (picker.getSelectedBuffer()) |selected_id| {
+                if (picker.getSelectedBufferId()) |selected_id| {
                     self.buffer_picker_active = false;
                     self.clearStatusMessage();
                     // Switch to selected buffer
@@ -2248,11 +2248,11 @@ pub const SimpleTUI = struct {
                 }
             },
             8, 127 => { // Backspace
-                picker.backspace();
+                picker.backspaceQuery() catch {};
             },
             else => {
                 if (key >= 32 and key < 127) { // Printable ASCII
-                    picker.addChar(key) catch |err| {
+                    picker.appendToQuery(key) catch |err| {
                         std.log.warn("Buffer picker input error: {}", .{err});
                     };
                 }
