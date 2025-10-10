@@ -292,6 +292,57 @@ pub const Completion = struct {
     };
 };
 
+// Ghostls v0.3.0 Data Structures
+pub const SignatureHelp = struct {
+    active_signature: u32,
+    active_parameter: u32,
+    signatures: []SignatureInfo,
+
+    pub const SignatureInfo = struct {
+        label: []const u8,
+        documentation: ?[]const u8,
+        parameters: []ParameterInfo,
+
+        pub const ParameterInfo = struct {
+            label: []const u8,
+            documentation: ?[]const u8,
+        };
+    };
+};
+
+pub const InlayHint = struct {
+    position: Diagnostic.Position,
+    label: []const u8,
+    kind: HintKind,
+    tooltip: ?[]const u8,
+
+    pub const HintKind = enum {
+        type,
+        parameter,
+    };
+};
+
+pub const SelectionRange = struct {
+    range: Diagnostic.Range,
+    parent: ?*SelectionRange,
+};
+
+pub const CodeAction = struct {
+    title: []const u8,
+    kind: []const u8,
+    is_preferred: bool,
+    edit: ?WorkspaceEdit,
+
+    pub const WorkspaceEdit = struct {
+        changes: std.StringHashMap([]TextEdit),
+
+        pub const TextEdit = struct {
+            range: Diagnostic.Range,
+            new_text: []const u8,
+        };
+    };
+};
+
 pub const EditorLSP = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
@@ -306,6 +357,12 @@ pub const EditorLSP = struct {
     current_file: ?[]const u8,
     language: ?syntax.Language,
     diagnostics_sink: DiagnosticsSink,
+    // Ghostls v0.3.0 features
+    signature_help: ?SignatureHelp,
+    inlay_hints: std.ArrayList(InlayHint),
+    inlay_hints_enabled: bool,
+    selection_ranges: std.ArrayList(SelectionRange),
+    code_actions: std.ArrayList(CodeAction),
 
     pub const Error = lsp.LanguageServer.Error || std.mem.Allocator.Error;
 
@@ -337,6 +394,12 @@ pub const EditorLSP = struct {
             .current_file = null,
             .language = null,
             .diagnostics_sink = undefined,
+            // Ghostls v0.3.0 features
+            .signature_help = null,
+            .inlay_hints = std.ArrayList(InlayHint).empty,
+            .inlay_hints_enabled = true,
+            .selection_ranges = std.ArrayList(SelectionRange).empty,
+            .code_actions = std.ArrayList(CodeAction).empty,
         };
         self.diagnostics_sink = DiagnosticsSink.init(self);
         return self;
@@ -365,6 +428,15 @@ pub const EditorLSP = struct {
         if (self.hover_info) |info| self.allocator.free(info);
         if (self.pending_definition) |def| self.allocator.free(def.path);
         if (self.current_file) |path| self.allocator.free(path);
+
+        // Free ghostls v0.3.0 features
+        self.clearSignatureHelp();
+        self.clearInlayHints();
+        self.inlay_hints.deinit(self.allocator);
+        self.clearSelectionRanges();
+        self.selection_ranges.deinit(self.allocator);
+        self.clearCodeActions();
+        self.code_actions.deinit(self.allocator);
 
         self.allocator.destroy(self);
     }
@@ -509,6 +581,49 @@ pub const EditorLSP = struct {
 
         const position = lsp.LanguageServer.Position{ .line = line, .character = character };
         _ = try server.requestDefinition(uri, position);
+    }
+
+    pub fn requestSignatureHelp(self: *EditorLSP, path: []const u8, line: u32, character: u32) !void {
+        if (self.language == null) return;
+
+        const server = self.server_registry.getServer(@tagName(self.language.?)) orelse return;
+
+        const uri = try self.pathToUri(path);
+        defer self.allocator.free(uri);
+
+        const position = lsp.LanguageServer.Position{ .line = line, .character = character };
+        _ = try server.requestSignatureHelp(uri, position);
+    }
+
+    pub fn requestInlayHints(self: *EditorLSP, path: []const u8, start_line: u32, end_line: u32) !void {
+        if (self.language == null) return;
+        if (!self.inlay_hints_enabled) return;
+
+        const server = self.server_registry.getServer(@tagName(self.language.?)) orelse return;
+
+        const uri = try self.pathToUri(path);
+        defer self.allocator.free(uri);
+
+        const range = lsp.LanguageServer.Range{
+            .start = .{ .line = start_line, .character = 0 },
+            .end = .{ .line = end_line, .character = 0 },
+        };
+        _ = try server.requestInlayHints(uri, range);
+    }
+
+    pub fn requestCodeActions(self: *EditorLSP, path: []const u8, start_line: u32, end_line: u32) !void {
+        if (self.language == null) return;
+
+        const server = self.server_registry.getServer(@tagName(self.language.?)) orelse return;
+
+        const uri = try self.pathToUri(path);
+        defer self.allocator.free(uri);
+
+        const range = lsp.LanguageServer.Range{
+            .start = .{ .line = start_line, .character = 0 },
+            .end = .{ .line = end_line, .character = 0 },
+        };
+        _ = try server.requestCodeActions(uri, range);
     }
 
     pub fn getDiagnostics(self: *EditorLSP, path: []const u8) ?[]const Diagnostic {
@@ -727,6 +842,71 @@ pub const EditorLSP = struct {
 
     pub fn getCompletionGeneration(self: *EditorLSP) u64 {
         return self.completion_generation;
+    }
+
+    // Ghostls v0.3.0 cleanup helpers
+    fn clearSignatureHelp(self: *EditorLSP) void {
+        if (self.signature_help) |sig_help| {
+            self.freeSignatureHelp(sig_help);
+            self.signature_help = null;
+        }
+    }
+
+    fn freeSignatureHelp(self: *EditorLSP, sig_help: SignatureHelp) void {
+        for (sig_help.signatures) |sig| {
+            self.allocator.free(sig.label);
+            if (sig.documentation) |doc| self.allocator.free(doc);
+            for (sig.parameters) |param| {
+                self.allocator.free(param.label);
+                if (param.documentation) |doc| self.allocator.free(doc);
+            }
+            self.allocator.free(sig.parameters);
+        }
+        self.allocator.free(sig_help.signatures);
+    }
+
+    fn clearInlayHints(self: *EditorLSP) void {
+        for (self.inlay_hints.items) |hint| {
+            self.freeInlayHint(hint);
+        }
+        self.inlay_hints.clearRetainingCapacity();
+    }
+
+    fn freeInlayHint(self: *EditorLSP, hint: InlayHint) void {
+        self.allocator.free(hint.label);
+        if (hint.tooltip) |tip| self.allocator.free(tip);
+    }
+
+    fn clearSelectionRanges(self: *EditorLSP) void {
+        for (self.selection_ranges.items) |_| {
+            // SelectionRange only contains stack values, no heap allocations
+        }
+        self.selection_ranges.clearRetainingCapacity();
+    }
+
+    fn clearCodeActions(self: *EditorLSP) void {
+        for (self.code_actions.items) |action| {
+            self.freeCodeAction(action);
+        }
+        self.code_actions.clearRetainingCapacity();
+    }
+
+    fn freeCodeAction(self: *EditorLSP, action: CodeAction) void {
+        self.allocator.free(action.title);
+        self.allocator.free(action.kind);
+        if (action.edit) |edit| {
+            // Need to make a mutable copy to deinit the HashMap
+            var mutable_edit = edit;
+            var iter = mutable_edit.changes.iterator();
+            while (iter.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                for (entry.value_ptr.*) |text_edit| {
+                    self.allocator.free(text_edit.new_text);
+                }
+                self.allocator.free(entry.value_ptr.*);
+            }
+            mutable_edit.changes.deinit();
+        }
     }
 
     fn extractDocumentationText(node: std.json.Value) ?[]const u8 {
@@ -1186,34 +1366,30 @@ pub const EditorLSP = struct {
 
     fn handleSignatureHelpCallback(ctx: *anyopaque, response: lsp.SignatureHelpResponse) void {
         const self = @as(*EditorLSP, @ptrCast(@alignCast(ctx)));
-        _ = self;
-        _ = response;
-        // TODO: Store signature help results for UI rendering
-        std.log.debug("Received signature help response (not yet implemented)", .{});
+        self.storeSignatureHelp(response.result) catch |err| {
+            std.log.warn("Failed to process signature help response: {}", .{err});
+        };
     }
 
     fn handleInlayHintsCallback(ctx: *anyopaque, response: lsp.InlayHintsResponse) void {
         const self = @as(*EditorLSP, @ptrCast(@alignCast(ctx)));
-        _ = self;
-        _ = response;
-        // TODO: Store inlay hints for inline type annotations
-        std.log.debug("Received inlay hints response (not yet implemented)", .{});
+        self.storeInlayHints(response.result) catch |err| {
+            std.log.warn("Failed to process inlay hints response: {}", .{err});
+        };
     }
 
     fn handleSelectionRangeCallback(ctx: *anyopaque, response: lsp.SelectionRangeResponse) void {
         const self = @as(*EditorLSP, @ptrCast(@alignCast(ctx)));
-        _ = self;
-        _ = response;
-        // TODO: Store selection range for smart text objects
-        std.log.debug("Received selection range response (not yet implemented)", .{});
+        self.storeSelectionRanges(response.result) catch |err| {
+            std.log.warn("Failed to process selection range response: {}", .{err});
+        };
     }
 
     fn handleCodeActionsCallback(ctx: *anyopaque, response: lsp.CodeActionsResponse) void {
         const self = @as(*EditorLSP, @ptrCast(@alignCast(ctx)));
-        _ = self;
-        _ = response;
-        // TODO: Store code actions for quick fixes menu
-        std.log.debug("Received code actions response (not yet implemented)", .{});
+        self.storeCodeActions(response.result) catch |err| {
+            std.log.warn("Failed to process code actions response: {}", .{err});
+        };
     }
 
     fn processCompletionResponse(self: *EditorLSP, response: lsp.CompletionResponse) std.mem.Allocator.Error!void {
@@ -1222,6 +1398,181 @@ pub const EditorLSP = struct {
 
         defer self.pending_completion = null;
         try self.storeCompletionsFromValue(response.result);
+    }
+
+    // Ghostls v0.3.0 response parsers
+    fn storeSignatureHelp(self: *EditorLSP, value: std.json.Value) !void {
+        self.clearSignatureHelp();
+
+        if (value != .object) return;
+        const obj = value.object;
+
+        const sigs_node = obj.get("signatures") orelse return;
+        if (sigs_node != .array) return;
+
+        const active_sig = if (obj.get("activeSignature")) |node|
+            if (node == .integer) @as(u32, @intCast(@max(0, @min(node.integer, std.math.maxInt(u32))))) else 0
+        else 0;
+
+        const active_param = if (obj.get("activeParameter")) |node|
+            if (node == .integer) @as(u32, @intCast(@max(0, @min(node.integer, std.math.maxInt(u32))))) else 0
+        else 0;
+
+        var signatures = std.ArrayList(SignatureHelp.SignatureInfo){};
+        defer signatures.deinit(self.allocator);
+
+        for (sigs_node.array.items) |sig_node| {
+            if (sig_node != .object) continue;
+            const sig_obj = sig_node.object;
+
+            const label_node = sig_obj.get("label") orelse continue;
+            if (label_node != .string) continue;
+
+            const label = try self.allocator.dupe(u8, label_node.string);
+            errdefer self.allocator.free(label);
+
+            const doc = if (sig_obj.get("documentation")) |doc_node|
+                if (extractDocumentationText(doc_node)) |text|
+                    try self.allocator.dupe(u8, text)
+                else null
+            else null;
+
+            var params = std.ArrayList(SignatureHelp.SignatureInfo.ParameterInfo){};
+            defer params.deinit(self.allocator);
+
+            if (sig_obj.get("parameters")) |params_node| {
+                if (params_node == .array) {
+                    for (params_node.array.items) |param_node| {
+                        if (param_node != .object) continue;
+                        const param_obj = param_node.object;
+
+                        const param_label_node = param_obj.get("label") orelse continue;
+                        const param_label = if (param_label_node == .string)
+                            try self.allocator.dupe(u8, param_label_node.string)
+                        else continue;
+                        errdefer self.allocator.free(param_label);
+
+                        const param_doc = if (param_obj.get("documentation")) |pdoc_node|
+                            if (extractDocumentationText(pdoc_node)) |ptext|
+                                try self.allocator.dupe(u8, ptext)
+                            else null
+                        else null;
+
+                        try params.append(self.allocator, .{
+                            .label = param_label,
+                            .documentation = param_doc,
+                        });
+                    }
+                }
+            }
+
+            try signatures.append(self.allocator, .{
+                .label = label,
+                .documentation = doc,
+                .parameters = try params.toOwnedSlice(self.allocator),
+            });
+        }
+
+        if (signatures.items.len > 0) {
+            self.signature_help = .{
+                .active_signature = active_sig,
+                .active_parameter = active_param,
+                .signatures = try signatures.toOwnedSlice(self.allocator),
+            };
+        }
+    }
+
+    fn storeInlayHints(self: *EditorLSP, value: std.json.Value) !void {
+        self.clearInlayHints();
+
+        if (value != .array) return;
+
+        for (value.array.items) |hint_node| {
+            if (hint_node != .object) continue;
+            const hint_obj = hint_node.object;
+
+            const pos_node = hint_obj.get("position") orelse continue;
+            const position = parsePosition(pos_node);
+
+            const label_node = hint_obj.get("label") orelse continue;
+            if (label_node != .string) continue;
+            const label = try self.allocator.dupe(u8, label_node.string);
+            errdefer self.allocator.free(label);
+
+            const kind: InlayHint.HintKind = if (hint_obj.get("kind")) |kind_node|
+                if (kind_node == .integer)
+                    if (kind_node.integer == 1) .type else .parameter
+                else .type
+            else .type;
+
+            const tooltip = if (hint_obj.get("tooltip")) |tip_node|
+                if (tip_node == .string)
+                    try self.allocator.dupe(u8, tip_node.string)
+                else null
+            else null;
+
+            try self.inlay_hints.append(self.allocator, .{
+                .position = position,
+                .label = label,
+                .kind = kind,
+                .tooltip = tooltip,
+            });
+        }
+    }
+
+    fn storeSelectionRanges(self: *EditorLSP, value: std.json.Value) !void {
+        self.clearSelectionRanges();
+
+        if (value != .object) return;
+        const obj = value.object;
+
+        const range_node = obj.get("range") orelse return;
+        const range = parseRange(range_node) orelse return;
+
+        try self.selection_ranges.append(self.allocator, .{
+            .range = range,
+            .parent = null, // Note: parent parsing would require recursive structure
+        });
+    }
+
+    fn storeCodeActions(self: *EditorLSP, value: std.json.Value) !void {
+        self.clearCodeActions();
+
+        if (value != .array) return;
+
+        for (value.array.items) |action_node| {
+            if (action_node != .object) continue;
+            const action_obj = action_node.object;
+
+            const title_node = action_obj.get("title") orelse continue;
+            if (title_node != .string) continue;
+            const title = try self.allocator.dupe(u8, title_node.string);
+            errdefer self.allocator.free(title);
+
+            const kind_node = action_obj.get("kind") orelse {
+                self.allocator.free(title);
+                continue;
+            };
+            if (kind_node != .string) {
+                self.allocator.free(title);
+                continue;
+            }
+            const kind = try self.allocator.dupe(u8, kind_node.string);
+            errdefer self.allocator.free(kind);
+
+            const is_preferred = if (action_obj.get("isPreferred")) |pref_node|
+                if (pref_node == .bool) pref_node.bool else false
+            else false;
+
+            const edit: ?CodeAction.WorkspaceEdit = null; // Simplified: full edit parsing is complex
+
+            try self.code_actions.append(self.allocator, .{
+                .title = title,
+                .kind = kind,
+                .is_preferred = is_preferred,
+                .edit = edit,
+            });
+        }
     }
 
     // Diagnostic rendering utilities

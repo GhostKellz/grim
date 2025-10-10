@@ -7,6 +7,7 @@ const editor_lsp_mod = @import("editor_lsp.zig");
 const buffer_manager_mod = @import("buffer_manager.zig");
 const window_manager_mod = @import("window_manager.zig");
 const buffer_picker_mod = @import("buffer_picker.zig");
+const font_manager_mod = @import("font_manager.zig");
 
 pub const SimpleTUI = struct {
     allocator: std.mem.Allocator,
@@ -38,12 +39,21 @@ pub const SimpleTUI = struct {
     completion_anchor_offset: ?usize,
     completion_generation_seen: u64,
     completion_dirty: bool,
+    // Signature help popup
+    signature_help_active: bool,
+    signature_help_last_offset: ?usize,
+    // Code actions menu
+    code_actions_active: bool,
+    code_actions_selected: usize,
     // New integration components
     buffer_manager: ?*buffer_manager_mod.BufferManager,
     window_manager: ?*window_manager_mod.WindowManager,
     buffer_picker: ?*buffer_picker_mod.BufferPicker,
     buffer_picker_active: bool,
     window_command_pending: bool,
+    // Font Manager for Nerd Font icons
+    font_manager: font_manager_mod.FontManager,
+    enable_nerd_fonts: bool,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
         var command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
@@ -81,11 +91,17 @@ pub const SimpleTUI = struct {
             .completion_anchor_offset = null,
             .completion_generation_seen = 0,
             .completion_dirty = false,
+            .signature_help_active = false,
+            .signature_help_last_offset = null,
+            .code_actions_active = false,
+            .code_actions_selected = 0,
             .buffer_manager = null,
             .window_manager = null,
             .buffer_picker = null,
             .buffer_picker_active = false,
             .window_command_pending = false,
+            .enable_nerd_fonts = true, // Enable Nerd Fonts by default
+            .font_manager = font_manager_mod.FontManager.init(allocator, true),
         };
         return self;
     }
@@ -116,6 +132,7 @@ pub const SimpleTUI = struct {
         }
         self.command_buffer.deinit(self.allocator);
         self.theme_registry.deinit();
+        self.font_manager.deinit();
         self.editor.deinit();
         self.allocator.destroy(self);
     }
@@ -372,6 +389,9 @@ pub const SimpleTUI = struct {
         }
 
         try self.renderCompletionBar(width, height);
+        try self.renderSignatureHelpPopup(width, height);
+        try self.renderCodeActionsMenu(width, height);
+        try self.renderBufferPicker(width, height);
 
         // Status line
         try self.setCursor(height, 1);
@@ -395,12 +415,13 @@ pub const SimpleTUI = struct {
             try self.stdout.writeAll(fg_seq);
         }
 
-        const mode_str = switch (self.editor.mode) {
-            .normal => "NORMAL",
-            .insert => "INSERT",
-            .visual => "VISUAL",
-            .command => "COMMAND",
+        const mode_enum = switch (self.editor.mode) {
+            .normal => font_manager_mod.FontManager.Mode.normal,
+            .insert => font_manager_mod.FontManager.Mode.insert,
+            .visual => font_manager_mod.FontManager.Mode.visual,
+            .command => font_manager_mod.FontManager.Mode.command,
         };
+        const mode_str = self.font_manager.getModeIcon(mode_enum);
 
         const cursor_line = self.getCursorLine();
         const cursor_col = self.getCursorColumn();
@@ -408,11 +429,24 @@ pub const SimpleTUI = struct {
 
         const language = self.editor.getLanguageName();
 
+        // Get icons
+        const line_icon = self.font_manager.getLineNumberIcon();
+        const col_icon = self.font_manager.getColumnIcon();
+
+        // Get LSP status icon
+        const lsp_icon = if (self.editor_lsp != null)
+            self.font_manager.getLspActiveIcon()
+        else
+            self.font_manager.getLspInactiveIcon();
+
         var status_buf: [512]u8 = undefined;
         var status_len: usize = 0;
-        const base_slice = try std.fmt.bufPrint(status_buf[status_len..], " {s} | {d},{d} | {d} bytes | {s}", .{
+        const base_slice = try std.fmt.bufPrint(status_buf[status_len..], " {s} {s} {s}{d} {s}{d} | {d} bytes | {s}", .{
             mode_str,
+            lsp_icon,
+            line_icon,
             cursor_line + 1,
+            col_icon,
             cursor_col + 1,
             self.editor.rope.len(),
             language,
@@ -442,10 +476,15 @@ pub const SimpleTUI = struct {
         }
 
         if (cursor_diag) |diag| {
-            const label = severityLabel(diag.severity);
+            const diag_icon = switch (diag.severity) {
+                .error_sev => self.font_manager.getErrorIcon(),
+                .warning => self.font_manager.getWarningIcon(),
+                .information => self.font_manager.getInfoIcon(),
+                .hint => self.font_manager.getHintIcon(),
+            };
             const max_diag_len: usize = 60;
             const trimmed_len = if (diag.message.len > max_diag_len) max_diag_len else diag.message.len;
-            const diag_slice = try std.fmt.bufPrint(status_buf[status_len..], " | {s}: {s}", .{ label, diag.message[0..trimmed_len] });
+            const diag_slice = try std.fmt.bufPrint(status_buf[status_len..], " | {s} {s}", .{ diag_icon, diag.message[0..trimmed_len] });
             status_len += diag_slice.len;
             if (diag.message.len > max_diag_len) {
                 const ellipsis_slice = try std.fmt.bufPrint(status_buf[status_len..], "…", .{});
@@ -456,9 +495,10 @@ pub const SimpleTUI = struct {
         if (self.editor_lsp) |lsp| {
             if (lsp.getHoverInfo()) |hover| {
                 if (hover.len > 0) {
+                    const hover_icon = self.font_manager.getHoverIcon();
                     const max_hover_len: usize = 40;
                     const trimmed_len = if (hover.len > max_hover_len) max_hover_len else hover.len;
-                    const hover_slice = try std.fmt.bufPrint(status_buf[status_len..], " | Hover: {s}", .{hover[0..trimmed_len]});
+                    const hover_slice = try std.fmt.bufPrint(status_buf[status_len..], " | {s} {s}", .{ hover_icon, hover[0..trimmed_len] });
                     status_len += hover_slice.len;
                     if (hover.len > max_hover_len) {
                         const ellipsis_slice = try std.fmt.bufPrint(status_buf[status_len..], "…", .{});
@@ -556,6 +596,12 @@ pub const SimpleTUI = struct {
                 return;
             }
 
+            // Code actions menu takes precedence
+            if (self.code_actions_active) {
+                try self.handleCodeActionsInput(key);
+                return;
+            }
+
             // Mode-specific commands
             switch (self.editor.mode) {
                 .normal => try self.handleNormalMode(key),
@@ -600,7 +646,9 @@ pub const SimpleTUI = struct {
     fn handleNormalMode(self: *SimpleTUI, key: u8) !void {
         switch (key) {
             27 => {}, // ESC in normal mode - already in normal
+            1 => self.triggerCodeActions(), // Ctrl+A - code actions menu
             2 => self.activateBufferPicker(), // Ctrl+B - buffer picker
+            9 => self.toggleInlayHints(), // Ctrl+I (Tab) - toggle inlay hints
             23 => { // Ctrl+W - window commands
                 self.window_command_pending = true;
                 self.setStatusMessage("Window command (s=split h, v=split v, c=close, h/j/k/l=navigate)");
@@ -750,6 +798,8 @@ pub const SimpleTUI = struct {
                     } else {
                         self.maybeTriggerAutoCompletion(key);
                     }
+                    // Trigger signature help for '(' and ','
+                    self.maybeTriggerSignatureHelp(key);
                 }
             },
         }
@@ -1203,6 +1253,46 @@ pub const SimpleTUI = struct {
         self.setStatusMessage("Definition requested");
     }
 
+    fn triggerCodeActions(self: *SimpleTUI) void {
+        const lsp = self.editor_lsp orelse {
+            self.setStatusMessage("LSP inactive");
+            return;
+        };
+
+        const path = self.editor.current_filename orelse {
+            self.setStatusMessage("No active file");
+            return;
+        };
+
+        const line_idx = self.getCursorLine();
+        const line = std.math.cast(u32, line_idx) orelse std.math.maxInt(u32);
+
+        lsp.requestCodeActions(path, line, line) catch |err| {
+            std.log.warn("Failed to request code actions: {}", .{err});
+            self.setStatusMessage("Code actions request failed");
+            return;
+        };
+
+        self.code_actions_active = true;
+        self.code_actions_selected = 0;
+        self.setStatusMessage("Code actions menu (j/k to navigate, Enter to apply, ESC to cancel)");
+    }
+
+    fn toggleInlayHints(self: *SimpleTUI) void {
+        const lsp = self.editor_lsp orelse {
+            self.setStatusMessage("LSP inactive");
+            return;
+        };
+
+        lsp.inlay_hints_enabled = !lsp.inlay_hints_enabled;
+
+        if (lsp.inlay_hints_enabled) {
+            self.setStatusMessage("Inlay hints enabled");
+        } else {
+            self.setStatusMessage("Inlay hints disabled");
+        }
+    }
+
     fn applyPendingDefinition(self: *SimpleTUI) void {
         const lsp = self.editor_lsp orelse return;
 
@@ -1432,6 +1522,241 @@ pub const SimpleTUI = struct {
         }
     }
 
+    // Signature Help Popup (ghostls v0.3.0)
+    fn renderSignatureHelpPopup(self: *SimpleTUI, width: usize, height: usize) !void {
+        if (!self.signature_help_active) return;
+
+        const lsp = self.editor_lsp orelse return;
+        const sig_help = lsp.signature_help orelse {
+            self.signature_help_active = false;
+            return;
+        };
+
+        if (sig_help.signatures.len == 0) {
+            self.signature_help_active = false;
+            return;
+        }
+
+        // Position: above current line, leaving space for status line
+        const cursor_line = self.getCursorLine();
+        const popup_height: usize = 3; // Label + signature + doc snippet
+        const popup_row = if (cursor_line > popup_height + 1) cursor_line - popup_height else 2;
+
+        // Clear popup area
+        var row = popup_row;
+        var lines_to_clear: usize = popup_height;
+        while (lines_to_clear > 0) : (lines_to_clear -= 1) {
+            try self.clearLineAt(row, width);
+            row += 1;
+        }
+
+        const active_sig_idx = @min(sig_help.active_signature, sig_help.signatures.len - 1);
+        const active_sig = sig_help.signatures[active_sig_idx];
+
+        // Header line
+        try self.setCursor(popup_row, 1);
+        try self.setColor(40, 37); // Dark background, white text
+        var header_buf: [128]u8 = undefined;
+        const header = try std.fmt.bufPrint(&header_buf, " Signature {d}/{d} ", .{ active_sig_idx + 1, sig_help.signatures.len });
+        try self.stdout.writeAll(header[0..@min(header.len, width)]);
+        try self.resetColor();
+
+        // Signature line with parameter highlighting
+        try self.setCursor(popup_row + 1, 1);
+        try self.renderSignatureWithHighlight(active_sig, sig_help.active_parameter, width);
+
+        // Documentation line
+        if (active_sig.documentation) |doc| {
+            try self.setCursor(popup_row + 2, 1);
+            const doc_display = if (doc.len > width) doc[0..width] else doc;
+            try self.stdout.writeAll(doc_display);
+        }
+
+        _ = height; // Suppress unused warning
+    }
+
+    fn renderSignatureWithHighlight(self: *SimpleTUI, sig: editor_lsp_mod.SignatureHelp.SignatureInfo, active_param: u32, width: usize) !void {
+        const label = sig.label;
+
+        // Simple rendering: show full signature
+        // TODO: In future, we could parse the label to find parameter positions and highlight
+        const display_len = @min(label.len, width);
+        try self.stdout.writeAll(label[0..display_len]);
+
+        // If we have parameters and can highlight, show active parameter
+        if (sig.parameters.len > 0 and active_param < sig.parameters.len) {
+            const param = sig.parameters[active_param];
+            // For now, just append parameter hint if space allows
+            if (display_len + param.label.len + 4 < width) {
+                try self.stdout.writeAll("  [");
+                try self.setColor(43, 30); // Yellow background
+                try self.stdout.writeAll(param.label);
+                try self.resetColor();
+                try self.stdout.writeAll("]");
+            }
+        }
+    }
+
+    // Code Actions Menu (ghostls v0.3.0)
+    fn renderCodeActionsMenu(self: *SimpleTUI, width: usize, height: usize) !void {
+        if (!self.code_actions_active) return;
+
+        const lsp = self.editor_lsp orelse return;
+        const actions = lsp.code_actions.items;
+
+        if (actions.len == 0) {
+            self.code_actions_active = false;
+            return;
+        }
+
+        // Ensure selected index is valid
+        if (self.code_actions_selected >= actions.len) {
+            self.code_actions_selected = 0;
+        }
+
+        const menu_height = @min(actions.len + 2, 10); // +2 for header and border
+        const cursor_line = self.getCursorLine();
+        const menu_row = if (cursor_line > menu_height + 1) cursor_line - menu_height else 2;
+
+        // Header
+        try self.setCursor(menu_row, 1);
+        try self.setColor(44, 37); // Blue background, white text
+        var header_buf: [64]u8 = undefined;
+        const header = try std.fmt.bufPrint(&header_buf, " Code Actions ({d}) ", .{actions.len});
+        try self.stdout.writeAll(header[0..@min(header.len, width)]);
+        try self.resetColor();
+
+        // Actions list
+        const visible_actions = @min(actions.len, 8);
+        var row = menu_row + 1;
+        for (actions[0..visible_actions], 0..) |action, i| {
+            try self.setCursor(row, 1);
+
+            if (i == self.code_actions_selected) {
+                try self.setColor(47, 30); // Selected: white bg, black text
+            } else {
+                try self.setColor(40, 37); // Normal: dark bg, white text
+            }
+
+            // Show prefix for preferred actions
+            const prefix = if (action.is_preferred) "> " else "  ";
+            var action_buf: [128]u8 = undefined;
+            const action_text = try std.fmt.bufPrint(&action_buf, "{s}{s}", .{ prefix, action.title });
+            const display = if (action_text.len > width) action_text[0..width] else action_text;
+            try self.stdout.writeAll(display);
+
+            // Pad the rest of the line
+            var pad = if (display.len < width) width - display.len else 0;
+            while (pad > 0) : (pad -= 1) {
+                try self.stdout.writeAll(" ");
+            }
+
+            try self.resetColor();
+            row += 1;
+        }
+
+        _ = height;
+    }
+
+    fn renderBufferPicker(self: *SimpleTUI, width: usize, height: usize) !void {
+        if (!self.buffer_picker_active) return;
+
+        const picker = self.buffer_picker orelse return;
+        const info = picker.getRenderInfo();
+
+        if (info.total_count == 0) {
+            self.buffer_picker_active = false;
+            return;
+        }
+
+        const menu_height = @min(info.visible_items.len + 3, 12); // +3 for header, search bar, border
+        const menu_row: usize = if (height > menu_height + 2) (height - menu_height) / 2 else 2;
+        const menu_width = @min(width - 4, 70);
+
+        // Header
+        try self.setCursor(menu_row, 2);
+        try self.setColor(44, 37); // Blue background, white text
+        const picker_icon = self.font_manager.getBufferPickerIcon();
+        var header_buf: [128]u8 = undefined;
+        const header = try std.fmt.bufPrint(&header_buf, " {s} Buffers ({d}) ", .{ picker_icon, info.total_count });
+        try self.stdout.writeAll(header[0..@min(header.len, menu_width)]);
+        // Pad header
+        if (header.len < menu_width) {
+            var pad = menu_width - header.len;
+            while (pad > 0) : (pad -= 1) {
+                try self.stdout.writeAll(" ");
+            }
+        }
+        try self.resetColor();
+
+        // Search bar
+        try self.setCursor(menu_row + 1, 2);
+        try self.setColor(40, 37);
+        const search_icon = self.font_manager.getSearchIcon();
+        var search_buf: [128]u8 = undefined;
+        const search_text = try std.fmt.bufPrint(&search_buf, " {s} {s}", .{ search_icon, info.query });
+        try self.stdout.writeAll(search_text[0..@min(search_text.len, menu_width)]);
+        // Pad search bar
+        if (search_text.len < menu_width) {
+            var pad = menu_width - search_text.len;
+            while (pad > 0) : (pad -= 1) {
+                try self.stdout.writeAll(" ");
+            }
+        }
+        try self.resetColor();
+
+        // Buffer list
+        var row = menu_row + 2;
+        const visible_count = @min(info.visible_items.len, 8);
+        for (info.visible_items[0..visible_count], 0..) |buffer_item, i| {
+            const is_selected = (info.visible_start + i) == info.selected_index;
+
+            try self.setCursor(row, 2);
+
+            if (is_selected) {
+                try self.setColor(47, 30); // Selected: white bg, black text
+            } else {
+                try self.setColor(40, 37); // Normal: dark bg, white text
+            }
+
+            // Get file type icon
+            const file_icon = if (buffer_item.file_path) |path|
+                self.font_manager.getFileIcon(path)
+            else
+                self.font_manager.getFileIcon("untitled");
+
+            // Modified indicator
+            const modified_icon = if (buffer_item.modified)
+                self.font_manager.getModifiedIcon()
+            else
+                " ";
+
+            // Format buffer line: [icon] [modified] name (lines) language
+            var buffer_buf: [256]u8 = undefined;
+            const buffer_text = try std.fmt.bufPrint(&buffer_buf, " {s} {s} {s} ({d} lines) {s}", .{
+                file_icon,
+                modified_icon,
+                buffer_item.display_name,
+                buffer_item.line_count,
+                buffer_item.language,
+            });
+
+            const display = if (buffer_text.len > menu_width) buffer_text[0..menu_width] else buffer_text;
+            try self.stdout.writeAll(display);
+
+            // Pad the rest of the line
+            if (display.len < menu_width) {
+                var pad = menu_width - display.len;
+                while (pad > 0) : (pad -= 1) {
+                    try self.stdout.writeAll(" ");
+                }
+            }
+
+            try self.resetColor();
+            row += 1;
+        }
+    }
+
     fn showCursor(self: *SimpleTUI) !void {
         try self.stdout.writeAll("\x1B[?25h");
     }
@@ -1627,6 +1952,44 @@ pub const SimpleTUI = struct {
         const lsp = self.editor_lsp orelse return;
         if (!lsp.shouldTriggerCompletion(typed_char)) return;
         self.triggerCompletionRequest();
+    }
+
+    fn maybeTriggerSignatureHelp(self: *SimpleTUI, typed_char: u8) void {
+        // Trigger on '(' or ',' - common signature help triggers
+        if (typed_char != '(' and typed_char != ',') {
+            // Close signature help if typing other characters
+            if (typed_char == ')') {
+                self.signature_help_active = false;
+            }
+            return;
+        }
+
+        const lsp = self.editor_lsp orelse return;
+        const current_file = lsp.current_file orelse return;
+
+        // Calculate line and character from offset
+        const cursor_offset = self.editor.cursor.offset;
+        const content = self.editor.rope.slice(.{ .start = 0, .end = cursor_offset }) catch return;
+        defer self.allocator.free(content);
+
+        var line: u32 = 0;
+        var character: u32 = 0;
+        for (content) |ch| {
+            if (ch == '\n') {
+                line += 1;
+                character = 0;
+            } else {
+                character += 1;
+            }
+        }
+
+        lsp.requestSignatureHelp(current_file, line, character) catch |err| {
+            std.log.warn("Failed to request signature help: {}", .{err});
+            return;
+        };
+
+        self.signature_help_active = true;
+        self.signature_help_last_offset = self.editor.cursor.offset;
     }
 
     fn moveCompletionSelection(self: *SimpleTUI, direction: i32) void {
@@ -2061,12 +2424,85 @@ pub const SimpleTUI = struct {
         }
     }
 
+    fn renderPlainLineWithHints(self: *SimpleTUI, line: []const u8, hints: []const editor_lsp_mod.InlayHint, max_width: usize) !void {
+        if (hints.len == 0) {
+            try self.renderPlainLine(line, max_width);
+            return;
+        }
+
+        var written: usize = 0;
+        var col: usize = 0;
+        var hint_idx: usize = 0;
+
+        while (col < line.len and written < max_width) {
+            // Check if we should insert a hint at this position
+            if (hint_idx < hints.len and hints[hint_idx].position.character == col) {
+                const hint = hints[hint_idx];
+
+                // Render hint with dim color (gray)
+                try self.stdout.writeAll("\x1b[90m"); // ANSI bright black (gray)
+                const hint_display_len = @min(hint.label.len, max_width - written);
+                if (hint_display_len > 0) {
+                    try self.stdout.writeAll(hint.label[0..hint_display_len]);
+                    written += hint_display_len;
+                }
+                try self.resetColor();
+
+                hint_idx += 1;
+                if (written >= max_width) break;
+            }
+
+            // Write the actual character
+            if (written < max_width) {
+                try self.stdout.writeAll(line[col .. col + 1]);
+                written += 1;
+                col += 1;
+            }
+        }
+
+        // Pad remaining width
+        while (written < max_width) : (written += 1) {
+            try self.stdout.writeAll(" ");
+        }
+    }
+
+    // Helper to get inlay hints for a specific line, sorted by character position
+    fn getInlayHintsForLine(self: *SimpleTUI, line_num: usize) []const editor_lsp_mod.InlayHint {
+        const lsp = self.editor_lsp orelse return &[_]editor_lsp_mod.InlayHint{};
+        if (!lsp.inlay_hints_enabled) return &[_]editor_lsp_mod.InlayHint{};
+
+        var hints_for_line = std.ArrayList(editor_lsp_mod.InlayHint){};
+        defer hints_for_line.deinit(self.allocator);
+
+        for (lsp.inlay_hints.items) |hint| {
+            if (hint.position.line == line_num) {
+                hints_for_line.append(self.allocator, hint) catch continue;
+            }
+        }
+
+        // Sort by character position
+        if (hints_for_line.items.len > 0) {
+            std.mem.sort(editor_lsp_mod.InlayHint, hints_for_line.items, {}, struct {
+                fn lessThan(_: void, a: editor_lsp_mod.InlayHint, b: editor_lsp_mod.InlayHint) bool {
+                    return a.position.character < b.position.character;
+                }
+            }.lessThan);
+        }
+
+        // Return owned slice (caller must free)
+        return hints_for_line.toOwnedSlice(self.allocator) catch &[_]editor_lsp_mod.InlayHint{};
+    }
+
     fn renderHighlightedLine(self: *SimpleTUI, line: []const u8, line_num: usize, max_width: usize) !void {
         if (max_width == 0) return;
 
+        // Get inlay hints for this line
+        const hints = self.getInlayHintsForLine(line_num);
+        defer if (hints.len > 0) self.allocator.free(hints);
+
         const line_len = line.len;
         if (self.highlight_cache.len == 0) {
-            try self.renderPlainLine(line, max_width);
+            try self.renderPlainLineWithHints(line, hints, max_width);
             return;
         }
 
@@ -2106,7 +2542,7 @@ pub const SimpleTUI = struct {
         }
 
         if (segments.items.len == 0) {
-            try self.renderPlainLine(line, max_width);
+            try self.renderPlainLineWithHints(line, hints, max_width);
             return;
         }
 
@@ -2126,11 +2562,37 @@ pub const SimpleTUI = struct {
         var col: usize = 0;
         var written: usize = 0;
         var seg_idx: usize = 0;
+        var hint_idx: usize = 0;
         var color_active = false;
         var active_type: ?syntax.HighlightType = null;
         var seq_buf: [32]u8 = undefined;
 
         while (col < line_len and written < max_width) {
+            // Check if we should insert a hint at current column position
+            while (hint_idx < hints.len and hints[hint_idx].position.character == col) {
+                const hint = hints[hint_idx];
+
+                // Reset any active syntax highlighting color
+                if (color_active) {
+                    try self.resetColor();
+                    color_active = false;
+                    active_type = null;
+                }
+
+                // Render hint with dim gray color
+                try self.stdout.writeAll("\x1b[90m");
+                const hint_display_len = @min(hint.label.len, max_width - written);
+                if (hint_display_len > 0) {
+                    try self.stdout.writeAll(hint.label[0..hint_display_len]);
+                    written += hint_display_len;
+                }
+                try self.resetColor();
+
+                hint_idx += 1;
+                if (written >= max_width) break;
+            }
+
+            if (written >= max_width) break;
             while (seg_idx < segments.items.len and segments.items[seg_idx].end <= col) : (seg_idx += 1) {}
 
             var run_type: ?syntax.HighlightType = null;
@@ -2253,6 +2715,41 @@ pub const SimpleTUI = struct {
                     };
                 }
             },
+        }
+    }
+
+    fn handleCodeActionsInput(self: *SimpleTUI, key: u8) !void {
+        const lsp = self.editor_lsp orelse return;
+        const actions = lsp.code_actions.items;
+
+        switch (key) {
+            27 => { // ESC
+                self.code_actions_active = false;
+                self.clearStatusMessage();
+            },
+            13 => { // Enter - apply selected action
+                if (self.code_actions_selected < actions.len) {
+                    const action = actions[self.code_actions_selected];
+                    self.setStatusMessage("Code action not yet implemented"); // TODO: Apply action
+                    std.log.info("Selected code action: {s}", .{action.title});
+                    self.code_actions_active = false;
+                }
+            },
+            'j', 'J' => { // Move down
+                if (actions.len > 0) {
+                    self.code_actions_selected = (self.code_actions_selected + 1) % actions.len;
+                }
+            },
+            'k', 'K' => { // Move up
+                if (actions.len > 0) {
+                    if (self.code_actions_selected == 0) {
+                        self.code_actions_selected = actions.len - 1;
+                    } else {
+                        self.code_actions_selected -= 1;
+                    }
+                }
+            },
+            else => {},
         }
     }
 

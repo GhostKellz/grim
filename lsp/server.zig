@@ -391,6 +391,69 @@ pub const LanguageServer = struct {
         try self.sendMessage(body);
         return id;
     }
+
+    pub fn requestSignatureHelp(self: *LanguageServer, uri: []const u8, position: Position) !u32 {
+        const id = self.client.next_id;
+        self.client.next_id += 1;
+
+        const request = .{
+            .jsonrpc = "2.0",
+            .id = id,
+            .method = "textDocument/signatureHelp",
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .position = position,
+            },
+        };
+
+        const body = try jsonStringifyAlloc(self.allocator, request);
+        defer self.allocator.free(body);
+
+        try self.sendMessage(body);
+        return id;
+    }
+
+    pub fn requestInlayHints(self: *LanguageServer, uri: []const u8, range: Range) !u32 {
+        const id = self.client.next_id;
+        self.client.next_id += 1;
+
+        const request = .{
+            .jsonrpc = "2.0",
+            .id = id,
+            .method = "textDocument/inlayHint",
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .range = range,
+            },
+        };
+
+        const body = try jsonStringifyAlloc(self.allocator, request);
+        defer self.allocator.free(body);
+
+        try self.sendMessage(body);
+        return id;
+    }
+
+    pub fn requestCodeActions(self: *LanguageServer, uri: []const u8, range: Range) !u32 {
+        const id = self.client.next_id;
+        self.client.next_id += 1;
+
+        const request = .{
+            .jsonrpc = "2.0",
+            .id = id,
+            .method = "textDocument/codeAction",
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .range = range,
+            },
+        };
+
+        const body = try jsonStringifyAlloc(self.allocator, request);
+        defer self.allocator.free(body);
+
+        try self.sendMessage(body);
+        return id;
+    }
 };
 
 // Server registry for managing multiple language servers
