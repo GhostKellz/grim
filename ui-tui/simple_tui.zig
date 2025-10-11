@@ -62,6 +62,10 @@ pub const SimpleTUI = struct {
     enable_nerd_fonts: bool,
     // PhantomBuffer mode flag (matches compile-time constant)
     using_phantom_buffers: bool,
+    // Visual block mode
+    visual_block_mode: bool,
+    visual_block_start_line: usize,
+    visual_block_start_column: usize,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
         var command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
@@ -112,6 +116,9 @@ pub const SimpleTUI = struct {
             .enable_nerd_fonts = true, // Enable Nerd Fonts by default
             .font_manager = font_manager_mod.FontManager.init(allocator, true),
             .using_phantom_buffers = use_phantom_buffers,
+            .visual_block_mode = false,
+            .visual_block_start_line = 0,
+            .visual_block_start_column = 0,
         };
 
         // Initialize PhantomBufferManager if enabled
@@ -740,6 +747,9 @@ pub const SimpleTUI = struct {
                     self.switchMode(.visual);
                 }
             },
+            22 => { // Ctrl+V - visual block mode
+                self.enterVisualBlockMode();
+            },
             'c' => {
                 if (self.window_command_pending) {
                     self.window_command_pending = false;
@@ -831,18 +841,43 @@ pub const SimpleTUI = struct {
 
     fn handleVisualMode(self: *SimpleTUI, key: u8) !void {
         switch (key) {
-            27 => self.switchMode(.normal), // ESC
+            27 => { // ESC
+                if (self.visual_block_mode) {
+                    self.exitVisualBlockMode();
+                }
+                self.switchMode(.normal);
+            },
             'h' => self.editor.moveCursorLeft(),
             'j' => self.editor.moveCursorDown(),
             'k' => self.editor.moveCursorUp(),
             'l' => self.editor.moveCursorRight(),
             'd' => {
-                // TODO: Delete selection
+                if (self.visual_block_mode) {
+                    try self.deleteVisualBlock();
+                }
                 self.switchMode(.normal);
             },
             'y' => {
                 // TODO: Yank selection
+                if (self.visual_block_mode) {
+                    self.exitVisualBlockMode();
+                }
                 self.switchMode(.normal);
+            },
+            'I' => { // Insert at start of block
+                if (self.visual_block_mode) {
+                    try self.insertAtVisualBlockStart();
+                }
+            },
+            'A' => { // Append at end of block
+                if (self.visual_block_mode) {
+                    try self.appendAtVisualBlockEnd();
+                }
+            },
+            'c' => { // Change block
+                if (self.visual_block_mode) {
+                    try self.changeVisualBlock();
+                }
             },
             else => {},
         }
@@ -2830,11 +2865,35 @@ pub const SimpleTUI = struct {
 
             var buf: [4]u8 = undefined;
             const len = try std.unicode.utf8Encode(key, &buf);
-            const offset = self.editor.cursor.offset;
 
-            try buffer.phantom_buffer.insertText(offset, buf[0..len]);
+            // Check if multi-cursor is active
+            if (buffer.phantom_buffer.cursor_positions.items.len > 1) {
+                // Multi-cursor insert - insert at all cursor positions
+                // Start from the end to maintain offsets
+                var i = buffer.phantom_buffer.cursor_positions.items.len;
+                var offset_adjustment: usize = 0;
+
+                while (i > 0) {
+                    i -= 1;
+                    const cursor_pos = buffer.phantom_buffer.cursor_positions.items[i];
+                    const insert_offset = cursor_pos.byte_offset + (offset_adjustment * i);
+
+                    try buffer.phantom_buffer.insertText(insert_offset, buf[0..len]);
+
+                    // Update cursor position
+                    buffer.phantom_buffer.cursor_positions.items[i].byte_offset += len;
+                    buffer.phantom_buffer.cursor_positions.items[i].column += len;
+                }
+
+                offset_adjustment = len;
+            } else {
+                // Single cursor insert
+                const offset = self.editor.cursor.offset;
+                try buffer.phantom_buffer.insertText(offset, buf[0..len]);
+                self.editor.cursor.offset = offset + len;
+            }
+
             try self.syncEditorFromPhantomBuffer();
-            self.editor.cursor.offset = offset + len;
         } else {
             try self.editor.insertChar(key);
         }
@@ -2929,6 +2988,190 @@ pub const SimpleTUI = struct {
                 try self.editor.rope.insert(0, content);
             }
         }
+    }
+
+    // Visual Block Mode Functions
+    fn enterVisualBlockMode(self: *SimpleTUI) void {
+        self.visual_block_mode = true;
+        self.switchMode(.visual);
+
+        // Get current line and column
+        const current_line = self.getCurrentLine();
+        const current_column = self.getCurrentColumn();
+
+        self.visual_block_start_line = current_line;
+        self.visual_block_start_column = current_column;
+
+        self.setStatusMessage("-- VISUAL BLOCK --");
+    }
+
+    fn exitVisualBlockMode(self: *SimpleTUI) void {
+        self.visual_block_mode = false;
+
+        // Clear PhantomBuffer secondary cursors if using PhantomBuffer
+        if (self.phantom_buffer_manager) |pbm| {
+            if (pbm.getActiveBuffer()) |buffer| {
+                buffer.phantom_buffer.clearSecondaryCursors();
+            }
+        }
+    }
+
+    fn getCurrentLine(self: *SimpleTUI) usize {
+        const content = self.editor.rope.slice(.{ .start = 0, .end = self.editor.cursor.offset }) catch return 0;
+        var line: usize = 0;
+        for (content) |ch| {
+            if (ch == '\n') line += 1;
+        }
+        return line;
+    }
+
+    fn getCurrentColumn(self: *SimpleTUI) usize {
+        const content = self.editor.rope.slice(.{ .start = 0, .end = self.editor.cursor.offset }) catch return 0;
+        var col: usize = 0;
+        var i = content.len;
+        while (i > 0) : (i -= 1) {
+            if (content[i - 1] == '\n') break;
+            col += 1;
+        }
+        return content.len - (content.len - col);
+    }
+
+    fn getLineStartOffset(self: *SimpleTUI, line: usize) usize {
+        const content = self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() }) catch return 0;
+        var current_line: usize = 0;
+        for (content, 0..) |ch, i| {
+            if (current_line == line) return i;
+            if (ch == '\n') current_line += 1;
+        }
+        return content.len;
+    }
+
+    fn deleteVisualBlock(self: *SimpleTUI) !void {
+        if (self.phantom_buffer_manager == null) {
+            self.setStatusMessage("Visual block requires PhantomBuffer");
+            return;
+        }
+
+        const pbm = self.phantom_buffer_manager.?;
+        const buffer = pbm.getActiveBuffer() orelse return;
+
+        const current_line = self.getCurrentLine();
+        const current_column = self.getCurrentColumn();
+
+        const start_line = @min(self.visual_block_start_line, current_line);
+        const end_line = @max(self.visual_block_start_line, current_line);
+        const start_col = @min(self.visual_block_start_column, current_column);
+        const end_col = @max(self.visual_block_start_column, current_column);
+
+        // Delete from bottom to top to maintain offsets
+        var line = end_line;
+        while (line >= start_line) : (line -= 1) {
+            const line_start = self.getLineStartOffset(line);
+            const delete_start = line_start + start_col;
+            const delete_end = @min(line_start + end_col + 1, self.editor.rope.len());
+
+            if (delete_start < delete_end) {
+                try buffer.phantom_buffer.deleteRange(.{ .start = delete_start, .end = delete_end });
+            }
+
+            if (line == 0) break;
+        }
+
+        try self.syncEditorFromPhantomBuffer();
+        self.exitVisualBlockMode();
+        self.setStatusMessage("Deleted visual block");
+    }
+
+    fn insertAtVisualBlockStart(self: *SimpleTUI) !void {
+        if (self.phantom_buffer_manager == null) {
+            self.setStatusMessage("Visual block requires PhantomBuffer");
+            return;
+        }
+
+        const pbm = self.phantom_buffer_manager.?;
+        const buffer = pbm.getActiveBuffer() orelse return;
+
+        const current_line = self.getCurrentLine();
+        const start_line = @min(self.visual_block_start_line, current_line);
+        const end_line = @max(self.visual_block_start_line, current_line);
+        const insert_col = @min(self.visual_block_start_column, self.getCurrentColumn());
+
+        // Set up multi-cursors at the start of each line in the block
+        buffer.phantom_buffer.clearSecondaryCursors();
+
+        var line = start_line;
+        while (line <= end_line) : (line += 1) {
+            const line_start = self.getLineStartOffset(line);
+            const insert_offset = line_start + insert_col;
+
+            if (line == start_line) {
+                // Update primary cursor
+                buffer.phantom_buffer.setPrimaryCursor(.{
+                    .line = line,
+                    .column = insert_col,
+                    .byte_offset = insert_offset,
+                });
+            } else {
+                // Add secondary cursors
+                try buffer.phantom_buffer.addCursor(.{
+                    .line = line,
+                    .column = insert_col,
+                    .byte_offset = insert_offset,
+                });
+            }
+        }
+
+        self.setStatusMessage("-- VISUAL BLOCK INSERT -- (multi-cursor active)");
+        self.switchMode(.insert);
+    }
+
+    fn appendAtVisualBlockEnd(self: *SimpleTUI) !void {
+        if (self.phantom_buffer_manager == null) {
+            self.setStatusMessage("Visual block requires PhantomBuffer");
+            return;
+        }
+
+        const pbm = self.phantom_buffer_manager.?;
+        const buffer = pbm.getActiveBuffer() orelse return;
+
+        const current_line = self.getCurrentLine();
+        const start_line = @min(self.visual_block_start_line, current_line);
+        const end_line = @max(self.visual_block_start_line, current_line);
+        const append_col = @max(self.visual_block_start_column, self.getCurrentColumn()) + 1;
+
+        // Set up multi-cursors at the end of each line in the block
+        buffer.phantom_buffer.clearSecondaryCursors();
+
+        var line = start_line;
+        while (line <= end_line) : (line += 1) {
+            const line_start = self.getLineStartOffset(line);
+            const insert_offset = line_start + append_col;
+
+            if (line == start_line) {
+                // Update primary cursor
+                buffer.phantom_buffer.setPrimaryCursor(.{
+                    .line = line,
+                    .column = append_col,
+                    .byte_offset = insert_offset,
+                });
+            } else {
+                // Add secondary cursors
+                try buffer.phantom_buffer.addCursor(.{
+                    .line = line,
+                    .column = append_col,
+                    .byte_offset = insert_offset,
+                });
+            }
+        }
+
+        self.setStatusMessage("-- VISUAL BLOCK APPEND -- (multi-cursor active)");
+        self.switchMode(.insert);
+    }
+
+    fn changeVisualBlock(self: *SimpleTUI) !void {
+        // Delete then enter insert mode
+        try self.deleteVisualBlock();
+        try self.insertAtVisualBlockStart();
     }
 
     fn closeWindow(self: *SimpleTUI) !void {

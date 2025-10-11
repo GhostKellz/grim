@@ -93,6 +93,18 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    // Test harness module (optional export for phantom.grim and other projects)
+    const export_test_harness = b.option(bool, "export-test-harness", "Export TestHarness module for external projects") orelse false;
+    const test_harness_mod = if (export_test_harness) b.createModule(.{
+        .root_source_file = b.path("runtime/test_harness.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "runtime", .module = runtime_mod },
+            .{ .name = "core", .module = core_mod },
+        },
+    }) else null;
+
     const lsp_mod = b.createModule(.{
         .root_source_file = b.path("lsp/mod.zig"),
         .target = target,
@@ -146,6 +158,18 @@ pub fn build(b: *std.Build) void {
             .{ .name = "flare", .module = flare.module("flare") },
         },
     });
+
+    // Export TestHarness as a separate module if requested
+    if (export_test_harness and test_harness_mod != null) {
+        _ = b.addModule("test_harness", .{
+            .root_source_file = b.path("runtime/test_harness.zig"),
+            .target = target,
+            .imports = &.{
+                .{ .name = "runtime", .module = runtime_mod },
+                .{ .name = "core", .module = core_mod },
+            },
+        });
+    }
 
     // Here we define an executable. An executable needs to have a root module
     // which needs to expose a `main` function. While we could add a main function
