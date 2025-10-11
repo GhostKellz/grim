@@ -5,9 +5,14 @@ const theme_mod = @import("theme.zig");
 const Editor = @import("editor.zig").Editor;
 const editor_lsp_mod = @import("editor_lsp.zig");
 const buffer_manager_mod = @import("buffer_manager.zig");
+const phantom_buffer_manager_mod = @import("phantom_buffer_manager.zig");
 const window_manager_mod = @import("window_manager.zig");
 const buffer_picker_mod = @import("buffer_picker.zig");
 const font_manager_mod = @import("font_manager.zig");
+
+/// Feature flag: Enable PhantomBuffer with undo/redo and multi-cursor support
+/// Set to false to use legacy Editor-based buffers
+const use_phantom_buffers = true;
 
 pub const SimpleTUI = struct {
     allocator: std.mem.Allocator,
@@ -47,6 +52,7 @@ pub const SimpleTUI = struct {
     code_actions_selected: usize,
     // New integration components
     buffer_manager: ?*buffer_manager_mod.BufferManager,
+    phantom_buffer_manager: ?*phantom_buffer_manager_mod.PhantomBufferManager,
     window_manager: ?*window_manager_mod.WindowManager,
     buffer_picker: ?*buffer_picker_mod.BufferPicker,
     buffer_picker_active: bool,
@@ -54,6 +60,8 @@ pub const SimpleTUI = struct {
     // Font Manager for Nerd Font icons
     font_manager: font_manager_mod.FontManager,
     enable_nerd_fonts: bool,
+    // PhantomBuffer mode flag (matches compile-time constant)
+    using_phantom_buffers: bool,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
         var command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
@@ -96,13 +104,23 @@ pub const SimpleTUI = struct {
             .code_actions_active = false,
             .code_actions_selected = 0,
             .buffer_manager = null,
+            .phantom_buffer_manager = null,
             .window_manager = null,
             .buffer_picker = null,
             .buffer_picker_active = false,
             .window_command_pending = false,
             .enable_nerd_fonts = true, // Enable Nerd Fonts by default
             .font_manager = font_manager_mod.FontManager.init(allocator, true),
+            .using_phantom_buffers = use_phantom_buffers,
         };
+
+        // Initialize PhantomBufferManager if enabled
+        if (use_phantom_buffers) {
+            const pbm = try allocator.create(phantom_buffer_manager_mod.PhantomBufferManager);
+            pbm.* = try phantom_buffer_manager_mod.PhantomBufferManager.init(allocator);
+            self.phantom_buffer_manager = pbm;
+        }
+
         return self;
     }
 
@@ -129,6 +147,10 @@ pub const SimpleTUI = struct {
         if (self.buffer_manager) |buf_mgr| {
             buf_mgr.deinit();
             self.allocator.destroy(buf_mgr);
+        }
+        if (self.phantom_buffer_manager) |pbm| {
+            pbm.deinit();
+            self.allocator.destroy(pbm);
         }
         self.command_buffer.deinit(self.allocator);
         self.theme_registry.deinit();
@@ -671,14 +693,16 @@ pub const SimpleTUI = struct {
                 self.switchMode(.insert);
             },
             'o' => {
-                try self.editor.insertNewlineAfter();
+                try self.insertNewlineAfterWithUndo();
                 self.switchMode(.insert);
             },
             'O' => {
-                try self.editor.insertNewlineBefore();
+                try self.insertNewlineBeforeWithUndo();
                 self.switchMode(.insert);
             },
-            'x' => try self.editor.deleteChar(),
+            'x' => try self.deleteCharWithUndo(),
+            'u' => try self.performUndo(),
+            18 => try self.performRedo(), // Ctrl+R
             'w' => {
                 if (self.window_command_pending) {
                     self.window_command_pending = false;
@@ -756,7 +780,7 @@ pub const SimpleTUI = struct {
             27 => self.switchMode(.normal), // ESC
             0 => self.triggerCompletionRequest(), // Ctrl+Space
             8, 127 => { // Backspace/Delete
-                try self.editor.backspace();
+                try self.backspaceWithUndo();
                 self.afterTextEdit();
                 if (self.completion_popup_active) {
                     self.completion_dirty = true;
@@ -766,7 +790,7 @@ pub const SimpleTUI = struct {
                 if (self.completion_popup_active and self.completion_items.len > 0) {
                     self.moveCompletionSelection(1);
                 } else {
-                    try self.editor.insertChar('\t');
+                    try self.insertCharWithUndo('\t');
                     self.afterTextEdit();
                 }
             },
@@ -774,7 +798,7 @@ pub const SimpleTUI = struct {
                 if (self.completion_popup_active and self.completion_items.len > 0) {
                     try self.acceptCompletionSelection();
                 } else {
-                    try self.editor.insertChar('\n');
+                    try self.insertCharWithUndo('\n');
                     self.afterTextEdit();
                     self.closeCompletionPopup();
                 }
@@ -791,7 +815,7 @@ pub const SimpleTUI = struct {
             },
             else => {
                 if (key >= 32 and key < 127) { // Printable ASCII
-                    try self.editor.insertChar(key);
+                    try self.insertCharWithUndo(key);
                     self.afterTextEdit();
                     if (self.completion_popup_active) {
                         self.completion_dirty = true;
@@ -2750,6 +2774,160 @@ pub const SimpleTUI = struct {
                 }
             },
             else => {},
+        }
+    }
+
+    fn performUndo(self: *SimpleTUI) !void {
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse {
+                self.setStatusMessage("No active buffer");
+                return;
+            };
+
+            buffer.phantom_buffer.undo() catch |err| {
+                switch (err) {
+                    error.NothingToUndo => {
+                        self.setStatusMessage("Already at oldest change");
+                        return;
+                    },
+                    else => return err,
+                }
+            };
+
+            self.setStatusMessage("Undo");
+        } else {
+            self.setStatusMessage("Undo not available (PhantomBuffer not enabled)");
+        }
+    }
+
+    fn performRedo(self: *SimpleTUI) !void {
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse {
+                self.setStatusMessage("No active buffer");
+                return;
+            };
+
+            buffer.phantom_buffer.redo() catch |err| {
+                switch (err) {
+                    error.NothingToRedo => {
+                        self.setStatusMessage("Already at newest change");
+                        return;
+                    },
+                    else => return err,
+                }
+            };
+
+            self.setStatusMessage("Redo");
+        } else {
+            self.setStatusMessage("Redo not available (PhantomBuffer not enabled)");
+        }
+    }
+
+    // PhantomBuffer text operation wrappers
+    fn insertCharWithUndo(self: *SimpleTUI, key: u21) !void {
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse return error.NoActiveBuffer;
+
+            var buf: [4]u8 = undefined;
+            const len = try std.unicode.utf8Encode(key, &buf);
+            const offset = self.editor.cursor.offset;
+
+            try buffer.phantom_buffer.insertText(offset, buf[0..len]);
+            try self.syncEditorFromPhantomBuffer();
+            self.editor.cursor.offset = offset + len;
+        } else {
+            try self.editor.insertChar(key);
+        }
+    }
+
+    fn deleteCharWithUndo(self: *SimpleTUI) !void {
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse return error.NoActiveBuffer;
+            const offset = self.editor.cursor.offset;
+
+            if (offset >= buffer.phantom_buffer.rope.len()) return;
+
+            // Find UTF-8 character length
+            const slice = try buffer.phantom_buffer.rope.slice(.{ .start = offset, .end = buffer.phantom_buffer.rope.len() });
+            var char_len: usize = 1;
+            while (char_len < slice.len and (slice[char_len] & 0xC0) == 0x80) : (char_len += 1) {}
+
+            try buffer.phantom_buffer.deleteRange(.{ .start = offset, .end = offset + char_len });
+            try self.syncEditorFromPhantomBuffer();
+        } else {
+            try self.editor.deleteChar();
+        }
+    }
+
+    fn backspaceWithUndo(self: *SimpleTUI) !void {
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse return error.NoActiveBuffer;
+            const offset = self.editor.cursor.offset;
+
+            if (offset == 0) return;
+
+            // Move cursor left to find character boundary
+            var new_offset = offset - 1;
+            const slice = try buffer.phantom_buffer.rope.slice(.{ .start = 0, .end = offset });
+            while (new_offset > 0 and (slice[new_offset] & 0xC0) == 0x80) : (new_offset -= 1) {}
+
+            try buffer.phantom_buffer.deleteRange(.{ .start = new_offset, .end = offset });
+            try self.syncEditorFromPhantomBuffer();
+            self.editor.cursor.offset = new_offset;
+        } else {
+            try self.editor.backspace();
+        }
+    }
+
+    fn insertNewlineAfterWithUndo(self: *SimpleTUI) !void {
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse return error.NoActiveBuffer;
+
+            // Move to line end
+            self.editor.cursor.moveToLineEnd(&self.editor.rope);
+            const offset = self.editor.cursor.offset;
+
+            try buffer.phantom_buffer.insertText(offset, "\n");
+            try self.syncEditorFromPhantomBuffer();
+            self.editor.cursor.offset = offset + 1;
+        } else {
+            try self.editor.insertNewlineAfter();
+        }
+    }
+
+    fn insertNewlineBeforeWithUndo(self: *SimpleTUI) !void {
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse return error.NoActiveBuffer;
+
+            // Move to line start
+            self.editor.cursor.moveToLineStart(&self.editor.rope);
+            const offset = self.editor.cursor.offset;
+
+            try buffer.phantom_buffer.insertText(offset, "\n");
+            try self.syncEditorFromPhantomBuffer();
+            // Cursor stays at same offset (now on the new line)
+        } else {
+            try self.editor.insertNewlineBefore();
+        }
+    }
+
+    fn syncEditorFromPhantomBuffer(self: *SimpleTUI) !void {
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse return;
+
+            // Clear editor's rope
+            const old_len = self.editor.rope.len();
+            if (old_len > 0) {
+                try self.editor.rope.delete(0, old_len);
+            }
+
+            // Copy content from PhantomBuffer
+            const content = try buffer.phantom_buffer.getContent();
+            defer self.allocator.free(content);
+
+            if (content.len > 0) {
+                try self.editor.rope.insert(0, content);
+            }
         }
     }
 

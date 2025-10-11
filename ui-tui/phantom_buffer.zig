@@ -1,10 +1,8 @@
 const std = @import("std");
-const phantom = @import("phantom");
 const core = @import("core");
-const runtime = @import("runtime");
 
-/// PhantomTUI v0.5.0 Buffer Integration
-/// Uses Phantom's built-in TextEditor widget for high-performance editing
+/// PhantomBuffer - Enhanced buffer with undo/redo and multi-cursor support
+/// Uses rope-based implementation with manual undo/redo stack
 pub const PhantomBuffer = struct {
     allocator: std.mem.Allocator,
     id: u32,
@@ -12,18 +10,19 @@ pub const PhantomBuffer = struct {
     language: Language = .unknown,
     modified: bool = false,
 
-    // Phantom v0.5.0 TextEditor widget (when available)
-    // Falls back to rope-based implementation
-    phantom_editor: ?*phantom.TextEditor = null,
-
-    // Fallback rope buffer (used when phantom TextEditor not available)
+    // Rope buffer
     rope: core.Rope,
+
+    // Undo/redo stacks
+    undo_stack: std.ArrayList(UndoEntry),
+    redo_stack: std.ArrayList(UndoEntry),
+    max_undo_levels: usize = 1000,
+
+    // Multi-cursor support
+    cursor_positions: std.ArrayList(CursorPosition),
 
     // Editor configuration
     config: EditorConfig,
-
-    // Multi-cursor support (synced with phantom or managed manually)
-    cursor_positions: std.ArrayList(CursorPosition),
 
     pub const Language = enum {
         unknown,
@@ -74,7 +73,22 @@ pub const PhantomBuffer = struct {
     pub const BufferOptions = struct {
         config: EditorConfig = .{},
         initial_content: ?[]const u8 = null,
-        use_phantom: bool = true, // Set to false to force rope fallback
+        use_phantom: bool = false, // Reserved for future PhantomTUI integration
+    };
+
+    const UndoEntry = struct {
+        operation: Operation,
+        position: usize,
+        content: []const u8,
+
+        const Operation = enum {
+            insert,
+            delete,
+        };
+
+        fn deinit(self: *UndoEntry, allocator: std.mem.Allocator) void {
+            allocator.free(self.content);
+        }
     };
 
     pub fn init(allocator: std.mem.Allocator, id: u32, options: BufferOptions) !PhantomBuffer {
@@ -85,61 +99,38 @@ pub const PhantomBuffer = struct {
             try rope.insert(0, content);
         }
 
-        var cursor_positions = std.ArrayList(CursorPosition).init(allocator);
-        errdefer cursor_positions.deinit();
+        var cursor_positions = std.ArrayList(CursorPosition){};
+        errdefer cursor_positions.deinit(allocator);
 
         // Initialize with one cursor at (0, 0)
-        try cursor_positions.append(.{ .line = 0, .column = 0, .byte_offset = 0 });
-
-        // Try to initialize Phantom TextEditor widget
-        var phantom_editor: ?*phantom.TextEditor = null;
-        if (options.use_phantom) {
-            phantom_editor = initPhantomEditor(allocator, options.config) catch |err| blk: {
-                std.log.warn("Failed to initialize Phantom TextEditor (falling back to rope): {}", .{err});
-                break :blk null;
-            };
-        }
+        try cursor_positions.append(allocator, .{ .line = 0, .column = 0, .byte_offset = 0 });
 
         return PhantomBuffer{
             .allocator = allocator,
             .id = id,
             .config = options.config,
-            .phantom_editor = phantom_editor,
             .rope = rope,
             .cursor_positions = cursor_positions,
+            .undo_stack = .{},
+            .redo_stack = .{},
         };
-    }
-
-    fn initPhantomEditor(allocator: std.mem.Allocator, config: EditorConfig) !*phantom.TextEditor {
-        // Phantom v0.5.0 TextEditor initialization
-        // This provides:
-        // - Built-in rope buffer
-        // - Undo/redo stack
-        // - Multi-cursor support
-        // - Diagnostic markers
-        // - Code folding
-        const editor_config = phantom.TextEditor.Config{
-            .show_line_numbers = config.show_line_numbers,
-            .relative_line_numbers = config.relative_line_numbers,
-            .tab_size = @intCast(config.tab_size),
-            .use_spaces = config.use_spaces,
-            .enable_ligatures = config.enable_ligatures,
-            .auto_indent = config.auto_indent,
-            .highlight_matching_brackets = config.highlight_matching_brackets,
-            .line_wrap = config.line_wrap,
-        };
-
-        return try phantom.TextEditor.init(allocator, editor_config);
     }
 
     pub fn deinit(self: *PhantomBuffer) void {
-        if (self.phantom_editor) |editor| {
-            editor.deinit();
-            self.allocator.destroy(editor);
-        }
-
         self.rope.deinit();
-        self.cursor_positions.deinit();
+        self.cursor_positions.deinit(self.allocator);
+
+        // Free undo stack
+        for (self.undo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        self.undo_stack.deinit(self.allocator);
+
+        // Free redo stack
+        for (self.redo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        self.redo_stack.deinit(self.allocator);
 
         if (self.file_path) |path| {
             self.allocator.free(path);
@@ -154,17 +145,12 @@ pub const PhantomBuffer = struct {
         const content = try file.readToEndAlloc(self.allocator, 100 * 1024 * 1024); // 100MB max
         defer self.allocator.free(content);
 
-        if (self.phantom_editor) |editor| {
-            // Use Phantom's loadFile if available
-            try editor.loadFile(path);
-        } else {
-            // Fallback: Clear and insert into rope
-            const len = self.rope.len();
-            if (len > 0) {
-                try self.rope.delete(0, len);
-            }
-            try self.rope.insert(0, content);
+        // Clear rope
+        const len = self.rope.len();
+        if (len > 0) {
+            try self.rope.delete(0, len);
         }
+        try self.rope.insert(0, content);
 
         // Set file path
         if (self.file_path) |old_path| {
@@ -175,181 +161,156 @@ pub const PhantomBuffer = struct {
         // Detect language
         self.language = detectLanguage(path);
         self.modified = false;
+
+        // Clear undo/redo on file load
+        self.clearUndoRedo();
     }
 
     /// Save buffer to file
     pub fn saveFile(self: *PhantomBuffer) !void {
         const path = self.file_path orelse return error.NoFilePath;
 
-        if (self.phantom_editor) |editor| {
-            // Use Phantom's saveFile if available
-            try editor.saveFile(path);
-        } else {
-            // Fallback: Save from rope
-            const file = try std.fs.cwd().createFile(path, .{});
-            defer file.close();
+        const file = try std.fs.cwd().createFile(path, .{});
+        defer file.close();
 
-            const content = try self.rope.copyRangeAlloc(self.allocator, .{ .start = 0, .end = self.rope.len() });
-            defer self.allocator.free(content);
+        const content = try self.rope.copyRangeAlloc(self.allocator, .{ .start = 0, .end = self.rope.len() });
+        defer self.allocator.free(content);
 
-            try file.writeAll(content);
-        }
+        try file.writeAll(content);
 
         self.modified = false;
     }
 
     /// Insert text at position
     pub fn insertText(self: *PhantomBuffer, position: usize, text: []const u8) !void {
-        if (self.phantom_editor) |editor| {
-            // Phantom automatically handles undo/redo
-            try editor.insertText(position, text);
-        } else {
-            // Fallback rope implementation
-            try self.rope.insert(position, text);
-        }
+        // Record undo entry
+        try self.recordUndo(.{
+            .operation = .insert,
+            .position = position,
+            .content = try self.allocator.dupe(u8, text),
+        });
+
+        try self.rope.insert(position, text);
         self.modified = true;
+
+        // Clear redo stack on new operation
+        self.clearRedoStack();
     }
 
     /// Delete range
     pub fn deleteRange(self: *PhantomBuffer, range: core.Range) !void {
-        if (self.phantom_editor) |editor| {
-            try editor.deleteRange(range.start, range.len());
-        } else {
-            try self.rope.delete(range.start, range.len());
-        }
+        // Get content before deletion for undo
+        const deleted_content = try self.rope.copyRangeAlloc(self.allocator, range);
+
+        // Record undo entry
+        try self.recordUndo(.{
+            .operation = .delete,
+            .position = range.start,
+            .content = deleted_content,
+        });
+
+        try self.rope.delete(range.start, range.len());
         self.modified = true;
+
+        // Clear redo stack on new operation
+        self.clearRedoStack();
     }
 
     /// Replace range with text
     pub fn replaceRange(self: *PhantomBuffer, range: core.Range, text: []const u8) !void {
-        if (self.phantom_editor) |editor| {
-            try editor.deleteRange(range.start, range.len());
-            try editor.insertText(range.start, text);
-        } else {
-            try self.rope.delete(range.start, range.len());
-            try self.rope.insert(range.start, text);
+        try self.deleteRange(range);
+        try self.insertText(range.start, text);
+    }
+
+    /// Undo last operation
+    pub fn undo(self: *PhantomBuffer) !void {
+        const entry = self.undo_stack.pop() orelse return error.NothingToUndo;
+
+        // Perform reverse operation
+        switch (entry.operation) {
+            .insert => {
+                // Reverse insert = delete
+                try self.rope.delete(entry.position, entry.content.len);
+
+                // Add to redo stack
+                try self.redo_stack.append(self.allocator, entry);
+            },
+            .delete => {
+                // Reverse delete = insert
+                try self.rope.insert(entry.position, entry.content);
+
+                // Add to redo stack
+                try self.redo_stack.append(self.allocator, entry);
+            },
         }
+
         self.modified = true;
     }
 
-    /// Undo last operation (Phantom handles this natively!)
-    pub fn undo(self: *PhantomBuffer) !void {
-        if (self.phantom_editor) |editor| {
-            try editor.undo();
-        } else {
-            return error.UndoNotAvailableInFallbackMode;
-        }
-    }
-
-    /// Redo last undone operation (Phantom handles this natively!)
+    /// Redo last undone operation
     pub fn redo(self: *PhantomBuffer) !void {
-        if (self.phantom_editor) |editor| {
-            try editor.redo();
-        } else {
-            return error.RedoNotAvailableInFallbackMode;
+        const entry = self.redo_stack.pop() orelse return error.NothingToRedo;
+
+        // Perform original operation
+        switch (entry.operation) {
+            .insert => {
+                try self.rope.insert(entry.position, entry.content);
+
+                // Add back to undo stack
+                try self.undo_stack.append(self.allocator, entry);
+            },
+            .delete => {
+                try self.rope.delete(entry.position, entry.content.len);
+
+                // Add back to undo stack
+                try self.undo_stack.append(self.allocator, entry);
+            },
         }
+
+        self.modified = true;
     }
 
     /// Add a cursor (multi-cursor support)
     pub fn addCursor(self: *PhantomBuffer, position: CursorPosition) !void {
-        if (self.phantom_editor) |editor| {
-            try editor.addCursor(.{
-                .line = position.line,
-                .col = position.column,
-            });
-        } else {
-            try self.cursor_positions.append(position);
-        }
+        try self.cursor_positions.append(self.allocator, position);
     }
 
     /// Remove all cursors except the primary
     pub fn clearSecondaryCursors(self: *PhantomBuffer) void {
-        if (self.phantom_editor) |editor| {
-            editor.clearSecondaryCursors();
-        } else {
-            if (self.cursor_positions.items.len > 1) {
-                self.cursor_positions.shrinkRetainingCapacity(1);
-            }
+        if (self.cursor_positions.items.len > 1) {
+            self.cursor_positions.shrinkRetainingCapacity(1);
         }
     }
 
     /// Get primary cursor
     pub fn primaryCursor(self: *const PhantomBuffer) CursorPosition {
-        if (self.phantom_editor) |editor| {
-            const phantom_cursor = editor.getPrimaryCursor();
-            return .{
-                .line = phantom_cursor.line,
-                .column = phantom_cursor.col,
-                .byte_offset = self.lineColToOffset(phantom_cursor.line, phantom_cursor.col),
-            };
-        } else {
-            return self.cursor_positions.items[0];
-        }
+        return self.cursor_positions.items[0];
     }
 
     /// Set primary cursor
     pub fn setPrimaryCursor(self: *PhantomBuffer, position: CursorPosition) void {
-        if (self.phantom_editor) |editor| {
-            editor.setPrimaryCursor(.{
-                .line = position.line,
-                .col = position.column,
-            });
-        } else {
-            self.cursor_positions.items[0] = position;
-        }
+        self.cursor_positions.items[0] = position;
     }
 
     /// Get buffer content
     pub fn getContent(self: *const PhantomBuffer) ![]const u8 {
-        if (self.phantom_editor) |editor| {
-            return try editor.getContent(self.allocator);
-        } else {
-            return try self.rope.copyRangeAlloc(self.allocator, .{ .start = 0, .end = self.rope.len() });
-        }
+        return try self.rope.copyRangeAlloc(self.allocator, .{ .start = 0, .end = self.rope.len() });
     }
 
     /// Get line count
     pub fn lineCount(self: *const PhantomBuffer) usize {
-        if (self.phantom_editor) |editor| {
-            return editor.lineCount();
-        } else {
-            return self.rope.lineCount();
-        }
+        return self.rope.lineCount();
     }
 
     /// Get line content
     pub fn getLine(self: *const PhantomBuffer, line_num: usize) ![]const u8 {
-        if (self.phantom_editor) |editor| {
-            return try editor.getLine(self.allocator, line_num);
-        } else {
-            return try self.rope.lineSliceAlloc(self.allocator, line_num);
-        }
+        return try self.rope.lineSliceAlloc(self.allocator, line_num);
     }
 
-    /// Add LSP diagnostic marker (Phantom v0.5.0 feature!)
-    pub fn addDiagnostic(self: *PhantomBuffer, line: usize, column: usize, severity: DiagnosticSeverity, message: []const u8) !void {
-        if (self.phantom_editor) |editor| {
-            const phantom_severity = switch (severity) {
-                .@"error" => phantom.TextEditor.DiagnosticMarker.Severity.error_marker,
-                .warning => phantom.TextEditor.DiagnosticMarker.Severity.warning,
-                .info => phantom.TextEditor.DiagnosticMarker.Severity.info,
-                .hint => phantom.TextEditor.DiagnosticMarker.Severity.hint,
-            };
-
-            try editor.addDiagnosticMarker(.{
-                .line = line,
-                .col = column,
-                .severity = phantom_severity,
-                .message = message,
-            });
-        }
-    }
-
-    /// Clear all diagnostic markers
-    pub fn clearDiagnostics(self: *PhantomBuffer) void {
-        if (self.phantom_editor) |editor| {
-            editor.clearDiagnosticMarkers();
-        }
+    /// Check if using Phantom TextEditor (always false for now)
+    pub fn isUsingPhantom(self: *const PhantomBuffer) bool {
+        _ = self;
+        return false; // TODO: Return true when phantom.TextEditor is integrated
     }
 
     pub const DiagnosticSeverity = enum {
@@ -360,17 +321,34 @@ pub const PhantomBuffer = struct {
     };
 
     // Private helpers
-    fn lineColToOffset(self: *const PhantomBuffer, line: usize, col: usize) usize {
-        _ = self;
-        _ = line;
-        _ = col;
-        // TODO: Implement proper line/col to offset conversion
-        return 0;
+
+    fn recordUndo(self: *PhantomBuffer, entry: UndoEntry) !void {
+        // Enforce max undo levels
+        if (self.undo_stack.items.len >= self.max_undo_levels) {
+            var old_entry = self.undo_stack.orderedRemove(0);
+            old_entry.deinit(self.allocator);
+        }
+
+        try self.undo_stack.append(self.allocator, entry);
     }
 
-    /// Check if using Phantom TextEditor
-    pub fn isUsingPhantom(self: *const PhantomBuffer) bool {
-        return self.phantom_editor != null;
+    fn clearRedoStack(self: *PhantomBuffer) void {
+        for (self.redo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        self.redo_stack.clearRetainingCapacity();
+    }
+
+    fn clearUndoRedo(self: *PhantomBuffer) void {
+        for (self.undo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        self.undo_stack.clearRetainingCapacity();
+
+        for (self.redo_stack.items) |*entry| {
+            entry.deinit(self.allocator);
+        }
+        self.redo_stack.clearRetainingCapacity();
     }
 };
 
@@ -398,7 +376,7 @@ fn detectLanguage(path: []const u8) PhantomBuffer.Language {
 test "PhantomBuffer basic operations" {
     const allocator = std.testing.allocator;
 
-    var buffer = try PhantomBuffer.init(allocator, 1, .{ .use_phantom = false }); // Use rope fallback for tests
+    var buffer = try PhantomBuffer.init(allocator, 1, .{});
     defer buffer.deinit();
 
     try buffer.insertText(0, "hello");
@@ -410,10 +388,44 @@ test "PhantomBuffer basic operations" {
     try std.testing.expectEqualStrings("hello world", content);
 }
 
+test "PhantomBuffer undo/redo" {
+    const allocator = std.testing.allocator;
+
+    var buffer = try PhantomBuffer.init(allocator, 1, .{});
+    defer buffer.deinit();
+
+    // Insert text
+    try buffer.insertText(0, "hello");
+
+    {
+        const content1 = try buffer.getContent();
+        defer allocator.free(content1);
+        try std.testing.expectEqualStrings("hello", content1);
+    }
+
+    // Undo
+    try buffer.undo();
+
+    {
+        const content2 = try buffer.getContent();
+        defer allocator.free(content2);
+        try std.testing.expectEqualStrings("", content2);
+    }
+
+    // Redo
+    try buffer.redo();
+
+    {
+        const content3 = try buffer.getContent();
+        defer allocator.free(content3);
+        try std.testing.expectEqualStrings("hello", content3);
+    }
+}
+
 test "PhantomBuffer multi-cursor" {
     const allocator = std.testing.allocator;
 
-    var buffer = try PhantomBuffer.init(allocator, 1, .{ .use_phantom = false });
+    var buffer = try PhantomBuffer.init(allocator, 1, .{});
     defer buffer.deinit();
 
     try buffer.insertText(0, "line1\nline2\nline3");
