@@ -45,8 +45,8 @@
             .hash = "gcode-0.1.0-AWO1LsMKDwDmRZJBAvEZSO_lEbpzF0Yi4V2yCkTRdJVD",
         },
         .flare = .{
-            .url = "https://github.com/ghostkellz/flare/archive/refs/heads/main.tar.gz",
-            .hash = "flare-0.0.0-NK4JaX9eAQCgRuIiDBZr6uSz8D2DhSeeWswotvCbUeG_",
+            .url = "https://github.com/ghostkellz/flare/archive/main.tar.gz",
+            .hash = "flare-0.1.0-NK4JafGMAQA8xE2ah8YBxO74sOkWrsQYTkWQ64D1PJVg",
         },
         .grove = .{
             .url = "https://github.com/ghostkellz/grove/archive/main.tar.gz",
@@ -57,12 +57,12 @@
             .hash = "ghostlang-0.1.2-_SzSPUeIBQCl0nmEmwYFvM61fyAA2AITvCBRJBXbtTc7",
         },
         .zap = .{
-            .url = "https://github.com/ghostkellz/zap/archive/refs/heads/main.tar.gz",
-            .hash = "zap-0.0.0--jHF1gHHAQAJ-1P80ZGWuusd3Q3wLH2EkaxsXTX_JKTJ",
+            .url = "https://github.com/ghostkellz/zap/archive/main.tar.gz",
+            .hash = "zap-0.0.0--jHF1uvGAQAjOogcEI3QH_D3lZVD2xapj4hNxaHC2SDO",
         },
         .ghostls = .{
-            .url = "https://github.com/ghostkellz/ghostls/archive/refs/heads/main.tar.gz",
-            .hash = "ghostls-0.3.0-fDo9dCrEAgAwhnUr5wL9ba0rKyAeYvSQsrH-7_EjV82N",
+            .url = "https://github.com/ghostkellz/ghostls/archive/main.tar.gz",
+            .hash = "ghostls-0.3.0-fDo9dBTEAgAV-H-0PxAuDCB4aAkxBwJqkHWaZR2gVnVj",
         },
     },
     .paths = .{
@@ -70,7 +70,7 @@
         "build.zig.zon",
         "src",
         "core",
-        "syntax",  // ← Required for zig fetch
+        "syntax", // ← Required for zig fetch
         "ui-tui",
         "host",
         "lsp",
