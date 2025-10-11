@@ -70,6 +70,7 @@
         "build.zig.zon",
         "src",
         "core",
+        "syntax",  // ← Required for zig fetch
         "ui-tui",
         "host",
         "lsp",
