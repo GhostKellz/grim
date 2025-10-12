@@ -3,9 +3,20 @@ const core = @import("core");
 
 /// Buffer Change Events API
 /// Provides granular buffer lifecycle and text change events with payloads
+/// with support for batched event dispatching to reduce overhead
 pub const BufferEventsAPI = struct {
     allocator: std.mem.Allocator,
     listeners: std.EnumArray(BufferEventType, std.ArrayList(EventListener)),
+
+    // Event batching support for performance
+    batching_enabled: bool = false,
+    batch_queue: std.ArrayList(BatchedEvent),
+    batch_depth: usize = 0, // Support nested batching
+
+    const BatchedEvent = struct {
+        event_type: BufferEventType,
+        payload: EventPayload,
+    };
 
     pub const BufferEventType = enum {
         // Buffer lifecycle events
@@ -200,6 +211,9 @@ pub const BufferEventsAPI = struct {
         return .{
             .allocator = allocator,
             .listeners = listeners,
+            .batching_enabled = false,
+            .batch_queue = std.ArrayList(BatchedEvent).init(allocator),
+            .batch_depth = 0,
         };
     }
 
@@ -207,6 +221,7 @@ pub const BufferEventsAPI = struct {
         for (std.meta.tags(BufferEventType)) |event_type| {
             self.listeners.getPtr(event_type).deinit();
         }
+        self.batch_queue.deinit();
     }
 
     /// Register an event listener
@@ -251,8 +266,53 @@ pub const BufferEventsAPI = struct {
         try self.listeners.getPtr(event_type).append(listener);
     }
 
-    /// Emit an event
+    /// Begin batching events (can be nested)
+    /// Events will be queued until endBatch() is called
+    pub fn beginBatch(self: *BufferEventsAPI) void {
+        self.batch_depth += 1;
+        self.batching_enabled = true;
+    }
+
+    /// End batching and flush all queued events
+    /// For nested batches, only the outermost endBatch() will flush
+    pub fn endBatch(self: *BufferEventsAPI) !void {
+        if (self.batch_depth == 0) return;
+
+        self.batch_depth -= 1;
+        if (self.batch_depth == 0) {
+            self.batching_enabled = false;
+            try self.flushBatch();
+        }
+    }
+
+    /// Flush all batched events immediately
+    pub fn flushBatch(self: *BufferEventsAPI) !void {
+        if (self.batch_queue.items.len == 0) return;
+
+        // Process all batched events
+        for (self.batch_queue.items) |batched| {
+            try self.emitImmediate(batched.event_type, batched.payload);
+        }
+
+        self.batch_queue.clearRetainingCapacity();
+    }
+
+    /// Emit an event (queues if batching enabled, otherwise fires immediately)
     pub fn emit(self: *BufferEventsAPI, event_type: BufferEventType, payload: EventPayload) !void {
+        if (self.batching_enabled) {
+            // Queue event for batch processing
+            try self.batch_queue.append(.{
+                .event_type = event_type,
+                .payload = payload,
+            });
+        } else {
+            // Fire immediately
+            try self.emitImmediate(event_type, payload);
+        }
+    }
+
+    /// Internal: emit event immediately (bypass batching)
+    fn emitImmediate(self: *BufferEventsAPI, event_type: BufferEventType, payload: EventPayload) !void {
         const list = self.listeners.getPtr(event_type);
 
         var i: usize = 0;
@@ -271,6 +331,16 @@ pub const BufferEventsAPI = struct {
 
             i += 1;
         }
+    }
+
+    /// Get current batch queue size
+    pub fn batchSize(self: *const BufferEventsAPI) usize {
+        return self.batch_queue.items.len;
+    }
+
+    /// Check if batching is currently active
+    pub fn isBatching(self: *const BufferEventsAPI) bool {
+        return self.batching_enabled;
     }
 
     /// Remove all listeners for a plugin
@@ -458,4 +528,138 @@ test "BufferEventsAPI remove plugin" {
 
     try std.testing.expectEqual(@as(usize, 1), api.listenerCount(.text_changed));
     try std.testing.expectEqual(@as(usize, 0), api.listenerCount(.buf_enter));
+}
+
+test "BufferEventsAPI event batching" {
+    const allocator = std.testing.allocator;
+    var api = BufferEventsAPI.init(allocator);
+    defer api.deinit();
+
+    const TestCtx = struct {
+        var fire_count: usize = 0;
+        var events: std.ArrayList(u32) = undefined;
+
+        fn init_list(alloc: std.mem.Allocator) void {
+            events = std.ArrayList(u32).init(alloc);
+        }
+
+        fn deinit_list() void {
+            events.deinit();
+        }
+
+        fn handler(payload: BufferEventsAPI.EventPayload) !void {
+            fire_count += 1;
+            try events.append(payload.text_changed.buffer_id);
+        }
+    };
+
+    TestCtx.init_list(allocator);
+    defer TestCtx.deinit_list();
+
+    try api.on(.text_changed, "test_plugin", TestCtx.handler, 0);
+
+    // Begin batching
+    api.beginBatch();
+    try std.testing.expect(api.isBatching());
+
+    // Emit multiple events (should be queued)
+    const payload1 = BufferEventsAPI.EventPayload{
+        .text_changed = .{
+            .buffer_id = 1,
+            .range = .{ .start = 0, .end = 1 },
+            .old_text = "a",
+            .new_text = "b",
+            .change_tick = 1,
+        },
+    };
+    const payload2 = BufferEventsAPI.EventPayload{
+        .text_changed = .{
+            .buffer_id = 2,
+            .range = .{ .start = 0, .end = 1 },
+            .old_text = "c",
+            .new_text = "d",
+            .change_tick = 2,
+        },
+    };
+    const payload3 = BufferEventsAPI.EventPayload{
+        .text_changed = .{
+            .buffer_id = 3,
+            .range = .{ .start = 0, .end = 1 },
+            .old_text = "e",
+            .new_text = "f",
+            .change_tick = 3,
+        },
+    };
+
+    try api.emit(.text_changed, payload1);
+    try api.emit(.text_changed, payload2);
+    try api.emit(.text_changed, payload3);
+
+    // Events should be queued, not fired yet
+    try std.testing.expectEqual(@as(usize, 0), TestCtx.fire_count);
+    try std.testing.expectEqual(@as(usize, 3), api.batchSize());
+
+    // End batching (flushes events)
+    try api.endBatch();
+    try std.testing.expect(!api.isBatching());
+
+    // All events should have fired
+    try std.testing.expectEqual(@as(usize, 3), TestCtx.fire_count);
+    try std.testing.expectEqual(@as(usize, 0), api.batchSize());
+    try std.testing.expectEqual(@as(u32, 1), TestCtx.events.items[0]);
+    try std.testing.expectEqual(@as(u32, 2), TestCtx.events.items[1]);
+    try std.testing.expectEqual(@as(u32, 3), TestCtx.events.items[2]);
+}
+
+test "BufferEventsAPI nested batching" {
+    const allocator = std.testing.allocator;
+    var api = BufferEventsAPI.init(allocator);
+    defer api.deinit();
+
+    const TestCtx = struct {
+        var fire_count: usize = 0;
+
+        fn handler(payload: BufferEventsAPI.EventPayload) !void {
+            _ = payload;
+            fire_count += 1;
+        }
+    };
+
+    try api.on(.buf_enter, "test_plugin", TestCtx.handler, 0);
+
+    const payload = BufferEventsAPI.EventPayload{
+        .buf_enter = .{
+            .buffer_id = 1,
+            .file_path = null,
+            .buffer_type = .normal,
+        },
+    };
+
+    // Nested batching
+    api.beginBatch();
+    api.beginBatch();
+    api.beginBatch();
+
+    try api.emit(.buf_enter, payload);
+    try api.emit(.buf_enter, payload);
+
+    // Still batching
+    try std.testing.expectEqual(@as(usize, 0), TestCtx.fire_count);
+    try std.testing.expectEqual(@as(usize, 2), api.batchSize());
+
+    // First endBatch - still batching
+    try api.endBatch();
+    try std.testing.expectEqual(@as(usize, 0), TestCtx.fire_count);
+    try std.testing.expect(api.isBatching());
+
+    // Second endBatch - still batching
+    try api.endBatch();
+    try std.testing.expectEqual(@as(usize, 0), TestCtx.fire_count);
+    try std.testing.expect(api.isBatching());
+
+    // Third endBatch - should flush now
+    try api.endBatch();
+    try std.testing.expectEqual(@as(usize, 2), TestCtx.fire_count);
+    try std.testing.expect(!api.isBatching());
+    try std.testing.expectEqual(@as(usize, 0), api.batchSize());
 }
