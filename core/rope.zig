@@ -28,6 +28,51 @@ pub const Range = struct {
 
 const EmptySlice = [_]u8{};
 
+/// Iterator for zero-copy access to rope data segments
+/// Allows reading rope content without allocating or copying
+pub const RopeIterator = struct {
+    pieces: []const *Rope.Piece,
+    range: Range,
+    piece_index: usize,
+    absolute_offset: usize,
+
+    /// Get next segment of data within the range (zero-copy)
+    /// Returns null when iteration is complete
+    pub fn next(self: *RopeIterator) ?[]const u8 {
+        while (self.piece_index < self.pieces.len) {
+            const piece = self.pieces[self.piece_index].*;
+            const piece_len = piece.len();
+            const piece_start = self.absolute_offset;
+            const piece_end = piece_start + piece_len;
+
+            defer {
+                self.piece_index += 1;
+                self.absolute_offset = piece_end;
+            }
+
+            // Skip pieces before range
+            if (piece_end <= self.range.start) {
+                continue;
+            }
+
+            // Stop if past range
+            if (piece_start >= self.range.end) {
+                return null;
+            }
+
+            // Calculate segment within this piece
+            const local_start = if (self.range.start > piece_start) self.range.start - piece_start else 0;
+            const local_end = if (self.range.end < piece_end) self.range.end - piece_start else piece_len;
+
+            const segment = piece.data[local_start..local_end];
+            if (segment.len > 0) {
+                return segment;
+            }
+        }
+        return null;
+    }
+};
+
 pub const Rope = struct {
     allocator: std.mem.Allocator,
     arena: std.heap.ArenaAllocator,
@@ -81,6 +126,22 @@ pub const Rope = struct {
         return self.length;
     }
 
+    /// Create a zero-copy iterator over a range of rope data
+    /// Use this for performance-critical code that can handle segments
+    /// Example:
+    ///   var iter = rope.iterator(.{ .start = 0, .end = rope.len() });
+    ///   while (iter.next()) |segment| {
+    ///       // Process segment without copying
+    ///   }
+    pub fn iterator(self: *const Rope, range: Range) RopeIterator {
+        return RopeIterator{
+            .pieces = self.pieces.items,
+            .range = range,
+            .piece_index = 0,
+            .absolute_offset = 0,
+        };
+    }
+
     pub fn insert(self: *Rope, pos: usize, bytes: []const u8) Error!void {
         if (pos > self.length) return Error.OutOfBounds;
         if (bytes.len == 0) return;
@@ -114,6 +175,11 @@ pub const Rope = struct {
         self.cached_line_count = null;
     }
 
+    /// Get a contiguous slice of rope data
+    /// - For single-piece ranges: returns zero-copy view (fast!)
+    /// - For multi-piece ranges: allocates via arena (auto-cleanup)
+    /// - For zero-copy iteration over segments, use iterator() instead
+    /// Memory is tied to rope lifetime (arena-allocated), no manual free needed
     pub fn slice(self: *Rope, range: Range) Error![]const u8 {
         if (range.start > range.end) return Error.InvalidRange;
         if (range.end > self.length) return Error.OutOfBounds;
@@ -140,12 +206,15 @@ pub const Rope = struct {
             const take = @min(available, remaining);
             const segment = piece.data[local_start .. local_start + take];
 
+            // Fast path: entire range is in a single piece (zero-copy!)
             if (first and take == total_len) {
                 return segment;
             }
 
+            // Allocate from arena (auto-cleanup on rope.deinit)
             if (buffer == null) {
-                buffer = try self.allocator.alloc(u8, total_len);
+                var arena_alloc = self.arena.allocator();
+                buffer = try arena_alloc.alloc(u8, total_len);
             }
 
             @memcpy(buffer.?[write_index .. write_index + take], segment);
@@ -316,18 +385,18 @@ pub const Rope = struct {
 
     pub fn snapshot(self: *Rope) !Snapshot {
         var arena_alloc = self.arena.allocator();
-        const copy = try arena_alloc.alloc(*Piece, self.pieces.len);
-        @memcpy(copy, self.pieces.items[0..self.pieces.len]);
+        const copy = try arena_alloc.alloc(*Piece, self.pieces.items.len);
+        @memcpy(copy, self.pieces.items[0..self.pieces.items.len]);
         return Snapshot{ .nodes = copy, .length = self.length };
     }
 
     pub fn restore(self: *Rope, state: Snapshot) !void {
-        self.pieces.deinit(self.allocator);
-        self.pieces = .{};
+        self.pieces.clearRetainingCapacity();
         try self.pieces.ensureTotalCapacity(self.allocator, state.nodes.len);
-        @memcpy(self.pieces.items[0..state.nodes.len], state.nodes);
-        self.pieces.len = state.nodes.len;
+        self.pieces.appendSliceAssumeCapacity(state.nodes);
         self.length = state.length;
+        // Invalidate line count cache on restore
+        self.cached_line_count = null;
     }
 
     fn createPieceCopy(self: *Rope, data: []const u8) !*Piece {
@@ -375,9 +444,12 @@ pub const Rope = struct {
         if (offset == 0 or offset >= piece_len) return;
 
         const original = piece_ptr.data;
-        const suffix_slice = original[offset..];
-        piece_ptr.*.data = original[0..offset];
-        const suffix_piece = try self.createPieceView(suffix_slice);
+        // Create two new pieces instead of mutating (preserves snapshots!)
+        const prefix_piece = try self.createPieceView(original[0..offset]);
+        const suffix_piece = try self.createPieceView(original[offset..]);
+
+        // Replace original with prefix, add suffix after
+        self.pieces.items[index] = prefix_piece;
         try self.pieces.insert(self.allocator, index + 1, suffix_piece);
     }
 };
@@ -453,4 +525,41 @@ test "rope line helpers" {
     const lc = try rope.lineColumnAtOffset(offset);
     try std.testing.expectEqual(@as(usize, 1), lc.line);
     try std.testing.expectEqual(@as(usize, "second".len), lc.column);
+}
+
+test "rope zero-copy iterator" {
+    const allocator = std.testing.allocator;
+    var rope = try Rope.init(allocator);
+    defer rope.deinit();
+
+    // Create rope with multiple pieces
+    try rope.insert(0, "hello");
+    try rope.insert(5, " ");
+    try rope.insert(6, "world");
+    try rope.insert(11, "!");
+
+    // Iterate over all segments (zero-copy)
+    var iter = rope.iterator(.{ .start = 0, .end = rope.len() });
+    var total_len: usize = 0;
+    var segment_count: usize = 0;
+
+    while (iter.next()) |segment| {
+        total_len += segment.len;
+        segment_count += 1;
+    }
+
+    try std.testing.expectEqual(@as(usize, "hello world!".len), total_len);
+    try std.testing.expectEqual(@as(usize, 4), segment_count); // 4 pieces
+
+    // Iterate over partial range
+    var iter_part = rope.iterator(.{ .start = 6, .end = 11 });
+    var part_data: [5]u8 = undefined;
+    var write_pos: usize = 0;
+
+    while (iter_part.next()) |segment| {
+        @memcpy(part_data[write_pos .. write_pos + segment.len], segment);
+        write_pos += segment.len;
+    }
+
+    try std.testing.expectEqualStrings("world", part_data[0..write_pos]);
 }

@@ -285,6 +285,26 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
 
+    // Benchmark executable for rope performance testing
+    const bench_exe = b.addExecutable(.{
+        .name = "rope_bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("core/rope_bench.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "core", .module = core_mod },
+            },
+        }),
+    });
+    b.installArtifact(bench_exe);
+
+    // Top level step for running benchmarks
+    const bench_step = b.step("bench", "Run rope benchmarks");
+    const run_bench_cmd = b.addRunArtifact(bench_exe);
+    run_bench_cmd.step.dependOn(b.getInstallStep());
+    bench_step.dependOn(&run_bench_cmd.step);
+
     // Just like flags, top level steps are also listed in the `--help` menu.
     //
     // The Zig build system is entirely implemented in userland, which means
