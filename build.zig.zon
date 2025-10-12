@@ -50,7 +50,7 @@
         },
         .grove = .{
             .url = "https://github.com/ghostkellz/grove/archive/main.tar.gz",
-            .hash = "grove-0.1.1-rGFsN-7i5QRbQ9rp3VYzTUg5ReKWu9c3MCCMqTmwVWu6",
+            .hash = "grove-0.1.1-rGFsN9wr6QRA8itbDIdvhfNW5zGabtBbcwHEFCK3hNxB",
         },
         .ghostlang = .{
             .url = "https://github.com/ghostkellz/ghostlang/archive/main.tar.gz",
@@ -62,7 +62,7 @@
         },
         .ghostls = .{
             .url = "https://github.com/ghostkellz/ghostls/archive/main.tar.gz",
-            .hash = "ghostls-0.3.0-fDo9dBTEAgAV-H-0PxAuDCB4aAkxBwJqkHWaZR2gVnVj",
+            .hash = "ghostls-0.4.0-fDo9dHB5AwBdYUFuyFWM44cEfEr9P1K0ZX9C0XGiCy2i",
         },
     },
     .paths = .{
