@@ -169,7 +169,37 @@ pub const PluginAPI = struct {
     };
 
     pub const BufferId = u32;
-    pub const BufferError = error{InvalidBuffer};
+
+    /// Comprehensive error types for better error handling
+    pub const BufferError = error{
+        InvalidBuffer,
+        BufferNotFound,
+        BufferReadOnly,
+        InvalidPosition,
+        InvalidRange,
+    };
+
+    pub const PluginError = error{
+        PluginNotLoaded,
+        PluginInitFailed,
+        PluginDeactivated,
+        InvalidPluginId,
+    };
+
+    pub const CommandError = error{
+        CommandNotFound,
+        CommandExecutionFailed,
+        InvalidArguments,
+        InsufficientPermissions,
+    };
+
+    pub const FileError = error{
+        FileNotFound,
+        PermissionDenied,
+        InvalidPath,
+        FileReadFailed,
+        FileWriteFailed,
+    };
 
     pub const EventHandler = struct {
         event_type: EventType,
@@ -584,6 +614,52 @@ pub const PluginAPI = struct {
 
         pub fn currentEvent(self: *PluginContext) ?EventType {
             return self.current_event;
+        }
+
+        // Utility methods for common operations
+        /// Get total number of lines in buffer
+        pub fn getLineCount(self: *PluginContext) usize {
+            return self.api.editor_context.rope.lineCount();
+        }
+
+        /// Get buffer length in bytes
+        pub fn getBufferLength(self: *PluginContext) usize {
+            return self.api.editor_context.rope.len();
+        }
+
+        /// Check if buffer is empty
+        pub fn isBufferEmpty(self: *PluginContext) bool {
+            return self.api.editor_context.rope.isEmpty();
+        }
+
+        /// Get line range for a specific line number
+        pub fn getLineRange(self: *PluginContext, line_num: usize) !core.Range {
+            return try self.api.editor_context.rope.lineRange(line_num);
+        }
+
+        /// Get text from a specific range (arena-allocated)
+        pub fn getTextRange(self: *PluginContext, range: core.Range) ![]const u8 {
+            return try self.api.editor_context.rope.slice(range);
+        }
+
+        /// Create zero-copy iterator for a range
+        pub fn iterateRange(self: *PluginContext, range: core.Range) core.RopeIterator {
+            return self.api.editor_context.rope.iterator(range);
+        }
+
+        /// Convert byte offset to line/column
+        pub fn offsetToLineColumn(self: *PluginContext, offset: usize) !struct { line: usize, column: usize } {
+            return try self.api.editor_context.rope.lineColumnAtOffset(offset);
+        }
+
+        /// Check if a plugin is loaded
+        pub fn isPluginLoaded(self: *PluginContext, plugin_id: []const u8) bool {
+            return self.api.loaded_plugins.contains(plugin_id);
+        }
+
+        /// Get list of all loaded plugin IDs
+        pub fn getLoadedPluginIds(self: *PluginContext) ![][]const u8 {
+            return try self.api.getLoadedPlugins(self.scratch_allocator);
         }
 
         fn ensureFallbackBuffer(self: *PluginContext, buffer_id: BufferId) !void {

@@ -1,20 +1,45 @@
 const std = @import("std");
 
-/// Check if position is at a valid UTF-8 boundary
-fn isUtf8Boundary(data: []const u8, pos: usize) bool {
+/// Lookup table for UTF-8 byte classification (faster than bitwise ops)
+/// true = start byte (valid boundary), false = continuation byte
+const utf8_boundary_table = blk: {
+    @setEvalBranchQuota(300);
+    var table: [256]bool = undefined;
+    for (&table, 0..) |*entry, i| {
+        // Continuation bytes: 0x80-0xBF (10xxxxxx)
+        entry.* = (i < 0x80) or (i >= 0xC0);
+    }
+    break :blk table;
+};
+
+/// Check if position is at a valid UTF-8 boundary (optimized with lookup table)
+inline fn isUtf8Boundary(data: []const u8, pos: usize) bool {
     if (pos == 0 or pos >= data.len) return true;
-    // UTF-8 continuation bytes start with 10xxxxxx
-    return (data[pos] & 0xC0) != 0x80;
+    return utf8_boundary_table[data[pos]];
 }
 
-/// Find the nearest UTF-8 boundary at or before pos
+/// Find the nearest UTF-8 boundary at or before pos (optimized)
 fn findUtf8BoundaryBefore(data: []const u8, pos: usize) usize {
     if (pos == 0 or pos >= data.len) return pos;
+
+    // Fast path: already at boundary
+    if (utf8_boundary_table[data[pos]]) return pos;
+
+    // Scan backwards (max 3 bytes in UTF-8)
     var i = pos;
-    while (i > 0 and !isUtf8Boundary(data, i)) {
+    const min_pos = if (pos >= 3) pos - 3 else 0;
+    while (i > min_pos) {
         i -= 1;
+        if (utf8_boundary_table[data[i]]) return i;
     }
-    return i;
+
+    // Fallback: scan all the way back (shouldn't happen with valid UTF-8)
+    while (i > 0) {
+        i -= 1;
+        if (utf8_boundary_table[data[i]]) return i;
+    }
+
+    return 0;
 }
 
 pub const Range = struct {
@@ -163,10 +188,10 @@ pub const Rope = struct {
         const begin_index = try self.ensureCut(start);
         const end_index = try self.ensureCut(start + len_to_remove);
 
-        var i = end_index;
-        while (i > begin_index) {
-            _ = self.pieces.orderedRemove(begin_index);
-            i -= 1;
+        // Optimized: Use replaceRange for batch removal (faster than loop)
+        const num_to_remove = end_index - begin_index;
+        if (num_to_remove > 0) {
+            self.pieces.replaceRange(self.allocator, begin_index, num_to_remove, &[_]*Piece{}) catch |err| return err;
         }
 
         self.length -= len_to_remove;

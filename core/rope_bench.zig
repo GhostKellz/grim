@@ -177,6 +177,42 @@ fn benchRopeLargeFile(allocator: std.mem.Allocator) !void {
     _ = try rope.slice(.{ .start = 0, .end = @min(100, rope.len()) });
 }
 
+fn benchRopeHugeFile10MB(allocator: std.mem.Allocator) !void {
+    var rope = try Rope.init(allocator);
+    defer rope.deinit();
+
+    // Simulate 10MB file (~160k lines of 64 bytes each)
+    const line = "The quick brown fox jumps over the lazy dog. Line content here.\n";
+    var i: usize = 0;
+    while (i < 160_000) : (i += 1) {
+        try rope.insert(rope.len(), line);
+    }
+
+    // Perform operations on huge file
+    _ = rope.lineCount();
+    _ = try rope.lineRange(80_000); // Middle line
+    _ = try rope.slice(.{ .start = 5_000_000, .end = 5_000_100 }); // Middle slice
+}
+
+fn benchRopeHugeFileRandomAccess(allocator: std.mem.Allocator) !void {
+    var rope = try Rope.init(allocator);
+    defer rope.deinit();
+
+    // Build medium file (10k lines)
+    const line = "Random access test line with some content in it for benchmarking.\n";
+    var i: usize = 0;
+    while (i < 10_000) : (i += 1) {
+        try rope.insert(rope.len(), line);
+    }
+
+    // Random access patterns (common in editing)
+    _ = try rope.lineRange(1_000);
+    _ = try rope.lineRange(5_000);
+    _ = try rope.lineRange(9_000);
+    _ = try rope.slice(.{ .start = 100_000, .end = 100_100 });
+    _ = try rope.slice(.{ .start = 300_000, .end = 300_100 });
+}
+
 // ============================================================================
 // MAIN BENCHMARK RUNNER
 // ============================================================================
@@ -223,9 +259,19 @@ pub fn main() !void {
     std.debug.print("--- SNAPSHOT/RESTORE ---\n", .{});
     (try runBenchmark("Snapshot + Restore", config, benchRopeSnapshotRestore, allocator)).print();
 
-    // Large file benchmark
+    // Large file benchmarks
     std.debug.print("--- LARGE FILE (1000 lines) ---\n", .{});
     (try runBenchmark("Large File Operations", large_config, benchRopeLargeFile, allocator)).print();
+
+    // Huge file benchmarks (fewer iterations)
+    const huge_config = BenchConfig{
+        .iterations = 5,
+        .warmup_iterations = 1,
+    };
+
+    std.debug.print("--- HUGE FILE (10MB / 160k lines) ---\n", .{});
+    (try runBenchmark("10MB File Build + Operations", huge_config, benchRopeHugeFile10MB, allocator)).print();
+    (try runBenchmark("Medium File Random Access", huge_config, benchRopeHugeFileRandomAccess, allocator)).print();
 
     std.debug.print("=== BENCHMARKS COMPLETE ===\n\n", .{});
 }
