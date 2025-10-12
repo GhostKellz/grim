@@ -3,6 +3,9 @@ const core = @import("core");
 const syntax = @import("syntax");
 const host = @import("host");
 
+/// PluginAPI - The heart of grim's plugin system
+/// Provides a comprehensive, type-safe API for Ghostlang plugins
+/// Optimized for phantom.grim's lazy loading system
 pub const PluginAPI = struct {
     allocator: std.mem.Allocator,
     editor_context: *EditorContext,

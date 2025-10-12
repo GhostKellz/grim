@@ -33,6 +33,8 @@ pub const Rope = struct {
     arena: std.heap.ArenaAllocator,
     pieces: std.ArrayListUnmanaged(*Piece),
     length: usize,
+    // Cache line count for O(1) access - invalidated on insert/delete
+    cached_line_count: ?usize,
 
     const Piece = struct {
         data: []const u8,
@@ -61,6 +63,7 @@ pub const Rope = struct {
             .arena = arena,
             .pieces = .{},
             .length = 0,
+            .cached_line_count = 1, // Empty buffer has 1 line
         };
     }
 
@@ -86,6 +89,9 @@ pub const Rope = struct {
         const index = try self.ensureCut(pos);
         try self.pieces.insert(self.allocator, index, piece_ptr);
         self.length += bytes.len;
+
+        // Invalidate line count cache
+        self.cached_line_count = null;
     }
 
     pub fn delete(self: *Rope, start: usize, len_to_remove: usize) Error!void {
@@ -103,6 +109,9 @@ pub const Rope = struct {
         }
 
         self.length -= len_to_remove;
+
+        // Invalidate line count cache
+        self.cached_line_count = null;
     }
 
     pub fn slice(self: *Rope, range: Range) Error![]const u8 {
@@ -155,8 +164,17 @@ pub const Rope = struct {
         return buffer.?;
     }
 
-    pub fn lineCount(self: *const Rope) usize {
-        if (self.length == 0) return 1;
+    pub fn lineCount(self: *Rope) usize {
+        // Return cached value if available (O(1) instead of O(n))
+        if (self.cached_line_count) |count| {
+            return count;
+        }
+
+        // Calculate and cache
+        if (self.length == 0) {
+            self.cached_line_count = 1;
+            return 1;
+        }
 
         var count: usize = 1;
         for (self.pieces.items) |piece_ptr| {
@@ -164,6 +182,8 @@ pub const Rope = struct {
                 if (byte == '\n') count += 1;
             }
         }
+
+        self.cached_line_count = count;
         return count;
     }
 
