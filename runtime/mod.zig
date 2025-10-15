@@ -18,6 +18,9 @@ pub const buffer_events_api = @import("buffer_events_api.zig");
 pub const highlight_theme_api = @import("highlight_theme_api.zig");
 pub const test_harness = @import("test_harness.zig");
 
+// Zsync integration for async runtime
+pub const zsync_integration = @import("zsync_integration.zig");
+
 // Re-exports: Core plugin system
 pub const PluginAPI = plugin_api.PluginAPI;
 pub const Plugin = plugin_api.PluginAPI.Plugin;
