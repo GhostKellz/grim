@@ -58,7 +58,7 @@
         },
         .zap = .{
             .url = "https://github.com/ghostkellz/zap/archive/main.tar.gz",
-            .hash = "zap-0.0.0--jHF1uvGAQAjOogcEI3QH_D3lZVD2xapj4hNxaHC2SDO",
+            .hash = "zap-0.0.0--jHF1tXGAQCjnbEAZ0LjO-Wxu0lX04fS0kWjYgdai-4u",
         },
         .ghostls = .{
             .url = "https://github.com/ghostkellz/ghostls/archive/main.tar.gz",
