@@ -2,6 +2,7 @@ const std = @import("std");
 const core = @import("../core/mod.zig");
 const syntax = @import("../syntax/mod.zig");
 const ui_tui = @import("../ui-tui/mod.zig");
+const ai = @import("../ai/mod.zig");
 const Theme = ui_tui.Theme;
 
 /// Ghostlang FFI Bridge - Exposes Grim's Zig APIs to Ghostlang
@@ -13,6 +14,7 @@ pub const GhostlangBridge = struct {
     harpoon: ?*core.Harpoon,
     features: ?*syntax.Features,
     zap: ?*core.ZapIntegration,
+    omen: ?*ai.Client,
     theme: ?*Theme,
     theme_name: ?[]const u8,
 
@@ -24,6 +26,7 @@ pub const GhostlangBridge = struct {
             .harpoon = null,
             .features = null,
             .zap = null,
+            .omen = null,
             .theme = null,
             .theme_name = null,
         };
@@ -45,6 +48,10 @@ pub const GhostlangBridge = struct {
         if (self.zap) |z| {
             z.deinit();
             self.allocator.destroy(z);
+        }
+        if (self.omen) |o| {
+            o.deinit();
+            self.allocator.destroy(o);
         }
         if (self.theme) |t| {
             self.allocator.destroy(t);
@@ -551,6 +558,69 @@ pub const GhostlangBridge = struct {
         const issues = bridge.zap.?.detectIssues(code_slice) catch return "";
 
         const result = bridge.allocator.dupeZ(u8, issues) catch return "";
+        return result.ptr;
+    }
+
+    // ========================================================================
+    // OMEN AI API
+    // ========================================================================
+
+    /// Initialize Omen AI client with base URL
+    pub export fn grim_omen_init(
+        bridge: *GhostlangBridge,
+        base_url: [*:0]const u8,
+    ) callconv(.C) bool {
+        if (bridge.omen != null) return true;
+
+        const url_slice = std.mem.span(base_url);
+
+        const client = bridge.allocator.create(ai.Client) catch return false;
+        client.* = ai.Client.init(bridge.allocator, .{
+            .base_url = url_slice,
+        }) catch {
+            bridge.allocator.destroy(client);
+            return false;
+        };
+
+        bridge.omen = client;
+        return true;
+    }
+
+    /// Health check - verify Omen is reachable
+    pub export fn grim_omen_health_check(bridge: *GhostlangBridge) callconv(.C) bool {
+        if (bridge.omen == null) return false;
+        return bridge.omen.?.healthCheck() catch false;
+    }
+
+    /// Send completion request (simplified - returns just content)
+    /// For full control, use grim_omen_complete_json
+    pub export fn grim_omen_complete_simple(
+        bridge: *GhostlangBridge,
+        prompt: [*:0]const u8,
+    ) callconv(.C) [*:0]const u8 {
+        if (bridge.omen == null) return "";
+
+        const prompt_slice = std.mem.span(prompt);
+
+        // Build simple request
+        var messages = [_]ai.CompletionRequest.Message{
+            .{ .role = "user", .content = prompt_slice },
+        };
+
+        const request = ai.CompletionRequest{
+            .model = "auto",
+            .messages = &messages,
+            .stream = false,
+        };
+
+        const response = bridge.omen.?.complete(request) catch return "";
+
+        // Extract content from first choice
+        if (response.choices.len == 0) return "";
+        const content = response.choices[0].message.content orelse return "";
+
+        // Allocate and return
+        const result = bridge.allocator.dupeZ(u8, content) catch return "";
         return result.ptr;
     }
 

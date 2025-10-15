@@ -42,6 +42,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zhttp = b.dependency("zhttp", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Grove dependency for Ghostlang integration
     const ghostlang_enabled = b.option(bool, "ghostlang", "Enable Ghostlang (.gza) support via Grove") orelse false;
@@ -114,6 +118,16 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const ai_mod = b.createModule(.{
+        .root_source_file = b.path("ai/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zhttp", .module = zhttp.module("zhttp") },
+            .{ .name = "core", .module = core_mod },
+        },
+    });
+
     const ui_tui_mod = b.createModule(.{
         .root_source_file = b.path("ui-tui/mod.zig"),
         .target = target,
@@ -150,12 +164,14 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ui_tui", .module = ui_tui_mod },
             .{ .name = "host", .module = host_mod },
             .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "ai", .module = ai_mod },
             .{ .name = "runtime", .module = runtime_mod },
             .{ .name = "syntax", .module = syntax_mod },
             .{ .name = "zsync", .module = zsync.module("zsync") },
             .{ .name = "phantom", .module = phantom.module("phantom") },
             .{ .name = "gcode", .module = gcode.module("gcode") },
             .{ .name = "flare", .module = flare.module("flare") },
+            .{ .name = "zhttp", .module = zhttp.module("zhttp") },
         },
     });
 

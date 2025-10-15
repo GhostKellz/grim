@@ -33,8 +33,8 @@
     // internet connectivity.
     .dependencies = .{
         .zsync = .{
-            .url = "https://github.com/ghostkellz/zsync/archive/refs/heads/main.tar.gz",
-            .hash = "zsync-0.5.4-KAuheZ4THQAlN32uBKm76ezT7dPT6rvj4ll56NiA9z9M",
+            .url = "https://github.com/ghostkellz/zsync/archive/main.tar.gz",
+            .hash = "zsync-0.5.5-KAuheTMzIAAtLaZ3cCKVB0D18peui-XVUquyjZjDPNrB",
         },
         .phantom = .{
             .url = "https://github.com/ghostkellz/phantom/archive/main.tar.gz",
@@ -64,6 +64,10 @@
             .url = "https://github.com/ghostkellz/ghostls/archive/main.tar.gz",
             .hash = "ghostls-0.4.0-fDo9dHB5AwBdYUFuyFWM44cEfEr9P1K0ZX9C0XGiCy2i",
         },
+        .zhttp = .{
+            .url = "https://github.com/ghostkellz/zhttp/archive/main.tar.gz",
+            .hash = "zhttp-0.1.2-jZpECD6WBQBDZbLNrphEx_zqWSrsT4jyO_Hs9iMDkSQX",
+        },
     },
     .paths = .{
         "build.zig",
@@ -75,6 +79,7 @@
         "host",
         "lsp",
         "runtime",
+        "ai",
         // For example...
         //"LICENSE",
         //"README.md",
