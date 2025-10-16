@@ -4,6 +4,7 @@ pub const git = @import("git.zig");
 pub const fuzzy = @import("fuzzy.zig");
 pub const harpoon = @import("harpoon.zig");
 pub const zap = @import("zap.zig");
+pub const file_watcher = @import("file_watcher.zig");
 
 pub const Rope = rope.Rope;
 pub const Range = rope.Range;
@@ -13,3 +14,4 @@ pub const FuzzyFinder = fuzzy.FuzzyFinder;
 pub const FilePicker = fuzzy.FilePicker;
 pub const Harpoon = harpoon.Harpoon;
 pub const ZapIntegration = zap.ZapIntegration;
+pub const FileWatcher = file_watcher.FileWatcher;

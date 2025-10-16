@@ -1,0 +1,23 @@
+-- Fuzzy Finder Plugin
+-- Placeholder for future fuzzy finding integration
+-- TODO: Wire grim_fuzzy_* bridge functions to Ghostlang VM
+
+function setup()
+    -- Register commands
+    register_command("FindInfo", "find_info_handler", "Show fuzzy finder info")
+
+    show_message("Fuzzy Finder plugin loaded (bridge functions pending)")
+    return true
+end
+
+function find_info_handler()
+    show_message("Fuzzy Finder Plugin v1.0.0")
+    show_message("Future features: file search, buffer search, grep")
+    show_message("Status: Waiting for grim_fuzzy_* bridge wiring")
+    show_message("For now: Use Ctrl+B for file tree sidebar")
+end
+
+function teardown()
+    show_message("Fuzzy Finder plugin unloaded")
+    return true
+end

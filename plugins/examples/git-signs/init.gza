@@ -1,0 +1,29 @@
+-- Git Signs Plugin
+-- Placeholder for future git integration
+-- TODO: Wire grim_git_* bridge functions to Ghostlang VM
+
+function setup()
+    -- Register commands
+    register_command("GitStatus", "git_status_handler", "Show git status (placeholder)")
+    register_command("GitInfo", "git_info_handler", "Show git info")
+
+    show_message("Git Signs plugin loaded (bridge functions pending)")
+    return true
+end
+
+function git_status_handler()
+    -- Placeholder until bridge functions are wired
+    show_message("Git status: Bridge functions not yet wired to Ghostlang VM")
+    show_message("Run 'git status' in terminal for now")
+end
+
+function git_info_handler()
+    show_message("Git Signs Plugin v1.0.0")
+    show_message("Future features: hunks, blame, stage/unstage")
+    show_message("Status: Waiting for grim_git_* bridge wiring")
+end
+
+function teardown()
+    show_message("Git Signs plugin unloaded")
+    return true
+end

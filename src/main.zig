@@ -159,6 +159,8 @@ pub fn main() !void {
             \\    }
             \\}
         );
+        // Set language for syntax highlighting (sample is Zig code)
+        try app.editor.highlighter.setLanguage("sample.zig");
     }
 
     std.debug.print("Starting Grim editor... Press Ctrl+Q to quit.\n", .{});
@@ -197,6 +199,12 @@ fn collectPluginDirectories(list: *std.ArrayList([]const u8), allocator: std.mem
     try appendPath(list, allocator, "plugins");
 
     if (std.posix.getenv("HOME")) |home| {
+        // Check XDG_DATA_HOME first, then fallback
+        if (std.posix.getenv("XDG_DATA_HOME")) |xdg_data| {
+            try appendJoinedPath(list, allocator, &.{ xdg_data, "grim", "plugins" });
+        } else {
+            try appendJoinedPath(list, allocator, &.{ home, ".local", "share", "grim", "plugins" });
+        }
         try appendJoinedPath(list, allocator, &.{ home, ".config", "grim", "plugins" });
         try appendJoinedPath(list, allocator, &.{ home, ".local", "share", "phantom.grim", "plugins" });
     }

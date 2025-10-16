@@ -1,0 +1,16 @@
+{
+  "id": "hello-world",
+  "name": "Hello World",
+  "version": "1.0.0",
+  "author": "Grim Team",
+  "description": "Minimal example plugin demonstrating the basics",
+  "entry_point": "init.gza",
+  "dependencies": [],
+  "permissions": {
+    "file_system_access": false,
+    "network_access": false,
+    "system_calls": false,
+    "editor_full_access": true
+  },
+  "enable_on_startup": true
+}

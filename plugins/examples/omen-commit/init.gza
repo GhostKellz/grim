@@ -1,0 +1,23 @@
+-- Omen Commit Plugin
+-- Placeholder for future AI integration
+-- TODO: Wire grim_omen_* bridge functions to Ghostlang VM
+
+function setup()
+    -- Register commands
+    register_command("OmenInfo", "omen_info_handler", "Show Omen plugin info")
+
+    show_message("Omen Commit plugin loaded (bridge functions pending)")
+    return true
+end
+
+function omen_info_handler()
+    show_message("Omen Commit Plugin v1.0.0")
+    show_message("Future features: AI commit messages, code explanation")
+    show_message("Status: Waiting for grim_omen_* bridge wiring")
+    show_message("Omen gateway: http://localhost:8080 (when available)")
+end
+
+function teardown()
+    show_message("Omen Commit plugin unloaded")
+    return true
+end

@@ -1,0 +1,20 @@
+{
+  "id": "git-signs",
+  "name": "Git Signs",
+  "version": "1.0.0",
+  "author": "Grim Team",
+  "description": "Display git hunks and stage/unstage changes",
+  "entry_point": "init.gza",
+  "dependencies": [],
+  "permissions": {
+    "file_system_access": true,
+    "network_access": false,
+    "system_calls": false,
+    "editor_full_access": true
+  },
+  "enable_on_startup": true,
+  "lazy_load": {
+    "events": ["BufRead", "BufNewFile"],
+    "file_patterns": ["*.zig", "*.gza", "*.rs", "*.js", "*.ts"]
+  }
+}

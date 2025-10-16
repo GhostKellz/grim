@@ -21,6 +21,12 @@ pub const Editor = struct {
     // Rename state
     rename_buffer: ?[]u8,
     rename_active: bool,
+    // Yank/paste system
+    yank_buffer: ?[]u8,
+    yank_linewise: bool,
+    // Search state
+    search_pattern: ?[]u8,
+    last_search_forward: bool,
 
     pub const Mode = enum {
         normal,
@@ -139,6 +145,10 @@ pub const Editor = struct {
             .pending_key = null,
             .rename_buffer = null,
             .rename_active = false,
+            .yank_buffer = null,
+            .yank_linewise = false,
+            .search_pattern = null,
+            .last_search_forward = true,
         };
     }
 
@@ -153,6 +163,12 @@ pub const Editor = struct {
         }
         if (self.rename_buffer) |buf| {
             self.allocator.free(buf);
+        }
+        if (self.yank_buffer) |buf| {
+            self.allocator.free(buf);
+        }
+        if (self.search_pattern) |pattern| {
+            self.allocator.free(pattern);
         }
         self.cursors.deinit(self.allocator);
         self.* = undefined;
@@ -244,8 +260,8 @@ pub const Editor = struct {
             .escape_to_normal => self.mode = .normal,
             .delete_char => try self.deleteCharAtCursor(),
             .delete_line => try self.deleteCurrentLine(),
-            .yank_line => {}, // TODO: Implement yank
-            .paste_after => {}, // TODO: Implement paste
+            .yank_line => try self.yankCurrentLine(),
+            .paste_after => try self.pasteAfter(),
             .toggle_fold => try self.toggleFoldAtCursor(),
             .fold_all => self.foldAll(),
             .unfold_all => self.unfoldAll(),
@@ -690,6 +706,154 @@ pub const Editor = struct {
             }
         }
         return null;
+    }
+
+    // Search operations
+    pub fn setSearchPattern(self: *Editor, pattern: []const u8) !void {
+        if (self.search_pattern) |old_pattern| {
+            self.allocator.free(old_pattern);
+        }
+        self.search_pattern = try self.allocator.dupe(u8, pattern);
+    }
+
+    pub fn searchForward(self: *Editor) !bool {
+        const pattern = self.search_pattern orelse return false;
+        if (pattern.len == 0) return false;
+
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        const search_start = self.cursor.offset + 1;
+
+        if (search_start >= content.len) {
+            // Wrap around to beginning
+            if (std.mem.indexOf(u8, content[0..], pattern)) |pos| {
+                self.cursor.offset = pos;
+                self.last_search_forward = true;
+                return true;
+            }
+            return false;
+        }
+
+        // Search from current position to end
+        if (std.mem.indexOf(u8, content[search_start..], pattern)) |rel_pos| {
+            self.cursor.offset = search_start + rel_pos;
+            self.last_search_forward = true;
+            return true;
+        }
+
+        // Wrap around to beginning
+        if (std.mem.indexOf(u8, content[0..self.cursor.offset], pattern)) |pos| {
+            self.cursor.offset = pos;
+            self.last_search_forward = true;
+            return true;
+        }
+
+        return false;
+    }
+
+    pub fn searchBackward(self: *Editor) !bool {
+        const pattern = self.search_pattern orelse return false;
+        if (pattern.len == 0) return false;
+
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+
+        if (self.cursor.offset == 0) {
+            // Wrap around to end
+            if (std.mem.lastIndexOf(u8, content, pattern)) |pos| {
+                self.cursor.offset = pos;
+                self.last_search_forward = false;
+                return true;
+            }
+            return false;
+        }
+
+        // Search from beginning to current position (exclusive)
+        if (std.mem.lastIndexOf(u8, content[0..self.cursor.offset], pattern)) |pos| {
+            self.cursor.offset = pos;
+            self.last_search_forward = false;
+            return true;
+        }
+
+        // Wrap around to end
+        if (std.mem.lastIndexOf(u8, content[self.cursor.offset..], pattern)) |rel_pos| {
+            self.cursor.offset = self.cursor.offset + rel_pos;
+            self.last_search_forward = false;
+            return true;
+        }
+
+        return false;
+    }
+
+    pub fn repeatLastSearch(self: *Editor) !bool {
+        if (self.last_search_forward) {
+            return try self.searchForward();
+        } else {
+            return try self.searchBackward();
+        }
+    }
+
+    pub fn repeatLastSearchReverse(self: *Editor) !bool {
+        if (self.last_search_forward) {
+            return try self.searchBackward();
+        } else {
+            return try self.searchForward();
+        }
+    }
+
+    // Yank/paste operations
+    fn yankCurrentLine(self: *Editor) !void {
+        // Find line boundaries
+        self.cursor.moveToLineStart(&self.rope);
+        const start = self.cursor.offset;
+        self.cursor.moveToLineEnd(&self.rope);
+        var end = self.cursor.offset;
+
+        // Include the newline if not at end of file
+        if (end < self.rope.len()) {
+            end += 1;
+        }
+
+        if (end > start) {
+            const yanked = try self.rope.slice(.{ .start = start, .end = end });
+
+            // Free old yank buffer
+            if (self.yank_buffer) |old_buf| {
+                self.allocator.free(old_buf);
+            }
+
+            // Store yanked content
+            self.yank_buffer = try self.allocator.dupe(u8, yanked);
+            self.yank_linewise = true;
+            self.cursor.offset = start;
+        }
+    }
+
+    fn pasteAfter(self: *Editor) !void {
+        const yanked = self.yank_buffer orelse return;
+
+        if (self.yank_linewise) {
+            // Paste on next line
+            self.cursor.moveToLineEnd(&self.rope);
+            const insert_pos = if (self.cursor.offset < self.rope.len())
+                self.cursor.offset + 1
+            else
+                self.cursor.offset;
+
+            // If at end of file and no trailing newline, add one first
+            if (insert_pos == self.rope.len() and self.rope.len() > 0) {
+                const last_char = (try self.rope.slice(.{ .start = self.rope.len() - 1, .end = self.rope.len() }))[0];
+                if (last_char != '\n') {
+                    try self.rope.insert(self.rope.len(), "\n");
+                }
+            }
+
+            try self.rope.insert(insert_pos, yanked);
+            self.cursor.offset = insert_pos;
+        } else {
+            // Character-wise paste after cursor
+            self.cursor.moveRight(&self.rope);
+            try self.rope.insert(self.cursor.offset, yanked);
+            self.cursor.offset += yanked.len;
+        }
     }
 
     // Bracket matching

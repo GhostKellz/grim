@@ -122,22 +122,47 @@ pub const ServerManager = struct {
         };
 
         const config: ?ServerConfig = blk: {
+            // Ghostlang
             if (std.mem.eql(u8, ext, ".gza") or std.mem.eql(u8, ext, ".ghost")) {
                 break :blk .{
                     .name = "ghostls",
                     .cmd = &[_][]const u8{"ghostls"},
                 };
-            } else if (std.mem.eql(u8, ext, ".zig")) {
+            }
+            // Zig
+            else if (std.mem.eql(u8, ext, ".zig")) {
                 break :blk .{
                     .name = "zls",
                     .cmd = &[_][]const u8{"zls"},
                 };
-            } else if (std.mem.eql(u8, ext, ".rs")) {
+            }
+            // Rust
+            else if (std.mem.eql(u8, ext, ".rs")) {
                 break :blk .{
                     .name = "rust_analyzer",
                     .cmd = &[_][]const u8{"rust-analyzer"},
                 };
-            } else if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".js")) {
+            }
+            // Go
+            else if (std.mem.eql(u8, ext, ".go")) {
+                break :blk .{
+                    .name = "gopls",
+                    .cmd = &[_][]const u8{"gopls"},
+                };
+            }
+            // C/C++
+            else if (std.mem.eql(u8, ext, ".c") or std.mem.eql(u8, ext, ".cpp") or
+                     std.mem.eql(u8, ext, ".cc") or std.mem.eql(u8, ext, ".cxx") or
+                     std.mem.eql(u8, ext, ".h") or std.mem.eql(u8, ext, ".hpp") or
+                     std.mem.eql(u8, ext, ".hxx")) {
+                break :blk .{
+                    .name = "clangd",
+                    .cmd = &[_][]const u8{"clangd"},
+                };
+            }
+            // TypeScript/JavaScript
+            else if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".js") or
+                     std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
                 break :blk .{
                     .name = "ts_ls",
                     .cmd = &[_][]const u8{ "typescript-language-server", "--stdio" },
@@ -174,6 +199,16 @@ pub const ServerManager = struct {
                 break :blk "zls";
             } else if (std.mem.eql(u8, ext, ".rs")) {
                 break :blk "rust_analyzer";
+            } else if (std.mem.eql(u8, ext, ".go")) {
+                break :blk "gopls";
+            } else if (std.mem.eql(u8, ext, ".c") or std.mem.eql(u8, ext, ".cpp") or
+                       std.mem.eql(u8, ext, ".cc") or std.mem.eql(u8, ext, ".cxx") or
+                       std.mem.eql(u8, ext, ".h") or std.mem.eql(u8, ext, ".hpp") or
+                       std.mem.eql(u8, ext, ".hxx")) {
+                break :blk "clangd";
+            } else if (std.mem.eql(u8, ext, ".ts") or std.mem.eql(u8, ext, ".js") or
+                       std.mem.eql(u8, ext, ".tsx") or std.mem.eql(u8, ext, ".jsx")) {
+                break :blk "ts_ls";
             } else {
                 return null;
             }

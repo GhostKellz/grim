@@ -1,6 +1,7 @@
 const std = @import("std");
 const runtime = @import("runtime");
 const syntax = @import("syntax");
+const core = @import("core");
 const theme_mod = @import("theme.zig");
 const Editor = @import("editor.zig").Editor;
 const editor_lsp_mod = @import("editor_lsp.zig");
@@ -9,6 +10,7 @@ const phantom_buffer_manager_mod = @import("phantom_buffer_manager.zig");
 const window_manager_mod = @import("window_manager.zig");
 const buffer_picker_mod = @import("buffer_picker.zig");
 const font_manager_mod = @import("font_manager.zig");
+const file_tree_mod = @import("file_tree.zig");
 
 /// Feature flag: Enable PhantomBuffer with undo/redo and multi-cursor support
 /// Set to false to use legacy Editor-based buffers
@@ -66,6 +68,13 @@ pub const SimpleTUI = struct {
     visual_block_mode: bool,
     visual_block_start_line: usize,
     visual_block_start_column: usize,
+    // Git integration
+    git: core.Git,
+    git_hunks: []core.Git.Hunk,
+    // File tree sidebar
+    file_tree: ?*file_tree_mod.FileTree,
+    file_tree_active: bool,
+    file_tree_width: usize,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
         var command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
@@ -119,6 +128,11 @@ pub const SimpleTUI = struct {
             .visual_block_mode = false,
             .visual_block_start_line = 0,
             .visual_block_start_column = 0,
+            .git = core.Git.init(allocator),
+            .git_hunks = &.{},
+            .file_tree = null,
+            .file_tree_active = false,
+            .file_tree_width = 30,
         };
 
         // Initialize PhantomBufferManager if enabled
@@ -158,6 +172,19 @@ pub const SimpleTUI = struct {
         if (self.phantom_buffer_manager) |pbm| {
             pbm.deinit();
             self.allocator.destroy(pbm);
+        }
+        // Clean up git hunks
+        for (self.git_hunks) |hunk| {
+            self.allocator.free(hunk.content);
+        }
+        if (self.git_hunks.len > 0) {
+            self.allocator.free(self.git_hunks);
+        }
+        self.git.deinit();
+        // Clean up file tree
+        if (self.file_tree) |tree| {
+            tree.deinit();
+            self.allocator.destroy(tree);
         }
         self.command_buffer.deinit(self.allocator);
         self.theme_registry.deinit();
@@ -217,6 +244,14 @@ pub const SimpleTUI = struct {
                 std.log.err("Failed to emit file_opened event: {}", .{err});
             };
         }
+
+        // Load git hunks for the file
+        self.loadGitHunks(filename) catch |err| {
+            // Not being in a git repo is expected, so only log errors that aren't NotInGitRepo
+            if (err != error.NotInGitRepo) {
+                std.log.warn("Failed to load git hunks for '{s}': {}", .{ filename, err });
+            }
+        };
     }
 
     pub fn setTheme(self: *SimpleTUI, name: []const u8) !void {
@@ -371,10 +406,11 @@ pub const SimpleTUI = struct {
             self.highlight_error_flash_state = false;
         }
 
+        // Note: rope.slice() returns arena-allocated memory, do NOT free
         const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
-        defer self.allocator.free(content);
 
-        const content_width: usize = if (width > 6) width - 6 else 0;
+        // Gutter width: 4 (line number) + 1 (diagnostic) + 1 (git sign) + 1 (space) = 7
+        const content_width: usize = if (width > 7) width - 7 else 0;
 
         var diagnostics_entries: []const editor_lsp_mod.Diagnostic = &[_]editor_lsp_mod.Diagnostic{};
         if (self.editor_lsp) |lsp| {
@@ -392,15 +428,22 @@ pub const SimpleTUI = struct {
             const line_end = if (rel_newline) |rel| line_start + rel else content.len;
             const line_slice = content[line_start..line_end];
 
-            // Line numbers + diagnostic marker column
+            // Line numbers + diagnostic marker + git sign columns
             var line_buf: [16]u8 = undefined;
             const line_str = try std.fmt.bufPrint(&line_buf, "{d:4}", .{logical_line + 1});
             try self.stdout.writeAll(line_str);
 
+            // Diagnostic marker
             const line_diag = selectLineDiagnostic(diagnostics_entries, logical_line);
-            const marker = if (line_diag) |diag| severityMarker(diag.severity) else ' ';
-            var marker_buf = [1]u8{marker};
-            try self.stdout.writeAll(marker_buf[0..]);
+            const diag_marker = if (line_diag) |diag| severityMarker(diag.severity) else ' ';
+            var diag_marker_buf = [1]u8{diag_marker};
+            try self.stdout.writeAll(diag_marker_buf[0..]);
+
+            // Git sign
+            const git_sign = self.getGitSignForLine(logical_line);
+            var git_sign_buf = [1]u8{git_sign};
+            try self.stdout.writeAll(git_sign_buf[0..]);
+
             try self.stdout.writeAll(" ");
 
             if (content_width > 0) {
@@ -421,6 +464,7 @@ pub const SimpleTUI = struct {
         try self.renderSignatureHelpPopup(width, height);
         try self.renderCodeActionsMenu(width, height);
         try self.renderBufferPicker(width, height);
+        try self.renderFileTree(width, height);
 
         // Status line
         try self.setCursor(height, 1);
@@ -612,6 +656,10 @@ pub const SimpleTUI = struct {
 
             // Global commands (work in any mode)
             switch (key) {
+                2 => { // Ctrl+B - Toggle file tree
+                    try self.toggleFileTree();
+                    return;
+                },
                 17 => { // Ctrl+Q
                     self.running = false;
                     return;
@@ -642,32 +690,51 @@ pub const SimpleTUI = struct {
             // Arrow keys
             switch (key_bytes[2]) {
                 'A' => { // Up arrow
-                    if (self.editor.mode == .insert and self.completion_popup_active and self.completion_items.len > 0) {
+                    if (self.file_tree_active) {
+                        if (self.file_tree) |tree| tree.moveUp();
+                    } else if (self.editor.mode == .insert and self.completion_popup_active and self.completion_items.len > 0) {
                         self.moveCompletionSelection(-1);
                     } else {
                         self.editor.moveCursorUp();
                     }
                 },
                 'B' => { // Down arrow
-                    if (self.editor.mode == .insert and self.completion_popup_active and self.completion_items.len > 0) {
+                    if (self.file_tree_active) {
+                        if (self.file_tree) |tree| tree.moveDown();
+                    } else if (self.editor.mode == .insert and self.completion_popup_active and self.completion_items.len > 0) {
                         self.moveCompletionSelection(1);
                     } else {
                         self.editor.moveCursorDown();
                     }
                 },
                 'C' => { // Right arrow
-                    self.editor.moveCursorRight();
-                    if (self.editor.mode == .insert and self.completion_popup_active) {
-                        self.completion_dirty = true;
+                    if (self.file_tree_active) {
+                        if (self.file_tree) |tree| try tree.toggleExpanded();
+                    } else {
+                        self.editor.moveCursorRight();
+                        if (self.editor.mode == .insert and self.completion_popup_active) {
+                            self.completion_dirty = true;
+                        }
                     }
                 },
                 'D' => { // Left arrow
-                    self.editor.moveCursorLeft();
-                    if (self.editor.mode == .insert and self.completion_popup_active) {
-                        self.completion_dirty = true;
+                    if (self.file_tree_active) {
+                        if (self.file_tree) |tree| try tree.toggleExpanded();
+                    } else {
+                        self.editor.moveCursorLeft();
+                        if (self.editor.mode == .insert and self.completion_popup_active) {
+                            self.completion_dirty = true;
+                        }
                     }
                 },
                 else => {},
+            }
+        } else if (key_bytes.len == 1) {
+            const key = key_bytes[0];
+            // Handle Enter key in file tree
+            if (self.file_tree_active and key == 13) { // Enter
+                try self.openFileTreeSelection();
+                return;
             }
         }
     }
@@ -768,6 +835,36 @@ pub const SimpleTUI = struct {
                     self.startCommandMode();
                 }
             },
+            '/' => {
+                // Start forward search
+                self.command_buffer.clearRetainingCapacity();
+                self.command_buffer.append(self.allocator, '/') catch {};
+                self.switchMode(.command);
+            },
+            '?' => {
+                // Start backward search
+                self.command_buffer.clearRetainingCapacity();
+                self.command_buffer.append(self.allocator, '?') catch {};
+                self.switchMode(.command);
+            },
+            'n' => {
+                // Repeat last search
+                const found = self.editor.repeatLastSearch() catch false;
+                if (found) {
+                    self.setStatusMessage("Search: next match");
+                } else {
+                    self.setStatusMessage("Pattern not found");
+                }
+            },
+            'N' => {
+                // Repeat last search in opposite direction
+                const found = self.editor.repeatLastSearchReverse() catch false;
+                if (found) {
+                    self.setStatusMessage("Search: previous match");
+                } else {
+                    self.setStatusMessage("Pattern not found");
+                }
+            },
             'q' => {
                 if (self.window_command_pending) {
                     self.window_command_pending = false;
@@ -854,14 +951,93 @@ pub const SimpleTUI = struct {
             'd' => {
                 if (self.visual_block_mode) {
                     try self.deleteVisualBlock();
+                } else {
+                    // Delete visual selection
+                    if (self.editor.selection_start) |start| {
+                        if (self.editor.selection_end) |end| {
+                            const delete_start = @min(start, end);
+                            const delete_end = @max(start, end);
+                            const deleted = try self.editor.rope.slice(.{ .start = delete_start, .end = delete_end });
+
+                            // Store in yank buffer before deleting
+                            if (self.editor.yank_buffer) |old_buf| {
+                                self.allocator.free(old_buf);
+                            }
+                            self.editor.yank_buffer = try self.allocator.dupe(u8, deleted);
+                            self.editor.yank_linewise = false;
+
+                            // Delete the selection
+                            try self.editor.rope.delete(delete_start, delete_end - delete_start);
+                            self.editor.cursor.offset = delete_start;
+
+                            self.setStatusMessage("Deleted selection");
+                        }
+                    }
+
+                    // Clear selection
+                    self.editor.selection_start = null;
+                    self.editor.selection_end = null;
                 }
                 self.switchMode(.normal);
             },
+            'c' => {
+                // Change visual selection (delete and enter insert mode)
+                if (self.visual_block_mode) {
+                    try self.changeVisualBlock();
+                } else {
+                    if (self.editor.selection_start) |start| {
+                        if (self.editor.selection_end) |end| {
+                            const delete_start = @min(start, end);
+                            const delete_end = @max(start, end);
+                            const deleted = try self.editor.rope.slice(.{ .start = delete_start, .end = delete_end });
+
+                            // Store in yank buffer before deleting
+                            if (self.editor.yank_buffer) |old_buf| {
+                                self.allocator.free(old_buf);
+                            }
+                            self.editor.yank_buffer = try self.allocator.dupe(u8, deleted);
+                            self.editor.yank_linewise = false;
+
+                            // Delete the selection
+                            try self.editor.rope.delete(delete_start, delete_end - delete_start);
+                            self.editor.cursor.offset = delete_start;
+                        }
+                    }
+
+                    // Clear selection
+                    self.editor.selection_start = null;
+                    self.editor.selection_end = null;
+                    self.switchMode(.insert);
+                }
+            },
             'y' => {
-                // TODO: Yank selection
+                // Yank visual selection
+                if (self.editor.selection_start) |start| {
+                    if (self.editor.selection_end) |end| {
+                        const yank_start = @min(start, end);
+                        const yank_end = @max(start, end);
+                        const yanked = try self.editor.rope.slice(.{ .start = yank_start, .end = yank_end });
+
+                        // Free old yank buffer
+                        if (self.editor.yank_buffer) |old_buf| {
+                            self.allocator.free(old_buf);
+                        }
+
+                        // Store yanked content (character-wise in visual mode)
+                        self.editor.yank_buffer = try self.allocator.dupe(u8, yanked);
+                        self.editor.yank_linewise = false;
+
+                        self.setStatusMessage("Yanked selection");
+                    }
+                }
+
                 if (self.visual_block_mode) {
                     self.exitVisualBlockMode();
                 }
+
+                // Clear selection
+                self.editor.selection_start = null;
+                self.editor.selection_end = null;
                 self.switchMode(.normal);
             },
             'I' => { // Insert at start of block
@@ -872,11 +1048,6 @@ pub const SimpleTUI = struct {
             'A' => { // Append at end of block
                 if (self.visual_block_mode) {
                     try self.appendAtVisualBlockEnd();
-                }
-            },
-            'c' => { // Change block
-                if (self.visual_block_mode) {
-                    try self.changeVisualBlock();
                 }
             },
             else => {},
@@ -951,6 +1122,38 @@ pub const SimpleTUI = struct {
             return;
         }
 
+        // Handle search patterns
+        if (trimmed[0] == '/' or trimmed[0] == '?') {
+            const is_forward = trimmed[0] == '/';
+            const pattern = if (trimmed.len > 1) trimmed[1..] else "";
+
+            if (pattern.len == 0) {
+                self.setStatusMessage("No search pattern");
+                self.exitCommandMode();
+                return;
+            }
+
+            // Set search pattern
+            try self.editor.setSearchPattern(pattern);
+
+            // Perform first search
+            const found = if (is_forward)
+                try self.editor.searchForward()
+            else
+                try self.editor.searchBackward();
+
+            if (found) {
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Search: {s}", .{pattern}) catch "Search complete";
+                self.setStatusMessage(msg);
+            } else {
+                self.setStatusMessage("Pattern not found");
+            }
+
+            self.exitCommandMode();
+            return;
+        }
+
         var tokenizer = std.mem.tokenizeAny(u8, trimmed, " \t");
         const head = tokenizer.next() orelse {
             self.exitCommandMode();
@@ -958,8 +1161,23 @@ pub const SimpleTUI = struct {
         };
 
         if (std.mem.eql(u8, head, "q") or std.mem.eql(u8, head, "quit")) {
+            // Check for unsaved changes
+            if (self.phantom_buffer_manager) |pbm| {
+                if (pbm.hasUnsavedChanges()) {
+                    self.setStatusMessage("No write since last change (add ! to override)");
+                    self.exitCommandMode();
+                    return;
+                }
+            }
             self.running = false;
             self.setStatusMessage("Quit");
+            self.exitCommandMode();
+            return;
+        }
+
+        if (std.mem.eql(u8, head, "q!") or std.mem.eql(u8, head, "quit!")) {
+            self.running = false;
+            self.setStatusMessage("Quit (forced)");
             self.exitCommandMode();
             return;
         }
@@ -995,6 +1213,147 @@ pub const SimpleTUI = struct {
                 return;
             };
             self.setStatusMessage("Wrote file");
+            self.exitCommandMode();
+            return;
+        }
+
+        // Buffer navigation commands
+        if (std.mem.eql(u8, head, "e") or std.mem.eql(u8, head, "edit")) {
+            const filename = tokenizer.next() orelse {
+                self.setStatusMessage("E471: Argument required");
+                self.exitCommandMode();
+                return;
+            };
+
+            self.loadFile(filename) catch |err| {
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Failed to open '{s}': {}", .{ filename, err }) catch "Failed to open file";
+                self.setStatusMessage(msg);
+                std.log.err("Failed to open file '{s}': {}", .{ filename, err });
+                self.exitCommandMode();
+                return;
+            };
+
+            var msg_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "Opened '{s}'", .{filename}) catch "File opened";
+            self.setStatusMessage(msg);
+            self.exitCommandMode();
+            return;
+        }
+
+        if (std.mem.eql(u8, head, "bn") or std.mem.eql(u8, head, "bnext")) {
+            if (self.phantom_buffer_manager) |pbm| {
+                pbm.nextBuffer();
+                const active = pbm.getActiveBuffer() orelse {
+                    self.setStatusMessage("No active buffer");
+                    self.exitCommandMode();
+                    return;
+                };
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Switched to buffer {d}: {s}", .{ active.id, active.display_name }) catch "Next buffer";
+                self.setStatusMessage(msg);
+            } else {
+                self.setStatusMessage("Buffer manager not available");
+            }
+            self.exitCommandMode();
+            return;
+        }
+
+        if (std.mem.eql(u8, head, "bp") or std.mem.eql(u8, head, "bprev") or std.mem.eql(u8, head, "bprevious")) {
+            if (self.phantom_buffer_manager) |pbm| {
+                pbm.previousBuffer();
+                const active = pbm.getActiveBuffer() orelse {
+                    self.setStatusMessage("No active buffer");
+                    self.exitCommandMode();
+                    return;
+                };
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Switched to buffer {d}: {s}", .{ active.id, active.display_name }) catch "Previous buffer";
+                self.setStatusMessage(msg);
+            } else {
+                self.setStatusMessage("Buffer manager not available");
+            }
+            self.exitCommandMode();
+            return;
+        }
+
+        if (std.mem.eql(u8, head, "bd") or std.mem.eql(u8, head, "bdelete")) {
+            if (self.phantom_buffer_manager) |pbm| {
+                const current_id = pbm.active_buffer_id;
+                pbm.closeBuffer(current_id) catch |err| {
+                    switch (err) {
+                        error.CannotCloseLastBuffer => self.setStatusMessage("Cannot close last buffer"),
+                        else => {
+                            var msg_buf: [128]u8 = undefined;
+                            const msg = std.fmt.bufPrint(&msg_buf, "Failed to close buffer: {}", .{err}) catch "Close failed";
+                            self.setStatusMessage(msg);
+                        },
+                    }
+                    self.exitCommandMode();
+                    return;
+                };
+                self.setStatusMessage("Buffer closed");
+            } else {
+                self.setStatusMessage("Buffer manager not available");
+            }
+            self.exitCommandMode();
+            return;
+        }
+
+        // Handle substitute command :%s/pattern/replacement/[flags]
+        if (std.mem.eql(u8, head, "%s") or std.mem.eql(u8, head, "s")) {
+            const rest = trimmed[head.len..];
+            // Parse: /pattern/replacement/[flags]
+            if (rest.len < 3 or rest[0] != '/') {
+                self.setStatusMessage("E486: Pattern not found (usage: :%s/pattern/replacement/[flags])");
+                self.exitCommandMode();
+                return;
+            }
+
+            // Find second delimiter
+            const second_delim_idx = std.mem.indexOfPos(u8, rest, 1, "/") orelse {
+                self.setStatusMessage("E486: Pattern not found");
+                self.exitCommandMode();
+                return;
+            };
+
+            const pattern = rest[1..second_delim_idx];
+            if (pattern.len == 0) {
+                self.setStatusMessage("E486: Pattern not found");
+                self.exitCommandMode();
+                return;
+            }
+
+            // Find third delimiter (optional)
+            const third_start = second_delim_idx + 1;
+            const third_delim_idx = std.mem.indexOfPos(u8, rest, third_start, "/");
+
+            const replacement = if (third_delim_idx) |idx|
+                rest[third_start..idx]
+            else if (third_start < rest.len)
+                rest[third_start..]
+            else
+                "";
+
+            const flags = if (third_delim_idx) |idx|
+                if (idx + 1 < rest.len) rest[idx + 1 ..] else ""
+            else
+                "";
+
+            // Determine if global replace (g flag)
+            const global = std.mem.indexOf(u8, flags, "g") != null;
+
+            // Perform replacement
+            const count = try self.performSubstitute(pattern, replacement, global);
+
+            var msg_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "{d} substitution{s} on {d} line{s}", .{
+                count,
+                if (count == 1) @as([]const u8, "") else "s",
+                count,
+                if (count == 1) @as([]const u8, "") else "s",
+            }) catch "Substitution complete";
+            self.setStatusMessage(msg);
             self.exitCommandMode();
             return;
         }
@@ -1048,6 +1407,47 @@ pub const SimpleTUI = struct {
         };
 
         self.exitCommandMode();
+    }
+
+    fn performSubstitute(self: *SimpleTUI, pattern: []const u8, replacement: []const u8, global: bool) !usize {
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        var count: usize = 0;
+        var pos: usize = 0;
+
+        while (pos < content.len) {
+            if (std.mem.indexOf(u8, content[pos..], pattern)) |rel_offset| {
+                const match_start = pos + rel_offset;
+
+                // Delete the matched pattern
+                try self.editor.rope.delete(match_start, pattern.len);
+
+                // Insert the replacement
+                if (replacement.len > 0) {
+                    try self.editor.rope.insert(match_start, replacement);
+                }
+
+                count += 1;
+
+                // Update position
+                if (global) {
+                    // For global replace, restart search from beginning (simpler implementation)
+                    pos = 0;
+                    continue;
+                } else {
+                    // For non-global, only replace first occurrence
+                    break;
+                }
+            } else {
+                // No more matches
+                break;
+            }
+        }
+
+        if (count > 0) {
+            self.markHighlightsDirty();
+        }
+
+        return count;
     }
 
     fn saveCurrentFile(self: *SimpleTUI) !void {
@@ -1813,6 +2213,94 @@ pub const SimpleTUI = struct {
 
             try self.resetColor();
             row += 1;
+        }
+    }
+
+    fn renderFileTree(self: *SimpleTUI, width: usize, height: usize) !void {
+        if (!self.file_tree_active) return;
+        const tree = self.file_tree orelse return;
+
+        const tree_width = @min(self.file_tree_width, width / 2);
+        const tree_height = height - 2; // Leave room for status line
+
+        // Render file tree on the left side
+        var row: usize = 1;
+        for (tree.visible_entries.items[tree.scroll_offset..], tree.scroll_offset..) |entry, idx| {
+            if (row > tree_height) break;
+
+            try self.setCursor(row, 1);
+            const is_selected = idx == tree.selected_index;
+
+            // Background color
+            if (is_selected) {
+                try self.setColor(47, 30); // Selected: white bg, black text
+            } else {
+                try self.setColor(40, 37); // Normal: dark bg, white text
+            }
+
+            // Selection indicator
+            if (is_selected) {
+                try self.stdout.writeAll("> ");
+            } else {
+                try self.stdout.writeAll("  ");
+            }
+
+            // Indentation
+            var i: usize = 0;
+            while (i < entry.depth) : (i += 1) {
+                try self.stdout.writeAll("  ");
+            }
+
+            // Expansion indicator for directories
+            if (entry.is_dir) {
+                if (entry.expanded) {
+                    try self.stdout.writeAll("▼ ");
+                } else {
+                    try self.stdout.writeAll("▶ ");
+                }
+            } else {
+                try self.stdout.writeAll("  ");
+            }
+
+            // File/directory name (truncate if too long)
+            const max_name_len = tree_width - 4 - (entry.depth * 2) - 2;
+            if (entry.name.len > max_name_len) {
+                try self.stdout.writeAll(entry.name[0..max_name_len]);
+            } else {
+                try self.stdout.writeAll(entry.name);
+            }
+
+            // Pad the rest of the line
+            const used_width = 2 + (entry.depth * 2) + 2 + @min(entry.name.len, max_name_len);
+            if (used_width < tree_width) {
+                var pad = tree_width - used_width;
+                while (pad > 0) : (pad -= 1) {
+                    try self.stdout.writeAll(" ");
+                }
+            }
+
+            try self.resetColor();
+            row += 1;
+        }
+
+        // Fill remaining lines with background
+        while (row <= tree_height) : (row += 1) {
+            try self.setCursor(row, 1);
+            try self.setColor(40, 37);
+            var pad: usize = 0;
+            while (pad < tree_width) : (pad += 1) {
+                try self.stdout.writeAll(" ");
+            }
+            try self.resetColor();
+        }
+
+        // Draw vertical separator
+        row = 1;
+        while (row <= tree_height) : (row += 1) {
+            try self.setCursor(row, tree_width + 1);
+            try self.setColor(47, 30);
+            try self.stdout.writeAll("│");
+            try self.resetColor();
         }
     }
 
@@ -3244,6 +3732,80 @@ pub const SimpleTUI = struct {
             self.setStatusMessage("Window navigated");
         } else {
             self.setStatusMessage("No window manager active");
+        }
+    }
+
+    fn loadGitHunks(self: *SimpleTUI, filepath: []const u8) !void {
+        // Free old hunks first
+        for (self.git_hunks) |hunk| {
+            self.allocator.free(hunk.content);
+        }
+        if (self.git_hunks.len > 0) {
+            self.allocator.free(self.git_hunks);
+            self.git_hunks = &.{};
+        }
+
+        // Detect git repo if not already detected
+        if (self.git.repo_root == null) {
+            const parent_dir = std.fs.path.dirname(filepath) orelse ".";
+            _ = try self.git.detectRepository(parent_dir);
+        }
+
+        // Load hunks
+        self.git_hunks = try self.git.getHunks(filepath);
+    }
+
+    fn getGitSignForLine(self: *SimpleTUI, line: usize) u8 {
+        // Line is 0-indexed, but git hunks use 1-indexed line numbers
+        const git_line = line + 1;
+
+        for (self.git_hunks) |hunk| {
+            if (hunk.start_line <= git_line and git_line <= hunk.end_line) {
+                return switch (hunk.hunk_type) {
+                    .added => '+',
+                    .modified => '~',
+                    .deleted => '-',
+                };
+            }
+        }
+
+        return ' ';
+    }
+
+    /// Toggle file tree sidebar visibility
+    pub fn toggleFileTree(self: *SimpleTUI) !void {
+        if (self.file_tree == null) {
+            // Initialize file tree with current working directory
+            const cwd = try std.fs.cwd().realpathAlloc(self.allocator, ".");
+            defer self.allocator.free(cwd);
+
+            const tree = try self.allocator.create(file_tree_mod.FileTree);
+            tree.* = try file_tree_mod.FileTree.init(self.allocator, cwd);
+            self.file_tree = tree;
+
+            // Load the tree
+            try tree.load();
+        }
+
+        self.file_tree_active = !self.file_tree_active;
+        if (self.file_tree_active) {
+            self.setStatusMessage("File tree opened (Ctrl+B to close, ←→ to navigate)");
+        } else {
+            self.setStatusMessage("File tree closed");
+        }
+    }
+
+    /// Open selected file from file tree
+    fn openFileTreeSelection(self: *SimpleTUI) !void {
+        const tree = self.file_tree orelse return;
+        const entry = tree.getSelectedEntry() orelse return;
+
+        if (!entry.is_dir) {
+            try self.loadFile(entry.path);
+            self.file_tree_active = false;
+            self.switchMode(.normal);
+        } else {
+            try tree.toggleExpanded();
         }
     }
 };

@@ -541,6 +541,14 @@ pub const PluginManager = struct {
         dependencies: [][]const u8,
         permissions: PluginPermissions,
         enable_on_startup: bool = true,
+        lazy_load: LazyLoadConfig = .{},
+
+        pub const LazyLoadConfig = struct {
+            enabled: bool = false,
+            load_on_commands: [][]const u8 = &.{},
+            load_on_events: [][]const u8 = &.{},
+            load_on_filetypes: [][]const u8 = &.{},
+        };
 
         pub const PluginPermissions = struct {
             file_system_access: bool = false,
@@ -572,6 +580,22 @@ pub const PluginManager = struct {
             if (self.permissions.blocked_directories.len > 0) {
                 for (self.permissions.blocked_directories) |dir| allocator.free(dir);
                 allocator.free(self.permissions.blocked_directories);
+            }
+
+            // Cleanup lazy_load arrays
+            if (self.lazy_load.load_on_commands.len > 0) {
+                for (self.lazy_load.load_on_commands) |cmd| allocator.free(cmd);
+                allocator.free(self.lazy_load.load_on_commands);
+            }
+
+            if (self.lazy_load.load_on_events.len > 0) {
+                for (self.lazy_load.load_on_events) |evt| allocator.free(evt);
+                allocator.free(self.lazy_load.load_on_events);
+            }
+
+            if (self.lazy_load.load_on_filetypes.len > 0) {
+                for (self.lazy_load.load_on_filetypes) |ft| allocator.free(ft);
+                allocator.free(self.lazy_load.load_on_filetypes);
             }
         }
     };
@@ -723,6 +747,13 @@ pub const PluginManager = struct {
             blocked_directories: ?[]const []const u8 = null,
         };
 
+        const LazyLoadDTO = struct {
+            enabled: ?bool = null,
+            load_on_commands: ?[]const []const u8 = null,
+            load_on_events: ?[]const []const u8 = null,
+            load_on_filetypes: ?[]const []const u8 = null,
+        };
+
         const ManifestDTO = struct {
             id: []const u8,
             name: []const u8,
@@ -733,6 +764,7 @@ pub const PluginManager = struct {
             dependencies: ?[]const []const u8 = null,
             permissions: ?PermissionsDTO = null,
             enable_on_startup: ?bool = null,
+            lazy_load: ?LazyLoadDTO = null,
         };
 
         var parsed = try std.json.parseFromSlice(ManifestDTO, self.allocator, manifest_content, .{ .ignore_unknown_fields = true });
@@ -761,6 +793,13 @@ pub const PluginManager = struct {
             manifest.permissions.editor_full_access = perms.editor_full_access orelse manifest.permissions.editor_full_access;
             manifest.permissions.allowed_directories = if (perms.allowed_directories) |dirs| try duplicateStringSlice(self.allocator, dirs) else manifest.permissions.allowed_directories;
             manifest.permissions.blocked_directories = if (perms.blocked_directories) |dirs| try duplicateStringSlice(self.allocator, dirs) else manifest.permissions.blocked_directories;
+        }
+
+        if (dto.lazy_load) |lazy| {
+            manifest.lazy_load.enabled = lazy.enabled orelse manifest.lazy_load.enabled;
+            manifest.lazy_load.load_on_commands = if (lazy.load_on_commands) |cmds| try duplicateStringSlice(self.allocator, cmds) else manifest.lazy_load.load_on_commands;
+            manifest.lazy_load.load_on_events = if (lazy.load_on_events) |evts| try duplicateStringSlice(self.allocator, evts) else manifest.lazy_load.load_on_events;
+            manifest.lazy_load.load_on_filetypes = if (lazy.load_on_filetypes) |fts| try duplicateStringSlice(self.allocator, fts) else manifest.lazy_load.load_on_filetypes;
         }
 
         try self.validatePermissions(&manifest.permissions);

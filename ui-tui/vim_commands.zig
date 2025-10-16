@@ -607,16 +607,112 @@ pub const VimEngine = struct {
     }
 
     fn getParagraphRange(self: *VimEngine, pos: usize, inner: bool) Error!Range {
-        _ = self;
-        _ = inner;
-        return Range{ .start = pos, .end = pos };
+        const len = self.rope.len();
+        const content = try self.rope.slice(.{ .start = 0, .end = len });
+
+        // Paragraph is delimited by blank lines (empty or whitespace-only)
+        var start: usize = 0;
+        var end: usize = len;
+
+        // Find paragraph start (search backward for blank line)
+        var i = pos;
+        while (i > 0) {
+            if (content[i - 1] == '\n') {
+                // Check if line before is blank
+                const line_start = blk: {
+                    var j = i - 1;
+                    while (j > 0 and content[j - 1] != '\n') : (j -= 1) {}
+                    break :blk j;
+                };
+
+                const is_blank = blk: {
+                    var j = line_start;
+                    while (j < i - 1) : (j += 1) {
+                        if (!std.ascii.isWhitespace(content[j])) break :blk false;
+                    }
+                    break :blk true;
+                };
+
+                if (is_blank) {
+                    start = i;
+                    break;
+                }
+            }
+            i -= 1;
+        }
+
+        // Find paragraph end (search forward for blank line)
+        i = pos;
+        while (i < content.len) {
+            if (content[i] == '\n') {
+                // Check if next line is blank
+                const next_line_start = i + 1;
+                if (next_line_start >= content.len) {
+                    end = content.len;
+                    break;
+                }
+
+                var next_line_end = next_line_start;
+                while (next_line_end < content.len and content[next_line_end] != '\n') : (next_line_end += 1) {}
+
+                const is_blank = blk: {
+                    var j = next_line_start;
+                    while (j < next_line_end) : (j += 1) {
+                        if (!std.ascii.isWhitespace(content[j])) break :blk false;
+                    }
+                    break :blk true;
+                };
+
+                if (is_blank) {
+                    end = i;
+                    break;
+                }
+            }
+            i += 1;
+        }
+
+        if (!inner) {
+            // "around" includes trailing blank line
+            if (end < content.len and content[end] == '\n') {
+                end += 1;
+            }
+        }
+
+        return Range{ .start = start, .end = end };
     }
 
     fn getQuoteRange(self: *VimEngine, pos: usize, quote: u8, inner: bool) Error!Range {
-        _ = self;
-        _ = quote;
-        _ = inner;
-        return Range{ .start = pos, .end = pos };
+        const len = self.rope.len();
+        const content = try self.rope.slice(.{ .start = 0, .end = len });
+
+        // Find opening quote (search backward from cursor)
+        var start_pos: ?usize = null;
+        var i = pos;
+        while (i > 0) : (i -= 1) {
+            if (content[i - 1] == quote) {
+                start_pos = i - 1;
+                break;
+            }
+        }
+
+        if (start_pos == null) return Error.InvalidTextObject;
+
+        // Find closing quote (search forward from cursor)
+        var end_pos: ?usize = null;
+        i = pos;
+        while (i < content.len) : (i += 1) {
+            if (content[i] == quote and i != start_pos.?) {
+                end_pos = i;
+                break;
+            }
+        }
+
+        if (end_pos == null) return Error.InvalidTextObject;
+
+        const start = if (inner) start_pos.? + 1 else start_pos.?;
+        const end = if (inner) end_pos.? else end_pos.? + 1;
+
+        return Range{ .start = start, .end = end };
     }
 
     fn getTagRange(self: *VimEngine, pos: usize, inner: bool) Error!Range {

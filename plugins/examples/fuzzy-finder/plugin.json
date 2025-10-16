@@ -1,0 +1,16 @@
+{
+  "id": "fuzzy-finder",
+  "name": "Fuzzy Finder",
+  "version": "1.0.0",
+  "author": "Grim Team",
+  "description": "Fuzzy file finder using grim_fuzzy_* API",
+  "entry_point": "init.gza",
+  "dependencies": [],
+  "permissions": {
+    "file_system_access": true,
+    "network_access": false,
+    "system_calls": false,
+    "editor_full_access": true
+  },
+  "enable_on_startup": true
+}

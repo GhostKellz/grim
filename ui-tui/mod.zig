@@ -20,6 +20,7 @@ pub const window_manager = @import("window_manager.zig");
 pub const theme_customizer = @import("theme_customizer.zig");
 pub const buffer_sessions = @import("buffer_sessions.zig");
 pub const font_manager = @import("font_manager.zig");
+pub const file_tree = @import("file_tree.zig");
 
 pub const App = app.App;
 pub const Mode = app.Mode;
@@ -47,3 +48,4 @@ pub const WindowManager = window_manager.WindowManager;
 pub const ThemeCustomizer = theme_customizer.ThemeCustomizer;
 pub const BufferSessions = buffer_sessions.BufferSessions;
 pub const FontManager = font_manager.FontManager;
+pub const FileTree = file_tree.FileTree;
