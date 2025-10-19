@@ -68,6 +68,10 @@
             .url = "https://github.com/ghostkellz/zhttp/archive/main.tar.gz",
             .hash = "zhttp-0.1.2-jZpECD6WBQBDZbLNrphEx_zqWSrsT4jyO_Hs9iMDkSQX",
         },
+        .zrpc = .{
+            .url = "https://github.com/ghostkellz/zrpc/archive/refs/heads/main.tar.gz",
+            .hash = "zrpc-0.1.0-b2Xib6X1BwCltazUe_BVVmRTkid4nqVfeknx8RMumZn3",
+        },
     },
     .paths = .{
         "build.zig",

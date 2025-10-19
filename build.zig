@@ -75,6 +75,22 @@ pub fn build(b: *std.Build) void {
         },
     });
 
+    const zrpc = b.dependency("zrpc", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const ai_mod = b.createModule(.{
+        .root_source_file = b.path("ai/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{
+            .{ .name = "zhttp", .module = zhttp.module("zhttp") },
+            .{ .name = "zrpc", .module = zrpc.module("zrpc") },
+            .{ .name = "core", .module = core_mod },
+        },
+    });
+
     const host_mod = b.createModule(.{
         .root_source_file = b.path("host/mod.zig"),
         .target = target,
@@ -82,6 +98,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "flare", .module = flare.module("flare") },
             .{ .name = "ghostlang", .module = ghostlang_dep.module("ghostlang") },
+            .{ .name = "ai", .module = ai_mod },
         },
     });
 
@@ -115,16 +132,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "zsync", .module = zsync.module("zsync") },
-        },
-    });
-
-    const ai_mod = b.createModule(.{
-        .root_source_file = b.path("ai/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "zhttp", .module = zhttp.module("zhttp") },
-            .{ .name = "core", .module = core_mod },
         },
     });
 
@@ -320,6 +327,26 @@ pub fn build(b: *std.Build) void {
     const run_bench_cmd = b.addRunArtifact(bench_exe);
     run_bench_cmd.step.dependOn(b.getInstallStep());
     bench_step.dependOn(&run_bench_cmd.step);
+
+    // Test Reaper client executable
+    const test_reaper_exe = b.addExecutable(.{
+        .name = "test_reaper_client",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test_reaper_client.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "ai", .module = ai_mod },
+            },
+        }),
+    });
+    b.installArtifact(test_reaper_exe);
+
+    // Top level step for testing Reaper client
+    const test_reaper_step = b.step("test-reaper", "Test Reaper AI client integration");
+    const run_test_reaper = b.addRunArtifact(test_reaper_exe);
+    run_test_reaper.step.dependOn(b.getInstallStep());
+    test_reaper_step.dependOn(&run_test_reaper.step);
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //

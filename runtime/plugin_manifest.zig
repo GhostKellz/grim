@@ -28,6 +28,10 @@ pub const PluginManifest = struct {
     hot_functions: [][]const u8 = &.{},
     compile_on_install: bool = false,
 
+    // [native] section
+    native_library: ?[]const u8 = null,
+    native_functions: [][]const u8 = &.{},
+
     allocator: std.mem.Allocator,
 
     pub fn deinit(self: *PluginManifest) void {
@@ -55,6 +59,10 @@ pub const PluginManifest = struct {
 
         for (self.hot_functions) |item| self.allocator.free(item);
         self.allocator.free(self.hot_functions);
+
+        if (self.native_library) |lib| self.allocator.free(lib);
+        for (self.native_functions) |item| self.allocator.free(item);
+        self.allocator.free(self.native_functions);
     }
 
     /// Parse plugin.toml file
@@ -88,6 +96,9 @@ pub const PluginManifest = struct {
 
         var optimize_section = std.StringHashMap([]const u8).init(allocator);
         defer optimize_section.deinit();
+
+        var native_section = std.StringHashMap([]const u8).init(allocator);
+        defer native_section.deinit();
 
         // Parse sections
         var lines = std.mem.tokenizeScalar(u8, content, '\n');
@@ -123,6 +134,8 @@ pub const PluginManifest = struct {
                 try deps_section.put(key, value);
             } else if (std.mem.eql(u8, current_section, "optimize")) {
                 try optimize_section.put(key, value);
+            } else if (std.mem.eql(u8, current_section, "native")) {
+                try native_section.put(key, value);
             }
         }
 
@@ -163,7 +176,12 @@ pub const PluginManifest = struct {
             manifest.compile_on_install = std.mem.eql(u8, value, "true");
         }
 
-        // TODO: Parse arrays (requires, load_after, hot_functions)
+        // Extract [native] fields
+        if (native_section.get("library")) |lib_path| {
+            manifest.native_library = try allocator.dupe(u8, lib_path);
+        }
+
+        // TODO: Parse arrays (requires, load_after, hot_functions, native_functions)
         // For now, leave them empty
 
         return manifest;

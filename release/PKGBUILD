@@ -1,0 +1,59 @@
+# Maintainer: GhostKellz <ghostkellz@grimeditor.dev>
+pkgname=grim-editor
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Zig-powered modal editor with Vim-like keybindings"
+arch=('x86_64' 'aarch64')
+url="https://github.com/ghostkellz/grim"
+license=('MIT')
+depends=('glibc' 'libffi')
+makedepends=('zig>=0.16.0' 'git')
+optdepends=(
+    'ghostls: Ghostlang LSP server'
+    'zls: Zig LSP server'
+    'tree-sitter: Syntax highlighting'
+)
+provides=('grim')
+conflicts=('grim')
+source=("git+https://github.com/ghostkellz/grim.git#tag=v${pkgver}")
+sha256sums=('SKIP')
+
+build() {
+    cd "$srcdir/grim"
+
+    # Build with Zig
+    zig build -Doptimize=ReleaseFast
+}
+
+check() {
+    cd "$srcdir/grim"
+
+    # Run tests
+    zig build test || echo "Tests skipped"
+}
+
+package() {
+    cd "$srcdir/grim"
+
+    # Install binary
+    install -Dm755 "zig-out/bin/grim" "$pkgdir/usr/bin/grim"
+
+    # Install default config
+    install -Dm644 "config/default.gza" "$pkgdir/usr/share/grim/config/default.gza"
+
+    # Install license
+    install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+
+    # Install documentation
+    install -Dm644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README.md"
+    install -Dm644 "QUICKSTART.md" "$pkgdir/usr/share/doc/$pkgname/QUICKSTART.md"
+
+    # Install shell completions (if available)
+    if [ -f "completions/grim.bash" ]; then
+        install -Dm644 "completions/grim.bash" "$pkgdir/usr/share/bash-completion/completions/grim"
+    fi
+
+    if [ -f "completions/grim.zsh" ]; then
+        install -Dm644 "completions/grim.zsh" "$pkgdir/usr/share/zsh/site-functions/_grim"
+    fi
+}

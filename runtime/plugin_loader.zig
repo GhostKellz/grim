@@ -87,25 +87,33 @@ pub const PluginLoader = struct {
     fn detectPluginType(self: *PluginLoader, discovered: *DiscoveredPlugin) !LoadedPlugin.PluginType {
         _ = self;
 
-        // Check for native library in manifest
-        // TODO: Parse [native] section from manifest when we enhance parser
-        // For now, just check for .gza file
+        const has_ghostlang = blk: {
+            const main_path = try std.fs.path.join(
+                discovered.allocator,
+                &.{ discovered.path, discovered.manifest.main },
+            );
+            defer discovered.allocator.free(main_path);
 
-        const main_path = try std.fs.path.join(
-            discovered.allocator,
-            &.{ discovered.path, discovered.manifest.main },
-        );
-        defer discovered.allocator.free(main_path);
-
-        // Check if main file exists
-        std.fs.cwd().access(main_path, .{}) catch |err| {
-            std.log.err("Plugin main file not found: {s}", .{main_path});
-            return err;
+            // Check if main .gza file exists
+            std.fs.cwd().access(main_path, .{}) catch {
+                break :blk false;
+            };
+            break :blk true;
         };
 
-        // For now, all plugins are Ghostlang
-        // TODO: Detect native and hybrid plugins
-        return .ghostlang;
+        const has_native = discovered.manifest.native_library != null;
+
+        // Determine plugin type based on what's present
+        if (has_ghostlang and has_native) {
+            return .hybrid;
+        } else if (has_native) {
+            return .native;
+        } else if (has_ghostlang) {
+            return .ghostlang;
+        } else {
+            std.log.err("Plugin {s} has neither Ghostlang script nor native library", .{discovered.name});
+            return error.InvalidPluginType;
+        }
     }
 
     /// Load Ghostlang (.gza) plugin
@@ -149,19 +157,188 @@ pub const PluginLoader = struct {
 
     /// Load native (.so/.dll) plugin
     fn loadNative(self: *PluginLoader, discovered: *DiscoveredPlugin) !LoadedPlugin {
-        _ = self;
-        _ = discovered;
-        // TODO: Implement native plugin loading
-        return error.NotImplemented;
+        const native_plugin = @import("native_plugin.zig");
+
+        // Get native library path from manifest
+        const lib_name = discovered.manifest.native_library orelse return error.MissingNativeLibrary;
+
+        // Build full path to library
+        const lib_path = try std.fs.path.join(
+            self.allocator,
+            &.{ discovered.path, lib_name },
+        );
+        defer self.allocator.free(lib_path);
+
+        std.log.debug("Loading native library: {s}", .{lib_path});
+
+        // Open the shared library
+        var library = try std.DynLib.open(lib_path);
+        errdefer library.close();
+
+        // Lookup required symbols
+        const info_fn = library.lookup(
+            *const fn () callconv(.c) native_plugin.NativePluginInfo,
+            "grim_plugin_info",
+        ) orelse {
+            std.log.err("Native plugin missing grim_plugin_info export: {s}", .{lib_path});
+            return error.MissingPluginInfo;
+        };
+
+        const init_fn = library.lookup(
+            *const fn () callconv(.c) bool,
+            "grim_plugin_init",
+        ) orelse {
+            std.log.err("Native plugin missing grim_plugin_init export: {s}", .{lib_path});
+            return error.MissingPluginInit;
+        };
+
+        const setup_fn = library.lookup(
+            *const fn () callconv(.c) void,
+            "grim_plugin_setup",
+        );
+
+        const teardown_fn = library.lookup(
+            *const fn () callconv(.c) void,
+            "grim_plugin_teardown",
+        );
+
+        // Get plugin info
+        const info = info_fn();
+
+        // Validate API version
+        if (info.api_version != native_plugin.GRIM_PLUGIN_API_VERSION) {
+            std.log.err("Plugin API version mismatch: plugin={d}, grim={d}", .{
+                info.api_version,
+                native_plugin.GRIM_PLUGIN_API_VERSION,
+            });
+            return error.APIVersionMismatch;
+        }
+
+        // Initialize plugin
+        const init_success = init_fn();
+        if (!init_success) {
+            std.log.err("Plugin initialization failed: {s}", .{info.name});
+            return error.PluginInitFailed;
+        }
+
+        std.log.info("Native plugin loaded: {s} v{s}", .{ info.name, info.version });
+
+        return LoadedPlugin{
+            .manifest = discovered.manifest,
+            .plugin_dir = try self.allocator.dupe(u8, discovered.path),
+            .plugin_type = .native,
+            .state = .{
+                .native = .{
+                    .library = library,
+                    .setup_fn = setup_fn,
+                    .teardown_fn = teardown_fn,
+                },
+            },
+            .allocator = self.allocator,
+        };
     }
 
     /// Load hybrid (Ghostlang + native) plugin
     fn loadHybrid(self: *PluginLoader, discovered: *DiscoveredPlugin, ghostlang_host: *host.Host) !LoadedPlugin {
-        _ = self;
-        _ = discovered;
-        _ = ghostlang_host;
-        // TODO: Implement hybrid plugin loading
-        return error.NotImplemented;
+        const native_plugin = @import("native_plugin.zig");
+
+        std.log.info("Loading hybrid plugin: {s}", .{discovered.name});
+
+        // 1. Load Ghostlang component
+        const script_path = try std.fs.path.join(
+            self.allocator,
+            &.{ discovered.path, discovered.manifest.main },
+        );
+        defer self.allocator.free(script_path);
+
+        const script_content = try std.fs.cwd().readFileAlloc(
+            script_path,
+            self.allocator,
+            .limited(10 * 1024 * 1024), // 10MB max
+        );
+        defer self.allocator.free(script_content);
+
+        std.log.debug("Compiling Ghostlang script: {s}", .{discovered.name});
+        const compiled = try ghostlang_host.compilePluginScript(script_content);
+
+        // 2. Load native component
+        const lib_name = discovered.manifest.native_library orelse return error.MissingNativeLibrary;
+        const lib_path = try std.fs.path.join(
+            self.allocator,
+            &.{ discovered.path, lib_name },
+        );
+        defer self.allocator.free(lib_path);
+
+        std.log.debug("Loading native library: {s}", .{lib_path});
+        var library = try std.DynLib.open(lib_path);
+        errdefer library.close();
+
+        // Lookup required symbols
+        const info_fn = library.lookup(
+            *const fn () callconv(.c) native_plugin.NativePluginInfo,
+            "grim_plugin_info",
+        ) orelse {
+            std.log.err("Hybrid plugin missing grim_plugin_info export: {s}", .{lib_path});
+            return error.MissingPluginInfo;
+        };
+
+        const init_fn = library.lookup(
+            *const fn () callconv(.c) bool,
+            "grim_plugin_init",
+        ) orelse {
+            std.log.err("Hybrid plugin missing grim_plugin_init export: {s}", .{lib_path});
+            return error.MissingPluginInit;
+        };
+
+        const setup_fn = library.lookup(
+            *const fn () callconv(.c) void,
+            "grim_plugin_setup",
+        );
+
+        const teardown_fn = library.lookup(
+            *const fn () callconv(.c) void,
+            "grim_plugin_teardown",
+        );
+
+        // Get plugin info and validate
+        const info = info_fn();
+
+        if (info.api_version != native_plugin.GRIM_PLUGIN_API_VERSION) {
+            std.log.err("Plugin API version mismatch: plugin={d}, grim={d}", .{
+                info.api_version,
+                native_plugin.GRIM_PLUGIN_API_VERSION,
+            });
+            return error.APIVersionMismatch;
+        }
+
+        // Initialize native component
+        const init_success = init_fn();
+        if (!init_success) {
+            std.log.err("Hybrid plugin native init failed: {s}", .{info.name});
+            return error.PluginInitFailed;
+        }
+
+        std.log.info("Hybrid plugin loaded: {s} v{s} (Ghostlang + native)", .{ info.name, info.version });
+
+        return LoadedPlugin{
+            .manifest = discovered.manifest,
+            .plugin_dir = try self.allocator.dupe(u8, discovered.path),
+            .plugin_type = .hybrid,
+            .state = .{
+                .hybrid = .{
+                    .ghostlang = .{
+                        .compiled = compiled,
+                        .setup_called = false,
+                    },
+                    .native = .{
+                        .library = library,
+                        .setup_fn = setup_fn,
+                        .teardown_fn = teardown_fn,
+                    },
+                },
+            },
+            .allocator = self.allocator,
+        };
     }
 
     /// Call setup() function in plugin
@@ -189,6 +366,10 @@ pub const PluginLoader = struct {
                 }
             },
             .hybrid => |*hs| {
+                // Set native library in host so Ghostlang can call native functions
+                hs.ghostlang.compiled.host.setNativeLibrary(&hs.native.library);
+                defer hs.ghostlang.compiled.host.setNativeLibrary(null);
+
                 // Call Ghostlang setup first
                 if (!hs.ghostlang.setup_called) {
                     try hs.ghostlang.compiled.executeSetup(callbacks);

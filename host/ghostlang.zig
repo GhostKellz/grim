@@ -1,5 +1,6 @@
 const std = @import("std");
 const ghostlang = @import("ghostlang");
+const ai = @import("ai");
 
 threadlocal var active_host: ?*Host = null;
 
@@ -104,6 +105,154 @@ fn builtinRegisterTheme(args: []const ghostlang.ScriptValue) ghostlang.ScriptVal
     return .{ .nil = {} };
 }
 
+// Reaper AI integration builtins
+
+fn builtinReaperComplete(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
+    const host = active_host orelse return .{ .string = "error: no active host" };
+
+    // Parse arguments: reaper_complete(prompt, language, [provider])
+    const prompt = getMandatoryStringArg(host, args, 0) orelse return .{ .string = "error: missing prompt" };
+    const language = getMandatoryStringArg(host, args, 1) orelse return .{ .string = "error: missing language" };
+    const provider = getOptionalStringArg(host, args, 2);
+
+    // Get or init reaper client
+    const client = ai.reaper_client.getOrInitClient(host.allocator) catch |err| {
+        var buf: [128]u8 = undefined;
+        const error_msg = std.fmt.bufPrint(&buf, "error: failed to init reaper client: {s}", .{@errorName(err)}) catch "error: failed to init client";
+        return .{ .string = error_msg };
+    };
+
+    // Make completion request
+    const request = ai.reaper_client.CompletionRequest{
+        .prompt = prompt,
+        .language = language,
+        .provider = provider,
+    };
+
+    const response = client.complete(request) catch |err| {
+        var buf: [128]u8 = undefined;
+        const error_msg = std.fmt.bufPrint(&buf, "error: completion failed: {s}", .{@errorName(err)}) catch "error: completion failed";
+        return .{ .string = error_msg };
+    };
+
+    if (!response.success) {
+        return .{ .string = response.error_message orelse "error: completion failed" };
+    }
+
+    return .{ .string = response.text };
+}
+
+fn builtinReaperChat(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
+    const host = active_host orelse return .{ .string = "error: no active host" };
+
+    const message = getMandatoryStringArg(host, args, 0) orelse return .{ .string = "error: missing message" };
+    const provider = getOptionalStringArg(host, args, 1);
+
+    const client = ai.reaper_client.getOrInitClient(host.allocator) catch |err| {
+        var buf: [128]u8 = undefined;
+        const error_msg = std.fmt.bufPrint(&buf, "error: failed to init reaper client: {s}", .{@errorName(err)}) catch "error: failed to init client";
+        return .{ .string = error_msg };
+    };
+
+    const request = ai.reaper_client.ChatRequest{
+        .message = message,
+        .provider = provider,
+    };
+
+    const response = client.chat(request) catch |err| {
+        var buf: [128]u8 = undefined;
+        const error_msg = std.fmt.bufPrint(&buf, "error: chat failed: {s}", .{@errorName(err)}) catch "error: chat failed";
+        return .{ .string = error_msg };
+    };
+
+    if (!response.success) {
+        return .{ .string = response.error_message orelse "error: chat failed" };
+    }
+
+    return .{ .string = response.message };
+}
+
+fn builtinReaperAgentic(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
+    const host = active_host orelse return .{ .string = "error: no active host" };
+
+    const task = getMandatoryStringArg(host, args, 0) orelse return .{ .string = "error: missing task" };
+    const provider = getOptionalStringArg(host, args, 1);
+
+    const client = ai.reaper_client.getOrInitClient(host.allocator) catch |err| {
+        var buf: [128]u8 = undefined;
+        const error_msg = std.fmt.bufPrint(&buf, "error: failed to init reaper client: {s}", .{@errorName(err)}) catch "error: failed to init client";
+        return .{ .string = error_msg };
+    };
+
+    const request = ai.reaper_client.AgenticRequest{
+        .task = task,
+        .provider = provider,
+    };
+
+    const response = client.agentic(request) catch |err| {
+        var buf: [128]u8 = undefined;
+        const error_msg = std.fmt.bufPrint(&buf, "error: agentic task failed: {s}", .{@errorName(err)}) catch "error: agentic task failed";
+        return .{ .string = error_msg };
+    };
+
+    if (!response.success) {
+        return .{ .string = response.error_message orelse "error: agentic task failed" };
+    }
+
+    return .{ .string = response.result };
+}
+
+// Native FFI bridge for hybrid plugins
+// Allows Ghostlang to call native functions with C calling convention
+fn builtinCallNative(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
+    const host = active_host orelse return .{ .string = "error: no active host" };
+    const native_lib = host.active_native_library orelse {
+        return .{ .string = "error: no native library loaded" };
+    };
+
+    // First arg: function name (string)
+    const function_name = getMandatoryStringArg(host, args, 0) orelse {
+        return .{ .string = "error: missing function name" };
+    };
+
+    // Remaining args: passed to native function
+    const native_args = if (args.len > 1) args[1..] else &[_]ghostlang.ScriptValue{};
+
+    // Convert function name to null-terminated string
+    var fn_name_buf: [256]u8 = undefined;
+    const fn_name_z = std.fmt.bufPrintZ(&fn_name_buf, "{s}", .{function_name}) catch {
+        return .{ .string = "error: function name too long" };
+    };
+
+    // Look up the native function
+    // For now, we support simple string → string functions
+    // Format: fn nativeFunctionName(arg: [*:0]const u8) callconv(.c) [*:0]const u8
+    const NativeFn = *const fn (arg: [*:0]const u8) callconv(.c) [*:0]const u8;
+    const native_fn = native_lib.lookup(NativeFn, fn_name_z) orelse {
+        var buf: [256]u8 = undefined;
+        const error_msg = std.fmt.bufPrint(&buf, "error: native function not found: {s}", .{function_name}) catch "error: function not found";
+        return .{ .string = error_msg };
+    };
+
+    // Convert first Ghostlang arg to C string
+    const arg_str = if (native_args.len > 0 and native_args[0] == .string)
+        native_args[0].string
+    else
+        "";
+
+    // Allocate null-terminated string for C
+    var buf: [4096]u8 = undefined;
+    const c_str = std.fmt.bufPrintZ(&buf, "{s}", .{arg_str}) catch {
+        return .{ .string = "error: argument too long" };
+    };
+
+    // Call native function
+    const result_ptr = native_fn(c_str.ptr);
+    const result_str = std.mem.span(result_ptr);
+
+    return .{ .string = result_str };
+}
+
 pub const Host = struct {
     const Self = @This();
 
@@ -117,6 +266,7 @@ pub const Host = struct {
     engine: ?*ghostlang.ScriptEngine,
     config_script: ?*ghostlang.Script,
     active_plugin: ?*Self.CompiledPlugin,
+    active_native_library: ?*std.DynLib,  // For hybrid plugins
     pending_error: ?Error,
     builtins_registered: bool,
 
@@ -511,6 +661,7 @@ pub const Host = struct {
             .engine = null,
             .config_script = null,
             .active_plugin = null,
+            .active_native_library = null,
             .pending_error = null,
             .builtins_registered = false,
         };
@@ -694,6 +845,15 @@ pub const Host = struct {
         try self.registerBuiltin(engine, "register_event_handler", builtinRegisterEventHandler);
         try self.registerBuiltin(engine, "registerTheme", builtinRegisterTheme);
         try self.registerBuiltin(engine, "register_theme", builtinRegisterTheme);
+
+        // Reaper AI integration builtins
+        try self.registerBuiltin(engine, "reaper_complete", builtinReaperComplete);
+        try self.registerBuiltin(engine, "reaper_chat", builtinReaperChat);
+        try self.registerBuiltin(engine, "reaper_agentic", builtinReaperAgentic);
+
+        // Native FFI bridge (for hybrid plugins)
+        try self.registerBuiltin(engine, "call_native", builtinCallNative);
+
         self.builtins_registered = true;
     }
 
@@ -800,6 +960,11 @@ pub const Host = struct {
 
     pub fn resetStats(self: *Host) void {
         self.execution_stats.reset();
+    }
+
+    /// Set the active native library (for hybrid plugins)
+    pub fn setNativeLibrary(self: *Host, library: ?*std.DynLib) void {
+        self.active_native_library = library;
     }
 
     fn mapExecutionError(self: *Host, err: ghostlang.ExecutionError) Error {
