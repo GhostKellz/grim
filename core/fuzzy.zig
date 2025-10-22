@@ -1,7 +1,8 @@
 const std = @import("std");
+const rune = @import("rune");
 
 /// Fuzzy finder module for Grim (Telescope-style)
-/// Fast fuzzy string matching using FZF algorithm
+/// Fast fuzzy string matching using FZF algorithm + Rune SIMD acceleration
 pub const FuzzyFinder = struct {
     allocator: std.mem.Allocator,
     entries: std.ArrayList(Entry),
@@ -151,53 +152,98 @@ pub const FuzzyFinder = struct {
         return self.filtered.items;
     }
 
-    /// Find files in directory recursively
-    pub fn findFiles(self: *FuzzyFinder, root: []const u8, max_depth: usize) !void {
-        try self.findFilesRecursive(root, root, 0, max_depth);
-    }
+    /// Find files in directory recursively using Rune's WorkspaceScanner
+    /// This provides SIMD-accelerated search and gitignore support
+    pub fn findFiles(self: *FuzzyFinder, root: []const u8, _max_depth: usize) !void {
+        _ = _max_depth; // Rune scanner has its own max_depth (20)
 
-    fn findFilesRecursive(self: *FuzzyFinder, root: []const u8, current: []const u8, depth: usize, max_depth: usize) !void {
-        if (depth > max_depth) return;
+        // Use Rune's WorkspaceScanner for better performance
+        var scanner = try rune.parallel_scan.WorkspaceScanner.init(
+            self.allocator,
+            null, // num_threads (auto-detect)
+            true, // load_gitignore
+        );
+        defer scanner.deinit();
 
-        var dir = std.fs.cwd().openDir(current, .{ .iterate = true }) catch return;
-        defer dir.close();
-
-        var iter = dir.iterate();
-        while (try iter.next()) |entry| {
-            // Skip hidden files and common ignore patterns
-            if (entry.name[0] == '.') continue;
-            if (std.mem.eql(u8, entry.name, "node_modules")) continue;
-            if (std.mem.eql(u8, entry.name, "zig-cache")) continue;
-            if (std.mem.eql(u8, entry.name, "zig-out")) continue;
-            if (std.mem.eql(u8, entry.name, "target")) continue;
-
-            const full_path = try std.fs.path.join(self.allocator, &[_][]const u8{ current, entry.name });
-            defer self.allocator.free(full_path);
-
-            if (entry.kind == .directory) {
-                try self.findFilesRecursive(root, full_path, depth + 1, max_depth);
-            } else if (entry.kind == .file) {
-                // Get relative path from root
-                const rel_path = if (std.mem.startsWith(u8, full_path, root))
-                    full_path[root.len..]
-                else
-                    full_path;
-
-                // Skip leading slash
-                const display_path = if (rel_path.len > 0 and rel_path[0] == '/')
-                    rel_path[1..]
-                else
-                    rel_path;
-
-                try self.addEntry(full_path, display_path);
+        var results = std.ArrayList(rune.parallel_scan.FileEntry){};
+        defer {
+            for (results.items) |*entry| {
+                entry.deinit(self.allocator);
             }
+            results.deinit(self.allocator);
+        }
+
+        // Scan workspace
+        try scanner.scan(root, &results);
+
+        // Convert Rune FileEntry to FuzzyFinder Entry
+        for (results.items) |file_entry| {
+            if (file_entry.is_dir) continue; // Skip directories
+
+            // Get relative path from root
+            const rel_path = if (std.mem.startsWith(u8, file_entry.path, root))
+                file_entry.path[root.len..]
+            else
+                file_entry.path;
+
+            // Skip leading slash
+            const display_path = if (rel_path.len > 0 and rel_path[0] == '/')
+                rel_path[1..]
+            else
+                rel_path;
+
+            try self.addEntry(file_entry.path, display_path);
         }
     }
 
-    /// Grep files for pattern
-    pub fn grepFiles(_: *FuzzyFinder, _: []const u8, _: []const u8) !void {
-        // TODO: Implement grep functionality
-        // For now, just a placeholder
+    /// Grep files for pattern using Rune's SIMD-accelerated search
+    pub fn grepFiles(self: *FuzzyFinder, root: []const u8, pattern: []const u8) !void {
+        // First, scan for files
+        var scanner = try rune.parallel_scan.WorkspaceScanner.init(
+            self.allocator,
+            null,
+            true,
+        );
+        defer scanner.deinit();
+
+        var files = std.ArrayList(rune.parallel_scan.FileEntry){};
+        defer {
+            for (files.items) |*entry| {
+                entry.deinit(self.allocator);
+            }
+            files.deinit(self.allocator);
+        }
+
+        try scanner.scan(root, &files);
+
+        // Use Rune's FileSearch for SIMD-accelerated pattern matching
+        var searcher = try rune.parallel_scan.FileSearch.init(self.allocator, null);
+        defer searcher.deinit();
+
+        var search_results = std.ArrayList(rune.parallel_scan.FileSearch.SearchResult){};
+        defer {
+            for (search_results.items) |*result| {
+                result.deinit(self.allocator);
+            }
+            search_results.deinit(self.allocator);
+        }
+
+        try searcher.search(files.items, pattern, &search_results);
+
+        // Add files with matches to fuzzy finder
+        for (search_results.items) |result| {
+            const rel_path = if (std.mem.startsWith(u8, result.file_path, root))
+                result.file_path[root.len..]
+            else
+                result.file_path;
+
+            const display_path = if (rel_path.len > 0 and rel_path[0] == '/')
+                rel_path[1..]
+            else
+                rel_path;
+
+            try self.addEntry(result.file_path, display_path);
+        }
     }
 };
 

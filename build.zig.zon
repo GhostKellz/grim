@@ -72,6 +72,10 @@
             .url = "https://github.com/ghostkellz/zrpc/archive/refs/heads/main.tar.gz",
             .hash = "zrpc-0.1.0-b2Xib6X1BwCltazUe_BVVmRTkid4nqVfeknx8RMumZn3",
         },
+        .rune = .{
+            .url = "https://github.com/ghostkellz/rune/archive/refs/heads/main.tar.gz",
+            .hash = "rune-0.1.0-MvDOXmmgBgBZZ-N6A6YC-6C1Ul7KZN5BQLZg3G5Za_1F",
+        },
     },
     .paths = .{
         "build.zig",

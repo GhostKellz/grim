@@ -8,6 +8,7 @@ pub const plugin_discovery = @import("plugin_discovery.zig");
 pub const plugin_loader = @import("plugin_loader.zig");
 pub const native_plugin = @import("native_plugin.zig");
 pub const plugin_cache = @import("plugin_cache.zig");
+pub const plugin_hot_reload = @import("plugin_hot_reload.zig");
 pub const example_plugin = @import("example_plugin.zig");
 
 // Phase 3 Runtime APIs
@@ -41,6 +42,7 @@ pub const NativePluginLoader = native_plugin.NativePluginLoader;
 pub const NativePlugin = native_plugin.NativePlugin;
 pub const PluginCache = plugin_cache.PluginCache;
 pub const UpdateStrategy = plugin_cache.UpdateStrategy;
+pub const HotReloader = plugin_hot_reload.HotReloader;
 
 // Re-exports: Phase 3 Runtime APIs
 pub const BufferEditAPI = buffer_edit_api.BufferEditAPI;

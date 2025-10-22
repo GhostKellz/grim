@@ -78,49 +78,330 @@ pub const Context = struct {
     pub fn init(allocator: std.mem.Allocator) Context {
         return Context{
             .allocator = allocator,
-            .diagnostics = std.ArrayList(DiagnosticContext).init(allocator),
+            .diagnostics = std.ArrayList(DiagnosticContext){},
         };
     }
 
     pub fn deinit(self: *Context) void {
-        self.diagnostics.deinit();
-        // TODO: Free allocated strings in contexts
+        // Free diagnostics
+        for (self.diagnostics.items) |diag| {
+            if (diag.message.len > 0) {
+                self.allocator.free(diag.message);
+            }
+            if (diag.source) |src| {
+                self.allocator.free(src);
+            }
+        }
+        self.diagnostics.deinit(self.allocator);
+
+        // Free buffer context
+        if (self.buffer) |buf| {
+            if (buf.content.len > 0) self.allocator.free(buf.content);
+            if (buf.file_path) |path| self.allocator.free(path);
+            if (buf.language) |lang| self.allocator.free(lang);
+        }
+
+        // Free selection context
+        if (self.selection) |sel| {
+            if (sel.content.len > 0) self.allocator.free(sel.content);
+        }
+
+        // Free git context
+        if (self.git) |git| {
+            if (git.branch) |branch| self.allocator.free(branch);
+            if (git.current_diff) |diff| self.allocator.free(diff);
+            for (git.uncommitted_files) |file| {
+                self.allocator.free(file);
+            }
+            if (git.uncommitted_files.len > 0) {
+                self.allocator.free(git.uncommitted_files);
+            }
+        }
+
+        // Free project context
+        if (self.project) |proj| {
+            self.allocator.free(proj.root_path);
+            for (proj.open_files) |file| {
+                self.allocator.free(file);
+            }
+            if (proj.open_files.len > 0) {
+                self.allocator.free(proj.open_files);
+            }
+        }
     }
 
     /// Gather buffer context from current editor state
+    /// Expects buffer to have: .getContent(), .getCursorLine(), .getCursorCol(), .getFilePath(), .getLanguage()
     pub fn gatherBuffer(self: *Context, buffer: anytype) !void {
-        // TODO: Extract buffer information
-        // This will integrate with grim's buffer system
-        _ = self;
-        _ = buffer;
+        const T = @TypeOf(buffer);
+
+        // Get buffer content
+        const content = if (@hasDecl(T, "getContent"))
+            try buffer.getContent(self.allocator)
+        else if (@hasDecl(T, "content"))
+            try self.allocator.dupe(u8, buffer.content)
+        else
+            unreachable;
+
+        // Get cursor position
+        const cursor_line = if (@hasDecl(T, "getCursorLine"))
+            buffer.getCursorLine()
+        else if (@hasDecl(T, "cursor_line"))
+            buffer.cursor_line
+        else
+            0;
+
+        const cursor_col = if (@hasDecl(T, "getCursorCol"))
+            buffer.getCursorCol()
+        else if (@hasDecl(T, "cursor_col"))
+            buffer.cursor_col
+        else
+            0;
+
+        // Get file path (optional)
+        const file_path = if (@hasDecl(T, "getFilePath"))
+            try self.allocator.dupe(u8, buffer.getFilePath() orelse "")
+        else if (@hasDecl(T, "file_path"))
+            try self.allocator.dupe(u8, buffer.file_path orelse "")
+        else
+            null;
+
+        // Get language (optional)
+        const language = if (@hasDecl(T, "getLanguage"))
+            try self.allocator.dupe(u8, buffer.getLanguage() orelse "")
+        else if (@hasDecl(T, "language"))
+            try self.allocator.dupe(u8, buffer.language orelse "")
+        else
+            null;
+
+        // Count lines
+        const total_lines = std.mem.count(u8, content, "\n") + 1;
+
+        self.buffer = BufferContext{
+            .file_path = file_path,
+            .language = language,
+            .content = content,
+            .cursor_line = cursor_line,
+            .cursor_col = cursor_col,
+            .total_lines = total_lines,
+        };
     }
 
     /// Gather selection context if text is selected
+    /// Expects selection to have: .getContent(), .start_line, .start_col, .end_line, .end_col
     pub fn gatherSelection(self: *Context, selection: anytype) !void {
-        // TODO: Extract selection information
-        _ = self;
-        _ = selection;
+        const T = @TypeOf(selection);
+
+        // Get selection content
+        const content = if (@hasDecl(T, "getContent"))
+            try selection.getContent(self.allocator)
+        else if (@hasDecl(T, "content"))
+            try self.allocator.dupe(u8, selection.content)
+        else
+            return; // No selection
+
+        // Get selection bounds
+        const start_line = if (@hasDecl(T, "start_line"))
+            selection.start_line
+        else
+            0;
+
+        const start_col = if (@hasDecl(T, "start_col"))
+            selection.start_col
+        else
+            0;
+
+        const end_line = if (@hasDecl(T, "end_line"))
+            selection.end_line
+        else
+            start_line;
+
+        const end_col = if (@hasDecl(T, "end_col"))
+            selection.end_col
+        else
+            content.len;
+
+        self.selection = SelectionContext{
+            .start_line = start_line,
+            .start_col = start_col,
+            .end_line = end_line,
+            .end_col = end_col,
+            .content = content,
+        };
     }
 
     /// Gather LSP diagnostics for current buffer
+    /// Expects lsp_client to have: .getDiagnostics() or .diagnostics field
     pub fn gatherDiagnostics(self: *Context, lsp_client: anytype) !void {
-        // TODO: Query LSP for diagnostics
-        _ = self;
-        _ = lsp_client;
+        const T = @TypeOf(lsp_client);
+
+        // Get diagnostics list
+        const diagnostics = if (@hasDecl(T, "getDiagnostics"))
+            try lsp_client.getDiagnostics()
+        else if (@hasDecl(T, "diagnostics"))
+            lsp_client.diagnostics
+        else
+            return; // No diagnostics available
+
+        // Convert to our format
+        for (diagnostics) |diag| {
+            const severity: DiagnosticContext.Severity = if (@hasDecl(@TypeOf(diag), "severity"))
+                switch (diag.severity) {
+                    1 => .error_,
+                    2 => .warning,
+                    3 => .info,
+                    4 => .hint,
+                    else => .info,
+                }
+            else
+                .info;
+
+            const line = if (@hasDecl(@TypeOf(diag), "line"))
+                diag.line
+            else if (@hasDecl(@TypeOf(diag), "range"))
+                diag.range.start.line
+            else
+                0;
+
+            const col = if (@hasDecl(@TypeOf(diag), "col"))
+                diag.col
+            else if (@hasDecl(@TypeOf(diag), "range"))
+                diag.range.start.character
+            else
+                0;
+
+            const message = if (@hasDecl(@TypeOf(diag), "message"))
+                try self.allocator.dupe(u8, diag.message)
+            else
+                try self.allocator.dupe(u8, "Unknown diagnostic");
+
+            const source = if (@hasDecl(@TypeOf(diag), "source"))
+                if (diag.source) |src| try self.allocator.dupe(u8, src) else null
+            else
+                null;
+
+            try self.diagnostics.append(self.allocator, .{
+                .severity = severity,
+                .line = line,
+                .col = col,
+                .message = message,
+                .source = source,
+            });
+        }
     }
 
     /// Gather git status for current buffer/project
+    /// Expects git_client to be core.Git from grim/core/git.zig or compatible
     pub fn gatherGit(self: *Context, git_client: anytype) !void {
-        // TODO: Query git status
-        _ = self;
-        _ = git_client;
+        const T = @TypeOf(git_client);
+
+        // Get current branch
+        const branch = if (@hasDecl(T, "current_branch"))
+            if (git_client.current_branch) |b|
+                try self.allocator.dupe(u8, b)
+            else
+                null
+        else
+            null;
+
+        // Get status
+        const status: GitContext.Status = blk: {
+            if (@hasDecl(T, "status_cache")) {
+                var iter = git_client.status_cache.iterator();
+                var has_modified = false;
+                var has_staged = false;
+                const has_conflict = false;
+
+                while (iter.next()) |entry| {
+                    const file_status = entry.value_ptr.*;
+                    switch (file_status) {
+                        .modified => has_modified = true,
+                        .added => has_staged = true,
+                        .deleted => has_modified = true,
+                        .renamed => has_modified = true,
+                        else => {},
+                    }
+                }
+
+                if (has_conflict) break :blk .conflict;
+                if (has_staged) break :blk .staged;
+                if (has_modified) break :blk .modified;
+            }
+            break :blk .clean;
+        };
+
+        // Get uncommitted files list
+        var uncommitted = std.ArrayList([]const u8).init(self.allocator);
+        errdefer {
+            for (uncommitted.items) |file| {
+                self.allocator.free(file);
+            }
+            uncommitted.deinit();
+        }
+
+        if (@hasDecl(T, "status_cache")) {
+            var iter = git_client.status_cache.iterator();
+            while (iter.next()) |entry| {
+                const file_status = entry.value_ptr.*;
+                if (file_status != .unmodified) {
+                    try uncommitted.append(try self.allocator.dupe(u8, entry.key_ptr.*));
+                }
+            }
+        }
+
+        self.git = GitContext{
+            .branch = branch,
+            .status = status,
+            .uncommitted_files = try uncommitted.toOwnedSlice(),
+            .current_diff = null, // TODO: Get diff from git client
+        };
     }
 
     /// Gather project structure information
+    /// Expects project to have: .root_path, .getOpenFiles() or .open_files, .file_count
     pub fn gatherProject(self: *Context, project: anytype) !void {
-        // TODO: Collect project metadata
-        _ = self;
-        _ = project;
+        const T = @TypeOf(project);
+
+        // Get root path
+        const root_path = if (@hasDecl(T, "root_path"))
+            try self.allocator.dupe(u8, project.root_path)
+        else if (@hasDecl(T, "getRootPath"))
+            try self.allocator.dupe(u8, project.getRootPath())
+        else
+            try self.allocator.dupe(u8, ".");
+
+        // Get open files
+        var open_files = std.ArrayList([]const u8).init(self.allocator);
+        errdefer {
+            for (open_files.items) |file| {
+                self.allocator.free(file);
+            }
+            open_files.deinit();
+        }
+
+        if (@hasDecl(T, "getOpenFiles")) {
+            const files = try project.getOpenFiles();
+            for (files) |file| {
+                try open_files.append(try self.allocator.dupe(u8, file));
+            }
+        } else if (@hasDecl(T, "open_files")) {
+            for (project.open_files) |file| {
+                try open_files.append(try self.allocator.dupe(u8, file));
+            }
+        }
+
+        const file_count = if (@hasDecl(T, "file_count"))
+            project.file_count
+        else if (@hasDecl(T, "getFileCount"))
+            project.getFileCount()
+        else
+            open_files.items.len;
+
+        self.project = ProjectContext{
+            .root_path = root_path,
+            .open_files = try open_files.toOwnedSlice(),
+            .file_count = file_count,
+        };
     }
 
     /// Format context into a system message for AI
@@ -128,7 +409,7 @@ pub const Context = struct {
         var message = std.ArrayList(u8).init(self.allocator);
         defer message.deinit();
 
-        const writer = message.writer();
+       const writer = message.writer();
 
         // Add buffer context
         if (self.buffer) |buf| {
@@ -203,13 +484,8 @@ pub const Context = struct {
             const start_line = if (buf.cursor_line > 5) buf.cursor_line - 5 else 0;
             const end_line = @min(buf.cursor_line + 5, buf.total_lines);
 
-            try writer.print("Code context (lines {}-{}):\n```\n", .{ start_line, end_line });
-
             // TODO: Extract specific lines from buffer content
-            _ = start_line;
-            _ = end_line;
-
-            try writer.print("{s}\n```\n", .{buf.content});
+            try writer.print("Code context (lines {}-{}):\n```\n{s}\n```\n", .{ start_line, end_line, buf.content });
         }
 
         return try message.toOwnedSlice();
@@ -293,7 +569,7 @@ test "toSystemMessage with diagnostics" {
     defer ctx.deinit();
 
     // Add a diagnostic
-    try ctx.diagnostics.append(.{
+    try ctx.diagnostics.append(allocator, .{
         .severity = .error_,
         .line = 10,
         .col = 5,

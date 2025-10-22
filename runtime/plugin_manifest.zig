@@ -181,10 +181,71 @@ pub const PluginManifest = struct {
             manifest.native_library = try allocator.dupe(u8, lib_path);
         }
 
-        // TODO: Parse arrays (requires, load_after, hot_functions, native_functions)
-        // For now, leave them empty
+        // Parse array fields
+        if (config_section.get("load_after")) |value| {
+            manifest.load_after = try parseStringArray(allocator, value);
+        }
+
+        if (deps_section.get("requires")) |value| {
+            manifest.requires = try parseStringArray(allocator, value);
+        }
+        if (deps_section.get("optional")) |value| {
+            manifest.optional_deps = try parseStringArray(allocator, value);
+        }
+        if (deps_section.get("conflicts")) |value| {
+            manifest.conflicts = try parseStringArray(allocator, value);
+        }
+
+        if (optimize_section.get("hot_functions")) |value| {
+            manifest.hot_functions = try parseStringArray(allocator, value);
+        }
+
+        if (native_section.get("functions")) |value| {
+            manifest.native_functions = try parseStringArray(allocator, value);
+        }
 
         return manifest;
+    }
+
+    /// Parse TOML array syntax: ["item1", "item2", "item3"]
+    fn parseStringArray(allocator: std.mem.Allocator, value: []const u8) ![][]const u8 {
+        var trimmed = std.mem.trim(u8, value, " \t");
+
+        // Check for array brackets
+        if (trimmed.len < 2 or trimmed[0] != '[' or trimmed[trimmed.len - 1] != ']') {
+            // Not an array, treat as single item
+            const item = try allocator.dupe(u8, trimmed);
+            const result = try allocator.alloc([]const u8, 1);
+            result[0] = item;
+            return result;
+        }
+
+        // Remove brackets
+        trimmed = trimmed[1 .. trimmed.len - 1];
+
+        // Parse comma-separated values
+        var items = std.ArrayList([]const u8){};
+        errdefer {
+            for (items.items) |item| allocator.free(item);
+            items.deinit(allocator);
+        }
+
+        var iter = std.mem.tokenizeScalar(u8, trimmed, ',');
+        while (iter.next()) |item| {
+            var clean_item = std.mem.trim(u8, item, " \t");
+
+            // Remove quotes if present
+            if (clean_item.len >= 2 and clean_item[0] == '"' and clean_item[clean_item.len - 1] == '"') {
+                clean_item = clean_item[1 .. clean_item.len - 1];
+            }
+
+            if (clean_item.len > 0) {
+                const dup = try allocator.dupe(u8, clean_item);
+                try items.append(allocator, dup);
+            }
+        }
+
+        return items.toOwnedSlice(allocator);
     }
 };
 
@@ -212,4 +273,65 @@ test "parse basic manifest" {
     try std.testing.expectEqualStrings("Test Author", manifest.author);
     try std.testing.expectEqual(true, manifest.enable_on_startup);
     try std.testing.expectEqual(@as(u8, 60), manifest.priority);
+}
+
+test "parse manifest with arrays" {
+    const allocator = std.testing.allocator;
+
+    const toml =
+        \\[plugin]
+        \\name = "advanced-plugin"
+        \\version = "2.0.0"
+        \\author = "Test Author"
+        \\description = "Advanced test"
+        \\main = "init.gza"
+        \\
+        \\[config]
+        \\load_after = ["base-plugin", "other-plugin"]
+        \\
+        \\[dependencies]
+        \\requires = ["fuzzy-finder", "git"]
+        \\optional = ["lsp-support"]
+        \\conflicts = ["old-plugin"]
+        \\
+        \\[optimize]
+        \\hot_functions = ["search", "parse"]
+        \\compile_on_install = true
+        \\
+        \\[native]
+        \\library = "native/libplugin.so"
+        \\functions = ["fast_search", "parse_buffer"]
+    ;
+
+    var manifest = try PluginManifest.parse(allocator, toml);
+    defer manifest.deinit();
+
+    try std.testing.expectEqualStrings("advanced-plugin", manifest.name);
+
+    // Test arrays
+    try std.testing.expectEqual(@as(usize, 2), manifest.load_after.len);
+    try std.testing.expectEqualStrings("base-plugin", manifest.load_after[0]);
+    try std.testing.expectEqualStrings("other-plugin", manifest.load_after[1]);
+
+    try std.testing.expectEqual(@as(usize, 2), manifest.requires.len);
+    try std.testing.expectEqualStrings("fuzzy-finder", manifest.requires[0]);
+    try std.testing.expectEqualStrings("git", manifest.requires[1]);
+
+    try std.testing.expectEqual(@as(usize, 1), manifest.optional_deps.len);
+    try std.testing.expectEqualStrings("lsp-support", manifest.optional_deps[0]);
+
+    try std.testing.expectEqual(@as(usize, 1), manifest.conflicts.len);
+    try std.testing.expectEqualStrings("old-plugin", manifest.conflicts[0]);
+
+    try std.testing.expectEqual(@as(usize, 2), manifest.hot_functions.len);
+    try std.testing.expectEqualStrings("search", manifest.hot_functions[0]);
+    try std.testing.expectEqualStrings("parse", manifest.hot_functions[1]);
+
+    try std.testing.expectEqual(@as(usize, 2), manifest.native_functions.len);
+    try std.testing.expectEqualStrings("fast_search", manifest.native_functions[0]);
+    try std.testing.expectEqualStrings("parse_buffer", manifest.native_functions[1]);
+
+    try std.testing.expectEqual(true, manifest.compile_on_install);
+    try std.testing.expect(manifest.native_library != null);
+    try std.testing.expectEqualStrings("native/libplugin.so", manifest.native_library.?);
 }
