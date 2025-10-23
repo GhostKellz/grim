@@ -68,20 +68,26 @@ pub const Git = struct {
 
     /// Detect if we're in a git repository
     pub fn detectRepository(self: *Git, path: []const u8) !bool {
-        var dir = try std.fs.cwd().openDir(path, .{});
-        defer dir.close();
+        // Convert to absolute path if needed
+        const abs_path = if (std.fs.path.isAbsolute(path))
+            try self.allocator.dupe(u8, path)
+        else
+            try std.fs.cwd().realpathAlloc(self.allocator, path);
+        defer self.allocator.free(abs_path);
 
         // Walk up directory tree looking for .git
-        var current_path = try self.allocator.dupe(u8, path);
+        var current_path = try self.allocator.dupe(u8, abs_path);
         defer self.allocator.free(current_path);
 
         while (true) {
-            const git_dir = std.fs.path.join(self.allocator, &[_][]const u8{ current_path, ".git" }) catch break;
+            const git_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ current_path, ".git" });
             defer self.allocator.free(git_dir);
 
             std.fs.accessAbsolute(git_dir, .{}) catch {
                 // Try parent directory
                 const parent = std.fs.path.dirname(current_path) orelse break;
+                // Free old current_path and allocate new
+                self.allocator.free(current_path);
                 current_path = try self.allocator.dupe(u8, parent);
                 continue;
             };

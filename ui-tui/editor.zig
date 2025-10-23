@@ -182,8 +182,15 @@ pub const Editor = struct {
         const content = try self.allocator.alloc(u8, stat.size);
         defer self.allocator.free(content);
 
-        _ = try file.read(content);
-        try self.rope.insert(0, content);
+        const bytes_read = try file.readAll(content);
+
+        // Clear rope before loading new content
+        const rope_len = self.rope.len();
+        if (rope_len > 0) {
+            try self.rope.delete(0, rope_len);
+        }
+
+        try self.rope.insert(0, content[0..bytes_read]);
 
         // Update filename and initialize syntax highlighting
         if (self.current_filename) |old_filename| {

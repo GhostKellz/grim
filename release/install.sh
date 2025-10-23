@@ -81,6 +81,9 @@ check_prerequisites() {
 build_grim() {
     print_info "Building Grim..."
 
+    # Change to project root (script runs from release/ directory)
+    cd "$(dirname "$0")/.." || exit 1
+
     # Clean previous build
     if [ -d ".zig-cache" ]; then
         print_info "Cleaning previous build..."

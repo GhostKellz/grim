@@ -114,6 +114,13 @@ pub fn main() !void {
     app.attachEditorLSP(editor_lsp);
     defer app.closeActiveBuffer();
 
+    // Set default theme to ghost-hacker-blue if no theme specified
+    if (theme_name == null) {
+        app.setTheme("ghost-hacker-blue") catch |err| {
+            std.debug.print("Warning: Failed to set default theme: {}\n", .{err});
+        };
+    }
+
     const discovered_plugins = try plugin_manager.discoverPlugins();
     defer cleanupDiscoveredPlugins(allocator, &plugin_manager, discovered_plugins);
 
@@ -195,22 +202,23 @@ test "fuzz example" {
 }
 
 fn collectPluginDirectories(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator) !void {
-    try appendPath(list, allocator, "plugins/examples");
-    try appendPath(list, allocator, "plugins");
+    // Only add directories that exist to avoid warnings
+    try appendPathIfExists(list, allocator, "plugins/examples");
+    try appendPathIfExists(list, allocator, "plugins");
 
     if (std.posix.getenv("HOME")) |home| {
         // Check XDG_DATA_HOME first, then fallback
         if (std.posix.getenv("XDG_DATA_HOME")) |xdg_data| {
-            try appendJoinedPath(list, allocator, &.{ xdg_data, "grim", "plugins" });
+            try appendJoinedPathIfExists(list, allocator, &.{ xdg_data, "grim", "plugins" });
         } else {
-            try appendJoinedPath(list, allocator, &.{ home, ".local", "share", "grim", "plugins" });
+            try appendJoinedPathIfExists(list, allocator, &.{ home, ".local", "share", "grim", "plugins" });
         }
-        try appendJoinedPath(list, allocator, &.{ home, ".config", "grim", "plugins" });
-        try appendJoinedPath(list, allocator, &.{ home, ".local", "share", "phantom.grim", "plugins" });
+        try appendJoinedPathIfExists(list, allocator, &.{ home, ".config", "grim", "plugins" });
+        try appendJoinedPathIfExists(list, allocator, &.{ home, ".local", "share", "phantom.grim", "plugins" });
     }
 
-    try appendPath(list, allocator, "/usr/share/grim/plugins");
-    try appendPath(list, allocator, "/usr/local/share/grim/plugins");
+    try appendPathIfExists(list, allocator, "/usr/share/grim/plugins");
+    try appendPathIfExists(list, allocator, "/usr/local/share/grim/plugins");
 }
 
 fn appendPath(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, path: []const u8) !void {
@@ -221,12 +229,26 @@ fn appendPath(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, pa
     };
 }
 
+fn appendPathIfExists(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, path: []const u8) !void {
+    // Check if directory exists
+    std.fs.cwd().access(path, .{}) catch return; // Silently skip if doesn't exist
+    try appendPath(list, allocator, path);
+}
+
 fn appendJoinedPath(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, parts: []const []const u8) !void {
     const joined = try std.fs.path.join(allocator, parts);
     list.append(allocator, joined) catch |err| {
         allocator.free(joined);
         return err;
     };
+}
+
+fn appendJoinedPathIfExists(list: *std.ArrayList([]const u8), allocator: std.mem.Allocator, parts: []const []const u8) !void {
+    const joined = try std.fs.path.join(allocator, parts);
+    defer allocator.free(joined);
+    // Check if directory exists
+    std.fs.cwd().access(joined, .{}) catch return; // Silently skip if doesn't exist
+    try appendJoinedPath(list, allocator, parts);
 }
 
 fn cleanupDiscoveredPlugins(

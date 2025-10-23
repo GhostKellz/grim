@@ -30,16 +30,14 @@ pub const Color = struct {
         return 16 + (36 * r) + (6 * g) + b;
     }
 
-    /// Get ANSI escape sequence for foreground color
+    /// Get ANSI escape sequence for foreground color (true color 24-bit RGB)
     pub fn toFgSequence(self: Color, buf: []u8) ![]const u8 {
-        const code = self.toAnsi256();
-        return try std.fmt.bufPrint(buf, "\x1B[38;5;{d}m", .{code});
+        return try std.fmt.bufPrint(buf, "\x1B[38;2;{d};{d};{d}m", .{ self.r, self.g, self.b });
     }
 
-    /// Get ANSI escape sequence for background color
+    /// Get ANSI escape sequence for background color (true color 24-bit RGB)
     pub fn toBgSequence(self: Color, buf: []u8) ![]const u8 {
-        const code = self.toAnsi256();
-        return try std.fmt.bufPrint(buf, "\x1B[48;5;{d}m", .{code});
+        return try std.fmt.bufPrint(buf, "\x1B[48;2;{d};{d};{d}m", .{ self.r, self.g, self.b });
     }
 };
 
@@ -198,27 +196,27 @@ pub const Theme = struct {
     /// Built-in Ghost Hacker Blue theme (fallback)
     fn ghostHackerBlue() Theme {
         return .{
-            // Syntax - Ghost Hacker Blue colors
-            .keyword = Color.fromHex("89ddff") catch unreachable, // cyan (blue5)
-            .string_literal = Color.fromHex("c3e88d") catch unreachable, // green
-            .number_literal = Color.fromHex("ffc777") catch unreachable, // yellow
-            .comment = Color.fromHex("57c7ff") catch unreachable, // hacker blue
-            .function_name = Color.fromHex("8aff80") catch unreachable, // mint green
-            .type_name = Color.fromHex("65bcff") catch unreachable, // blue1
-            .variable = Color.fromHex("c8d3f5") catch unreachable, // fg
-            .operator = Color.fromHex("c0caf5") catch unreachable, // blue_moon
-            .punctuation = Color.fromHex("c8d3f5") catch unreachable, // fg
-            .error_bg = Color.fromHex("c53b53") catch unreachable, // error
-            .error_fg = Color.fromHex("c8d3f5") catch unreachable, // fg
+            // Syntax - Ghost Hacker Blue colors (matching Chris's nvim exactly!)
+            .keyword = Color.fromHex("9a0ade") catch unreachable, // purple (bold in nvim)
+            .string_literal = Color.fromHex("66d9ef") catch unreachable, // teal
+            .number_literal = Color.fromHex("7aa2f7") catch unreachable, // light blue
+            .comment = Color.fromHex("7aa2f7") catch unreachable, // light blue (italic in nvim)
+            .function_name = Color.fromHex("88aff0") catch unreachable, // mint green (bold in nvim)
+            .type_name = Color.fromHex("7aa2f7") catch unreachable, // light blue
+            .variable = Color.fromHex("7aa2f7") catch unreachable, // light blue
+            .operator = Color.fromHex("57c7ff") catch unreachable, // light blue operators
+            .punctuation = Color.fromHex("7aa2f7") catch unreachable, // light blue
+            .error_bg = Color.fromHex("c53b53") catch unreachable, // error red
+            .error_fg = Color.fromHex("7aa2f7") catch unreachable, // light blue
 
-            // UI - Ghost Hacker Blue aesthetic
-            .background = Color.fromHex("222436") catch unreachable, // bg
-            .foreground = Color.fromHex("8aff80") catch unreachable, // mint
-            .cursor = Color.fromHex("8aff80") catch unreachable, // mint
-            .selection = Color.fromHex("a0ffe8") catch unreachable, // aqua_ice
-            .line_number = Color.fromHex("636da6") catch unreachable, // comment
-            .status_bar_bg = Color.fromHex("1e2030") catch unreachable, // bg_dark
-            .status_bar_fg = Color.fromHex("c0caf5") catch unreachable, // blue_moon
+            // UI - Ghost Hacker Blue aesthetic (matching Chris's nvim statusline!)
+            .background = Color.fromHex("1a1b26") catch unreachable, // tokyonight dark bg
+            .foreground = Color.fromHex("7aa2f7") catch unreachable, // light blue
+            .cursor = Color.fromHex("7fffd4") catch unreachable, // aqua/cyan
+            .selection = Color.fromHex("88ffcc") catch unreachable, // mint green
+            .line_number = Color.fromHex("7aa2f7") catch unreachable, // light blue
+            .status_bar_bg = Color.fromHex("1e1e2e") catch unreachable, // dark bg
+            .status_bar_fg = Color.fromHex("88ffcc") catch unreachable, // mint green
         };
     }
 
