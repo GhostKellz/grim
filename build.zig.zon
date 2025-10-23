@@ -62,7 +62,7 @@
         },
         .ghostls = .{
             .url = "https://github.com/ghostkellz/ghostls/archive/refs/heads/main.tar.gz",
-            .hash = "ghostls-0.4.0-fDo9dEusAwCZcM0jsKyN0Yt7tapIO3sI7gF7OG071KJW",
+            .hash = "ghostls-0.4.0-fDo9dEusAwBkFKa4Tj7en72-P4f-Y37ucHtbJP4Z2cqy",
         },
         .zhttp = .{
             .url = "https://github.com/ghostkellz/zhttp/archive/main.tar.gz",
