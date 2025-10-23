@@ -37,8 +37,8 @@
             .hash = "zsync-0.6.1-KAuhedFXIADqHJzPi8ZCIVkvWRzaY5L5CXVd7vA9jfLM",
         },
         .phantom = .{
-            .url = "https://github.com/ghostkellz/phantom/archive/main.tar.gz",
-            .hash = "phantom-0.5.0-E0eWBAExEgDRtfXJ_QguR2k_lPztdeqobSVyAj_hPKPw",
+            .url = "https://github.com/ghostkellz/phantom/archive/refs/heads/main.tar.gz",
+            .hash = "phantom-0.5.0-E0eWBAExEgAqKNKsRXtmXVGYwsRuToVa1_BW9Jv07MYV",
         },
         .gcode = .{
             .url = "https://github.com/ghostkellz/gcode/archive/refs/heads/main.tar.gz",
@@ -57,24 +57,28 @@
             .hash = "ghostlang-0.2.0-_SzSPc_-BQCjf7sNB6wE0rctwgTxKGbPvJaeHhSUzE0x",
         },
         .zap = .{
-            .url = "https://github.com/ghostkellz/zap/archive/main.tar.gz",
-            .hash = "zap-0.0.0--jHF1tXGAQCjnbEAZ0LjO-Wxu0lX04fS0kWjYgdai-4u",
+            .url = "https://github.com/ghostkellz/zap/archive/refs/heads/main.tar.gz",
+            .hash = "zap-0.0.0--jHF1uDGAQBKw-_wMOoE5IbdDH89UcvYeYJ1Xn3CzS4j",
         },
         .ghostls = .{
             .url = "https://github.com/ghostkellz/ghostls/archive/refs/heads/main.tar.gz",
-            .hash = "ghostls-0.4.0-fDo9dEusAwBkFKa4Tj7en72-P4f-Y37ucHtbJP4Z2cqy",
+            .hash = "ghostls-0.4.0-fDo9dECsAwAlJ15Q2meC4NwdKPAm7_xh1gH0zshepk8k",
         },
         .zhttp = .{
             .url = "https://github.com/ghostkellz/zhttp/archive/main.tar.gz",
-            .hash = "zhttp-0.1.2-jZpECD6WBQBDZbLNrphEx_zqWSrsT4jyO_Hs9iMDkSQX",
+            .hash = "zhttp-0.1.2-jZpECDOWBQCOEsW_NbGrkZMFBQTRLAe6ANMoWh99bJap",
         },
         .zrpc = .{
             .url = "https://github.com/ghostkellz/zrpc/archive/refs/heads/main.tar.gz",
-            .hash = "zrpc-0.1.0-b2Xib6X1BwCltazUe_BVVmRTkid4nqVfeknx8RMumZn3",
+            .hash = "zrpc-0.1.0-b2XibxcnCABT6GCuPe6brXrWWCFo0SYw3xFOET6d6VBd",
         },
         .rune = .{
             .url = "https://github.com/ghostkellz/rune/archive/refs/heads/main.tar.gz",
-            .hash = "rune-0.1.0-MvDOXmmgBgBZZ-N6A6YC-6C1Ul7KZN5BQLZg3G5Za_1F",
+            .hash = "rune-0.1.0-MvDOXoHBBgCHgRttRNzUaP0qnKmNsgWoiA95P0a2C3L6",
+        },
+        .zlog = .{
+            .url = "https://github.com/ghostkellz/zlog/archive/refs/heads/main.tar.gz",
+            .hash = "zlog-0.1.0-kS0sWERcCAD4GivJW2gmFSr5XTSvs9go-5-9zZng-RjR",
         },
     },
     .paths = .{
