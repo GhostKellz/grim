@@ -136,33 +136,36 @@ install_grim() {
         cp -r syntax/* "$INSTALL_PREFIX/share/grim/syntax/"
     fi
 
-    # Create default config if it doesn't exist
-    if [ ! -f "$HOME/.config/grim/init.gza" ]; then
-        print_info "Creating default configuration..."
-        cat > "$HOME/.config/grim/init.gza" << 'EOFCONFIG'
--- Grim Editor Configuration
--- Edit this file to customize your Grim setup
+    print_success "Installation complete!"
+}
 
--- Basic settings
-vim.opt.number = true
-vim.opt.relativenumber = true
-vim.opt.tabstop = 4
-vim.opt.shiftwidth = 4
-vim.opt.expandtab = true
+# Install Phantom.grim distribution
+install_phantom() {
+    print_info "Installing Phantom.grim distribution..."
 
--- Leader key
-vim.g.mapleader = " "
-
--- Keybindings
-vim.keymap.set("n", "<leader>w", ":write<CR>", { desc = "Save file" })
-vim.keymap.set("n", "<leader>q", ":quit<CR>", { desc = "Quit" })
-
-print("Grim configuration loaded!")
-EOFCONFIG
-        print_success "Created default config at ~/.config/grim/init.gza"
+    # Check if phantom.grim already installed
+    if [ -d "$HOME/.config/grim/plugins" ] && [ -f "$HOME/.config/grim/init.gza" ]; then
+        read -p "Phantom.grim config exists. Overwrite? (y/N): " -n 1 -r
+        echo
+        if [[ ! $REPLY =~ ^[Yy]$ ]]; then
+            print_warning "Skipping Phantom.grim installation"
+            return
+        fi
+        # Backup existing config
+        print_info "Backing up existing config..."
+        mv "$HOME/.config/grim" "$HOME/.config/grim.backup.$(date +%Y%m%d_%H%M%S)"
     fi
 
-    print_success "Installation complete!"
+    # Clone phantom.grim
+    print_info "Cloning Phantom.grim from GitHub..."
+    if ! git clone https://github.com/ghostkellz/phantom.grim "$HOME/.config/grim" 2>&1 | grep -v "Cloning into"; then
+        print_error "Failed to clone Phantom.grim"
+        print_warning "You can install it manually: git clone https://github.com/ghostkellz/phantom.grim ~/.config/grim"
+        return
+    fi
+
+    print_success "Phantom.grim installed to ~/.config/grim/"
+    print_info "Phantom.grim includes: LSP, fuzzy finder, git signs, statusline, themes, and more!"
 }
 
 # Setup PATH
@@ -232,18 +235,22 @@ ${GREEN}╔═══════════════════════
 ${BLUE}Installation Summary:${NC}
   • Binary:        $INSTALL_PREFIX/bin/grim
   • Runtime files: $INSTALL_PREFIX/share/grim/
-  • Config:        $HOME/.config/grim/
+  • Config:        $HOME/.config/grim/ ${GREEN}(Phantom.grim)${NC}
   • Plugins:       $HOME/.local/share/grim/plugins/
 
+${BLUE}What You Got:${NC}
+  ✓ Grim editor (core)
+  ✓ Phantom.grim distribution (LSP, fuzzy finder, git signs, themes, AI)
+  ✓ Full vim motions (hjkl, dd, yy, p, visual mode, search, undo/redo)
+  ✓ TokyoNight theme with mint/aqua accents
+  ✓ Statusline with git branch and file info
+
 ${BLUE}Quick Start:${NC}
-  1. Run: ${GREEN}grim${NC}
-  2. Edit config: ${GREEN}grim ~/.config/grim/init.gza${NC}
-  3. Install plugins in: ${GREEN}~/.local/share/grim/plugins/${NC}
+  1. Run: ${GREEN}grim myfile.txt${NC}
+  2. Customize: ${GREEN}grim ~/.config/grim/init.gza${NC}
+  3. Explore plugins: ${GREEN}ls ~/.config/grim/plugins/${NC}
 
 ${BLUE}Next Steps:${NC}
-  • Install Phantom.grim (LazyVim-like distro):
-    ${GREEN}git clone https://github.com/ghostkellz/phantom.grim ~/.config/grim${NC}
-
   • Install Thanos AI plugin:
     ${GREEN}git clone https://github.com/ghostkellz/thanos.grim ~/.local/share/grim/plugins/thanos${NC}
 
@@ -321,6 +328,7 @@ EOF
     check_prerequisites
     build_grim
     install_grim
+    install_phantom
     setup_path
     install_dependencies
     post_install
