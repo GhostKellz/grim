@@ -78,12 +78,39 @@ pub const SimpleTUI = struct {
     harpoon: core.Harpoon,
     harpoon_menu_active: bool,
     harpoon_selected_idx: usize,
+    // Fuzzy finder integration
+    fuzzy: core.FuzzyFinder,
+    fuzzy_picker_active: bool,
+    fuzzy_selected_idx: usize,
+    fuzzy_query: std.ArrayList(u8),
     // File tree sidebar
     file_tree: ?*file_tree_mod.FileTree,
     file_tree_active: bool,
     file_tree_width: usize,
     // Vim key sequences (dd, yy, etc.)
     pending_vim_key: ?u8,
+    // Vim text objects (diw, ci{, etc.)
+    pending_operator: ?u8,           // d, c, y
+    pending_text_object: ?u8,        // i, a (inner/around)
+    pending_count: ?usize,            // 3dd, 2ciw
+    // Dot repeat (.) - record last operation
+    last_operator: ?u8,
+    last_text_object: ?u8,
+    last_object: ?u8,
+    last_count: ?usize,
+    // Macro recording (q, @)
+    macro_recording: bool,
+    macro_register: ?u8,
+    macro_buffer: std.ArrayList(u8),
+    last_macro_register: ?u8,
+    macros: std.AutoHashMap(u8, []const u8),
+    // Character search (f, F, t, T, ;, ,)
+    last_char_search: ?u8,
+    last_char_search_forward: bool,
+    last_char_search_till: bool,
+    // Jump list (Ctrl+O, Ctrl+I)
+    jump_list: std.ArrayList(usize),
+    jump_list_index: usize,
     // Leader key for custom keybindings (Space)
     leader_key_pending: bool,
     leader_key_timestamp: i64,
@@ -158,10 +185,31 @@ pub const SimpleTUI = struct {
             .harpoon = core.Harpoon.init(allocator),
             .harpoon_menu_active = false,
             .harpoon_selected_idx = 0,
+            .fuzzy = core.FuzzyFinder.init(allocator),
+            .fuzzy_picker_active = false,
+            .fuzzy_selected_idx = 0,
+            .fuzzy_query = .{},
             .file_tree = null,
             .file_tree_active = false,
             .file_tree_width = 30,
             .pending_vim_key = null,
+            .pending_operator = null,
+            .pending_text_object = null,
+            .pending_count = null,
+            .last_operator = null,
+            .last_text_object = null,
+            .last_object = null,
+            .last_count = null,
+            .macro_recording = false,
+            .macro_register = null,
+            .macro_buffer = .{},
+            .last_macro_register = null,
+            .macros = std.AutoHashMap(u8, []const u8).init(allocator),
+            .last_char_search = null,
+            .last_char_search_forward = true,
+            .last_char_search_till = false,
+            .jump_list = .{},
+            .jump_list_index = 0,
             .leader_key_pending = false,
             .leader_key_timestamp = 0,
             .leader_key_sequence = .{},
@@ -180,6 +228,11 @@ pub const SimpleTUI = struct {
             self.phantom_buffer_manager = pbm;
         }
 
+        // Load persistent macros from disk
+        self.loadMacrosFromDisk() catch |err| {
+            std.log.warn("Failed to load macros: {}", .{err});
+        };
+
         return self;
     }
 
@@ -190,7 +243,20 @@ pub const SimpleTUI = struct {
         // Clean up native integrations
         self.harpoon.deinit();
         self.git.deinit();
+        self.fuzzy.deinit();
+        self.fuzzy_query.deinit(self.allocator);
         self.leader_key_sequence.deinit(self.allocator);
+
+        // Clean up macros
+        self.macro_buffer.deinit(self.allocator);
+        var macro_iter = self.macros.iterator();
+        while (macro_iter.next()) |entry| {
+            self.allocator.free(entry.value_ptr.*);
+        }
+        self.macros.deinit();
+
+        // Clean up jump list
+        self.jump_list.deinit(self.allocator);
 
         self.clearCompletionDisplay();
         self.completion_prefix.deinit(self.allocator);
@@ -612,6 +678,7 @@ pub const SimpleTUI = struct {
         try self.renderSignatureHelpPopup(width, height);
         try self.renderCodeActionsMenu(width, height);
         try self.renderBufferPicker(width, height);
+        try self.renderFuzzyPicker(width, height);
         try self.renderFileTree(width, height);
         try self.renderHarpoonMenu(width, height);
         try self.renderGitStatus(width, height);
@@ -881,7 +948,13 @@ pub const SimpleTUI = struct {
                 else => {},
             }
 
-            // Buffer picker mode takes precedence
+            // Fuzzy picker mode takes precedence
+            if (self.fuzzy_picker_active) {
+                try self.handleFuzzyPickerInput(key);
+                return;
+            }
+
+            // Buffer picker mode
             if (self.buffer_picker_active) {
                 try self.handleBufferPickerInput(key);
                 return;
@@ -909,6 +982,12 @@ pub const SimpleTUI = struct {
             if (self.editor.mode == .normal and self.leader_key_pending) {
                 try self.handleLeaderKeySequence(key);
                 return;
+            }
+
+            // Record keystrokes during macro recording (but not 'q' itself)
+            const should_record = self.macro_recording and key != 'q';
+            if (should_record) {
+                try self.macro_buffer.append(self.allocator, key);
             }
 
             // Mode-specific commands
@@ -972,21 +1051,164 @@ pub const SimpleTUI = struct {
     }
 
     fn handleNormalMode(self: *SimpleTUI, key: u8) !void {
-        // Handle two-key sequences (dd, yy, etc.)
+        // Handle count digits (1-9)
+        if (key >= '1' and key <= '9' and self.pending_operator == null and self.pending_text_object == null) {
+            const digit = key - '0';
+            if (self.pending_count) |count| {
+                self.pending_count = count * 10 + digit;
+            } else {
+                self.pending_count = digit;
+            }
+            return;
+        }
+
+        // Handle text object completion (diw, ci{, ya", etc.)
+        if (self.pending_text_object) |modifier| {
+            // Record operation for dot repeat
+            self.last_operator = self.pending_operator;
+            self.last_text_object = modifier;
+            self.last_object = key;
+            self.last_count = self.pending_count;
+
+            defer {
+                self.pending_operator = null;
+                self.pending_text_object = null;
+                self.pending_count = null;
+            }
+
+            try self.applyTextObject(self.pending_operator.?, modifier, key);
+            return;
+        }
+
+        // Handle operator + motion/object (dd, dw, d}, etc.)
+        if (self.pending_operator) |operator| {
+            // Check for double operator (dd, yy, cc)
+            if (operator == key) {
+                // Record operation for dot repeat
+                self.last_operator = operator;
+                self.last_text_object = null;
+                self.last_object = key; // Double key (dd, yy, cc)
+                self.last_count = self.pending_count;
+
+                defer {
+                    self.pending_operator = null;
+                    self.pending_count = null;
+                }
+
+                const count = self.pending_count orelse 1;
+                var i: usize = 0;
+                while (i < count) : (i += 1) {
+                    if (operator == 'd') {
+                        try self.deleteLineWithUndo();
+                    } else if (operator == 'y') {
+                        try self.yankLine();
+                    } else if (operator == 'c') {
+                        try self.deleteLineWithUndo();
+                        self.switchMode(.insert);
+                    }
+                }
+                return;
+            }
+
+            // Check for text object modifier (i, a)
+            if (key == 'i' or key == 'a') {
+                self.pending_text_object = key;
+                return;
+            }
+
+            // Handle direct object ({, ", (, etc.)
+            if (key == '{' or key == '}' or key == '"' or key == '\'' or key == '(' or key == ')' or key == '[' or key == ']' or key == 't') {
+                // Record operation for dot repeat
+                self.last_operator = operator;
+                self.last_text_object = 'a'; // Direct objects default to 'around'
+                self.last_object = key;
+                self.last_count = self.pending_count;
+
+                defer {
+                    self.pending_operator = null;
+                    self.pending_count = null;
+                }
+
+                try self.applyTextObject(operator, 'a', key); // Default to 'around'
+                return;
+            }
+
+            // Cancel on ESC
+            if (key == 27) {
+                self.pending_operator = null;
+                self.pending_count = null;
+                return;
+            }
+
+            // Otherwise, cancel the operator
+            self.pending_operator = null;
+            self.pending_count = null;
+        }
+
+        // Handle two-key sequences (gg, gd, @@, f/F/t/T, etc.)
         if (self.pending_vim_key) |pending| {
             defer self.pending_vim_key = null;
 
-            if (pending == 'd' and key == 'd') {
-                // dd - delete line
-                try self.deleteLineWithUndo();
-                return;
-            } else if (pending == 'y' and key == 'y') {
-                // yy - yank line
-                try self.yankLine();
-                return;
-            } else if (pending == 'g' and key == 'g') {
+            if (pending == 'g' and key == 'g') {
                 // gg - goto top
                 self.editor.cursor.offset = 0;
+                return;
+            } else if (pending == 'g' and key == 'd') {
+                // gd - goto definition
+                self.requestLspDefinition();
+                return;
+            } else if (pending == '@') {
+                // @ followed by register - play macro
+                const count = self.pending_count orelse 1;
+                defer self.pending_count = null;
+
+                if (key == '@') {
+                    // @@ - repeat last macro
+                    var i: usize = 0;
+                    while (i < count) : (i += 1) {
+                        try self.playLastMacro();
+                    }
+                } else {
+                    // @<register> - play specific macro
+                    var i: usize = 0;
+                    while (i < count) : (i += 1) {
+                        try self.playMacro(key);
+                    }
+                }
+                return;
+            } else if (pending == 'f') {
+                // f<char> - find character forward
+                try self.charSearch(key, true, false);
+                return;
+            } else if (pending == 'F') {
+                // F<char> - find character backward
+                try self.charSearch(key, false, false);
+                return;
+            } else if (pending == 't') {
+                // t<char> - till character forward (stop before)
+                try self.charSearch(key, true, true);
+                return;
+            } else if (pending == 'T') {
+                // T<char> - till character backward (stop before)
+                try self.charSearch(key, false, true);
+                return;
+            } else if (pending == 'q') {
+                // q<register> - start recording macro to register
+                self.macro_recording = true;
+                self.macro_register = key;
+                self.macro_buffer.clearRetainingCapacity();
+
+                var msg_buf: [64]u8 = undefined;
+                const msg = try std.fmt.bufPrint(&msg_buf, "Recording macro '{c}'...", .{key});
+                self.setStatusMessage(msg);
+                return;
+            } else if (pending == '[' and key == '[') {
+                // [[ - jump to previous section
+                try self.jumpToPreviousSection();
+                return;
+            } else if (pending == ']' and key == ']') {
+                // ]] - jump to next section
+                try self.jumpToNextSection();
                 return;
             }
             // If no match, fall through to handle second key normally
@@ -1007,6 +1229,7 @@ pub const SimpleTUI = struct {
             1 => self.triggerCodeActions(), // Ctrl+A - code actions menu
             2 => self.activateBufferPicker(), // Ctrl+B - buffer picker
             9 => self.toggleInlayHints(), // Ctrl+I (Tab) - toggle inlay hints
+            15 => try self.jumpBack(), // Ctrl+O - jump back in jump list
             23 => { // Ctrl+W - window commands
                 self.window_command_pending = true;
                 self.setStatusMessage("Window command (s=split h, v=split v, c=close, h/j/k/l=navigate)");
@@ -1051,12 +1274,25 @@ pub const SimpleTUI = struct {
             '0' => self.editor.moveCursorToLineStart(),
             '$' => self.editor.moveCursorToLineEnd(),
             'd' => {
-                // Set pending key for dd sequence
-                self.pending_vim_key = 'd';
+                // Set pending operator for dd, diw, etc.
+                self.pending_operator = 'd';
             },
             'y' => {
-                // Set pending key for yy sequence
-                self.pending_vim_key = 'y';
+                // Set pending operator for yy, yiw, etc.
+                self.pending_operator = 'y';
+            },
+            'c' => {
+                if (self.window_command_pending) {
+                    self.window_command_pending = false;
+                    self.clearStatusMessage();
+                    self.closeWindow() catch |err| {
+                        std.log.warn("Failed to close window: {}", .{err});
+                        self.setStatusMessage("Cannot close last window");
+                    };
+                } else {
+                    // Set pending operator for cc, ciw, etc.
+                    self.pending_operator = 'c';
+                }
             },
             'p' => {
                 // Paste after cursor
@@ -1066,11 +1302,23 @@ pub const SimpleTUI = struct {
                 // Paste before cursor
                 try self.pasteBefore();
             },
+            '.' => {
+                // Dot repeat - replay last operation
+                try self.repeatLastOperation();
+            },
             'g' => {
                 // Set pending key for gg sequence
                 self.pending_vim_key = 'g';
             },
             'G' => self.editor.moveCursorToEnd(),
+            '{' => {
+                // Jump to previous paragraph (blank line)
+                try self.jumpToPreviousParagraph();
+            },
+            '}' => {
+                // Jump to next paragraph (blank line)
+                try self.jumpToNextParagraph();
+            },
             'H' => self.requestLspHover(),
             'D' => self.requestLspDefinition(),
             's' => {
@@ -1096,16 +1344,7 @@ pub const SimpleTUI = struct {
             22 => { // Ctrl+V - visual block mode
                 self.enterVisualBlockMode();
             },
-            'c' => {
-                if (self.window_command_pending) {
-                    self.window_command_pending = false;
-                    self.clearStatusMessage();
-                    self.closeWindow() catch |err| {
-                        std.log.warn("Failed to close window: {}", .{err});
-                        self.setStatusMessage("Cannot close last window");
-                    };
-                }
-            },
+            // 'c' handled above in operator section
             ':' => {
                 if (self.window_command_pending) {
                     self.window_command_pending = false;
@@ -1144,13 +1383,67 @@ pub const SimpleTUI = struct {
                     self.setStatusMessage("Pattern not found");
                 }
             },
+            '%' => {
+                // Jump to matching bracket
+                try self.jumpToMatchingBracket();
+            },
+            '*' => {
+                // Search for word under cursor (forward)
+                try self.searchWordUnderCursor(true);
+            },
+            '#' => {
+                // Search for word under cursor (backward)
+                try self.searchWordUnderCursor(false);
+            },
+            'f' => {
+                // Find character forward (till)
+                self.pending_vim_key = 'f';
+                self.setStatusMessage("Find forward: f<char>");
+            },
+            'F' => {
+                // Find character backward (till)
+                self.pending_vim_key = 'F';
+                self.setStatusMessage("Find backward: F<char>");
+            },
+            't' => {
+                // Till character forward (before)
+                self.pending_vim_key = 't';
+                self.setStatusMessage("Till forward: t<char>");
+            },
+            'T' => {
+                // Till character backward (before)
+                self.pending_vim_key = 'T';
+                self.setStatusMessage("Till backward: T<char>");
+            },
+            ';' => {
+                // Repeat last character search
+                try self.repeatCharSearch(true);
+            },
+            ',' => {
+                // Repeat last character search (opposite direction)
+                try self.repeatCharSearch(false);
+            },
             'q' => {
                 if (self.window_command_pending) {
                     self.window_command_pending = false;
                     self.clearStatusMessage();
                 } else {
-                    self.running = false;
+                    // Macro recording (q<register> to start, q to stop)
+                    try self.handleMacroRecording();
                 }
+            },
+            '@' => {
+                // Macro playback - need to get register next
+                self.pending_vim_key = '@';
+                self.setStatusMessage("Play macro: @<register>");
+            },
+            '[' => {
+                // Section motion backward - need second [
+                self.pending_vim_key = '[';
+            },
+            ']' => {
+                // Section motion forward - need second ]
+                self.pending_vim_key = ']';
             },
             else => {
                 if (self.window_command_pending) {
@@ -1216,6 +1509,25 @@ pub const SimpleTUI = struct {
     }
 
     fn handleVisualMode(self: *SimpleTUI, key: u8) !void {
+        // Handle text object completion (viw, va{, etc.)
+        if (self.pending_text_object) |modifier| {
+            defer self.pending_text_object = null;
+
+            const range_opt = try self.getTextObjectRange(modifier, key);
+            const range = range_opt orelse {
+                self.setStatusMessage("Text object not found");
+                return;
+            };
+
+            // Update visual selection to match text object range
+            self.editor.selection_start = range.start;
+            self.editor.selection_end = range.end;
+            self.editor.cursor.offset = range.end;
+
+            self.setStatusMessage("Selected text object");
+            return;
+        }
+
         switch (key) {
             27 => { // ESC
                 if (self.visual_block_mode) {
@@ -1340,6 +1652,14 @@ pub const SimpleTUI = struct {
                 if (self.visual_block_mode) {
                     try self.appendAtVisualBlockEnd();
                 }
+            },
+            'i' => {
+                // Text object modifier - inner (iw, i{, i", etc.)
+                self.pending_text_object = 'i';
+            },
+            'a' => {
+                // Text object modifier - around (aw, a{, a", etc.)
+                self.pending_text_object = 'a';
             },
             else => {},
         }
@@ -1677,6 +1997,69 @@ pub const SimpleTUI = struct {
                     self.setStatusMessage("Unable to list plugins");
                 }
             };
+            self.exitCommandMode();
+            return;
+        }
+
+        // Session management
+        if (std.mem.eql(u8, head, "mksession")) {
+            const filename = tokenizer.next() orelse "Session.vim";
+
+            self.saveSession(filename) catch |err| {
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Failed to save session: {}", .{err}) catch "Failed to save session";
+                self.setStatusMessage(msg);
+                std.log.err("Failed to save session to '{s}': {}", .{ filename, err });
+                self.exitCommandMode();
+                return;
+            };
+
+            var msg_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "Session saved to '{s}'", .{filename}) catch "Session saved";
+            self.setStatusMessage(msg);
+            self.exitCommandMode();
+            return;
+        }
+
+        if (std.mem.eql(u8, head, "source")) {
+            const filename = tokenizer.next() orelse {
+                self.setStatusMessage("E471: Argument required: source [file]");
+                self.exitCommandMode();
+                return;
+            };
+
+            self.loadSession(filename) catch |err| {
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Failed to load session: {}", .{err}) catch "Failed to load session";
+                self.setStatusMessage(msg);
+                std.log.err("Failed to load session from '{s}': {}", .{ filename, err });
+                self.exitCommandMode();
+                return;
+            };
+
+            var msg_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "Session loaded from '{s}'", .{filename}) catch "Session loaded";
+            self.setStatusMessage(msg);
+            self.exitCommandMode();
+            return;
+        }
+
+        // Terminal command
+        if (std.mem.eql(u8, head, "term") or std.mem.eql(u8, head, "terminal")) {
+            const cmd = tokenizer.next() orelse "bash";
+
+            self.openTerminal(cmd) catch |err| {
+                var msg_buf: [256]u8 = undefined;
+                const msg = std.fmt.bufPrint(&msg_buf, "Failed to open terminal: {}", .{err}) catch "Failed to open terminal";
+                self.setStatusMessage(msg);
+                std.log.err("Failed to open terminal with command '{s}': {}", .{ cmd, err });
+                self.exitCommandMode();
+                return;
+            };
+
+            var msg_buf: [256]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "Opened terminal: {s}", .{cmd}) catch "Terminal opened";
+            self.setStatusMessage(msg);
             self.exitCommandMode();
             return;
         }
@@ -2062,6 +2445,11 @@ pub const SimpleTUI = struct {
         const char_idx = self.getCursorColumn();
         const line = std.math.cast(u32, line_idx) orelse std.math.maxInt(u32);
         const character = std.math.cast(u32, char_idx) orelse std.math.maxInt(u32);
+
+        // Record jump before goto definition
+        self.recordJump() catch |err| {
+            std.log.warn("Failed to record jump: {}", .{err});
+        };
 
         lsp.requestDefinition(path, line, character) catch |err| {
             std.log.warn("Failed to request definition: {}", .{err});
@@ -2585,6 +2973,112 @@ pub const SimpleTUI = struct {
         }
     }
 
+    fn renderFuzzyPicker(self: *SimpleTUI, width: usize, height: usize) !void {
+        if (!self.fuzzy_picker_active) return;
+
+        const results = self.fuzzy.getResults();
+
+        // Popup dimensions
+        const popup_width = @min(width - 4, 80);
+        const popup_height = @min(height - 4, 20);
+        const popup_row = (height - popup_height) / 2;
+        const popup_col = (width - popup_width) / 2;
+
+        // Border
+        try self.setCursor(popup_row, popup_col);
+        try self.stdout.writeAll("┌");
+        var i: usize = 0;
+        while (i < popup_width - 2) : (i += 1) {
+            try self.stdout.writeAll("─");
+        }
+        try self.stdout.writeAll("┐");
+
+        // Header
+        try self.setCursor(popup_row + 1, popup_col);
+        try self.stdout.writeAll("│");
+        var header_buf: [512]u8 = undefined;
+        const fuzzy_icon = self.font_manager.getFuzzyFinderIcon();
+        const header = try std.fmt.bufPrint(&header_buf, " {s} Find Files ({d} matches) Query: {s}", .{ fuzzy_icon, results.len, self.fuzzy_query.items });
+        const header_len = @min(header.len, popup_width - 4);
+        try self.stdout.writeAll(header[0..header_len]);
+        const padding_needed = popup_width - 2 - header_len;
+        i = 0;
+        while (i < padding_needed) : (i += 1) {
+            try self.stdout.writeAll(" ");
+        }
+        try self.stdout.writeAll("│");
+
+        // Separator
+        try self.setCursor(popup_row + 2, popup_col);
+        try self.stdout.writeAll("├");
+        i = 0;
+        while (i < popup_width - 2) : (i += 1) {
+            try self.stdout.writeAll("─");
+        }
+        try self.stdout.writeAll("┤");
+
+        // File list
+        const list_height = popup_height - 4;
+        const start_idx = if (self.fuzzy_selected_idx >= list_height)
+            self.fuzzy_selected_idx - list_height + 1
+        else
+            0;
+        const end_idx = @min(start_idx + list_height, results.len);
+
+        var row_idx: usize = 0;
+        while (row_idx < list_height) : (row_idx += 1) {
+            const actual_row = popup_row + 3 + row_idx;
+            try self.setCursor(actual_row, popup_col);
+            try self.stdout.writeAll("│ ");
+
+            const results_idx = start_idx + row_idx;
+            if (results_idx < end_idx) {
+                const result = results[results_idx];
+                const is_selected = results_idx == self.fuzzy_selected_idx;
+
+                if (is_selected) {
+                    try self.setColor(46, 30); // Cyan bg, black text
+                    try self.stdout.writeAll("> ");
+                } else {
+                    try self.stdout.writeAll("  ");
+                }
+
+                const file_display = result.entry.display;
+                const max_display_len = popup_width - 6;
+                const display_len = @min(file_display.len, max_display_len);
+                try self.stdout.writeAll(file_display[0..display_len]);
+
+                if (is_selected) {
+                    try self.resetColor();
+                }
+
+                const line_padding = popup_width - 4 - display_len;
+                i = 0;
+                while (i < line_padding) : (i += 1) {
+                    try self.stdout.writeAll(" ");
+                }
+            } else {
+                i = 0;
+                while (i < popup_width - 4) : (i += 1) {
+                    try self.stdout.writeAll(" ");
+                }
+            }
+
+            try self.stdout.writeAll(" │");
+        }
+
+        // Bottom border
+        try self.setCursor(popup_row + popup_height - 1, popup_col);
+        try self.stdout.writeAll("└");
+        i = 0;
+        while (i < popup_width - 2) : (i += 1) {
+            try self.stdout.writeAll("─");
+        }
+        try self.stdout.writeAll("┘");
+
+        try self.setCursor(height, 1); // Restore cursor to status line
+    }
+
     fn renderHarpoonMenu(self: *SimpleTUI, width: usize, height: usize) !void {
         if (!self.harpoon_menu_active) return;
 
@@ -2885,6 +3379,19 @@ pub const SimpleTUI = struct {
 
     fn isWordChar(ch: u8) bool {
         return std.ascii.isAlphanumeric(ch) or ch == '_';
+    }
+
+    fn isWhitespace(ch: u8) bool {
+        return ch == ' ' or ch == '\t' or ch == '\n' or ch == '\r';
+    }
+
+    fn isLineBlank(line: []const u8) bool {
+        for (line) |ch| {
+            if (ch != ' ' and ch != '\t' and ch != '\r') {
+                return false;
+            }
+        }
+        return true;
     }
 
     fn captureCompletionContext(self: *SimpleTUI) !void {
@@ -4547,7 +5054,8 @@ pub const SimpleTUI = struct {
                 }
             } else if (seq[0] == 'f') { // Find/File commands
                 switch (seq[1]) {
-                    'f' => try self.toggleFileTree(),
+                    'f' => try self.activateFuzzyFinder(),
+                    't' => try self.toggleFileTree(),
                     else => self.setStatusMessage("Unknown Find command"),
                 }
             } else {
@@ -4717,6 +5225,1315 @@ pub const SimpleTUI = struct {
             },
             else => {},
         }
+    }
+
+    // ===== TEXT OBJECT FUNCTIONS =====
+
+    fn repeatLastOperation(self: *SimpleTUI) !void {
+        const operator = self.last_operator orelse {
+            self.setStatusMessage("No operation to repeat");
+            return;
+        };
+
+        // Check if this was a double operator (dd, yy, cc)
+        if (self.last_text_object == null and self.last_object == operator) {
+            const count = self.last_count orelse 1;
+            var i: usize = 0;
+            while (i < count) : (i += 1) {
+                if (operator == 'd') {
+                    try self.deleteLineWithUndo();
+                } else if (operator == 'y') {
+                    try self.yankLine();
+                } else if (operator == 'c') {
+                    try self.deleteLineWithUndo();
+                    self.switchMode(.insert);
+                }
+            }
+            return;
+        }
+
+        // Otherwise, it's a text object operation (diw, ci{, etc.)
+        const modifier = self.last_text_object orelse 'a';
+        const object = self.last_object orelse return;
+
+        try self.applyTextObject(operator, modifier, object);
+    }
+
+    fn applyTextObject(self: *SimpleTUI, operator: u8, modifier: u8, object: u8) !void {
+        const range_opt = try self.getTextObjectRange(modifier, object);
+        const range = range_opt orelse {
+            self.setStatusMessage("Text object not found");
+            return;
+        };
+
+        // Apply operator to range
+        switch (operator) {
+            'd' => {
+                // Delete range
+                try self.deleteRange(range.start, range.end);
+            },
+            'y' => {
+                // Yank range
+                try self.yankRange(range.start, range.end);
+            },
+            'c' => {
+                // Change range (delete + enter insert mode)
+                try self.deleteRange(range.start, range.end);
+                self.switchMode(.insert);
+            },
+            else => {},
+        }
+    }
+
+    const TextObjectRange = struct {
+        start: usize,
+        end: usize,
+    };
+
+    fn getTextObjectRange(self: *SimpleTUI, modifier: u8, object: u8) !?TextObjectRange {
+        return switch (object) {
+            'w' => try self.getWordObject(modifier),
+            's' => try self.getSentenceObject(modifier),
+            'p' => try self.getParagraphObject(modifier),
+            '{', '}' => try self.getBraceObject(modifier),
+            '(', ')' => try self.getParenObject(modifier),
+            '[', ']' => try self.getBracketObject(modifier),
+            '"' => try self.getQuoteObject(modifier, '"'),
+            '\'' => try self.getQuoteObject(modifier, '\''),
+            '`' => try self.getQuoteObject(modifier, '`'),
+            't' => try self.getTagObject(modifier),
+            else => null,
+        };
+    }
+
+    fn getWordObject(self: *SimpleTUI, modifier: u8) !?TextObjectRange {
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        const cursor = self.editor.cursor.offset;
+
+        if (cursor >= content.len) return null;
+
+        // Find word boundaries
+        var start = cursor;
+        var end = cursor;
+
+        // Handle 'inner word' (iw) - just the word characters
+        if (modifier == 'i') {
+            // Move start back to beginning of word
+            while (start > 0 and isWordChar(content[start - 1])) {
+                start -= 1;
+            }
+            // Move end forward to end of word
+            while (end < content.len and isWordChar(content[end])) {
+                end += 1;
+            }
+        } else { // 'around word' (aw) - word + trailing whitespace
+            // Move start back to beginning of word
+            while (start > 0 and isWordChar(content[start - 1])) {
+                start -= 1;
+            }
+            // Move end forward to end of word
+            while (end < content.len and isWordChar(content[end])) {
+                end += 1;
+            }
+            // Include trailing whitespace
+            while (end < content.len and isWhitespace(content[end])) {
+                end += 1;
+            }
+        }
+
+        if (start == end) return null;
+
+        return .{ .start = start, .end = end };
+    }
+
+    fn getSentenceObject(self: *SimpleTUI, modifier: u8) !?TextObjectRange {
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        const cursor = self.editor.cursor.offset;
+
+        if (cursor >= content.len) return null;
+
+        // Helper function to check if character is sentence terminator
+        const isSentenceEnd = struct {
+            fn check(ch: u8) bool {
+                return ch == '.' or ch == '!' or ch == '?';
+            }
+        }.check;
+
+        // Find sentence start - search backwards for sentence terminator + whitespace
+        var start = cursor;
+        while (start > 0) {
+            start -= 1;
+            if (isSentenceEnd(content[start])) {
+                // Found sentence terminator, move past it and any whitespace
+                start += 1;
+                while (start < content.len and isWhitespace(content[start])) {
+                    start += 1;
+                }
+                break;
+            }
+        }
+
+        // If we hit the beginning, skip leading whitespace
+        if (start == 0) {
+            while (start < content.len and isWhitespace(content[start])) {
+                start += 1;
+            }
+        }
+
+        // Find sentence end - search forwards for sentence terminator
+        var end = cursor;
+        while (end < content.len) {
+            if (isSentenceEnd(content[end])) {
+                end += 1; // Include the terminator
+                break;
+            }
+            end += 1;
+        }
+
+        // Handle 'around' modifier - include trailing whitespace
+        if (modifier == 'a') {
+            while (end < content.len and isWhitespace(content[end])) {
+                end += 1;
+            }
+        }
+
+        if (start >= end) return null;
+
+        return .{ .start = start, .end = end };
+    }
+
+    fn getParagraphObject(self: *SimpleTUI, modifier: u8) !?TextObjectRange {
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        const cursor = self.editor.cursor.offset;
+
+        if (cursor >= content.len) return null;
+
+        // Helper to check if a line is blank (empty or only whitespace)
+        const isBlankLine = struct {
+            fn check(line: []const u8) bool {
+                for (line) |ch| {
+                    if (!isWhitespace(ch)) return false;
+                }
+                return true;
+            }
+        }.check;
+
+        // Find paragraph start - search backwards for blank line
+        var start = cursor;
+        var line_start = start;
+
+        // Move to beginning of current line
+        while (line_start > 0 and content[line_start - 1] != '\n') {
+            line_start -= 1;
+        }
+
+        // Search backwards line by line for blank line
+        while (line_start > 0) {
+            // Move to previous line start
+            var prev_line_end = line_start - 1;
+            if (prev_line_end < content.len and content[prev_line_end] == '\n') {
+                prev_line_end -= 1;
+            }
+            var prev_line_start = prev_line_end;
+            while (prev_line_start > 0 and content[prev_line_start - 1] != '\n') {
+                prev_line_start -= 1;
+            }
+
+            // Check if previous line is blank
+            const prev_line = content[prev_line_start .. prev_line_end + 1];
+            if (isBlankLine(prev_line)) {
+                start = line_start;
+                break;
+            }
+
+            line_start = prev_line_start;
+            start = line_start;
+        }
+
+        // Find paragraph end - search forwards for blank line
+        var end = cursor;
+        var line_end = end;
+
+        // Move to end of current line
+        while (line_end < content.len and content[line_end] != '\n') {
+            line_end += 1;
+        }
+
+        // Search forwards line by line for blank line
+        while (line_end < content.len) {
+            // Move to next line
+            if (line_end < content.len and content[line_end] == '\n') {
+                line_end += 1;
+            }
+            const next_line_start = line_end;
+            var next_line_end = next_line_start;
+            while (next_line_end < content.len and content[next_line_end] != '\n') {
+                next_line_end += 1;
+            }
+
+            // Check if next line is blank
+            if (next_line_start < content.len) {
+                const next_line = content[next_line_start..next_line_end];
+                if (isBlankLine(next_line)) {
+                    end = line_end;
+                    // Include the newline at end of paragraph
+                    if (end < content.len and content[end] == '\n') {
+                        end += 1;
+                    }
+                    break;
+                }
+            }
+
+            line_end = next_line_end;
+            end = line_end;
+        }
+
+        // Handle 'around' modifier - include surrounding blank lines
+        if (modifier == 'a') {
+            // Include blank lines before paragraph
+            while (start > 0) {
+                var check_start = start - 1;
+                if (check_start > 0 and content[check_start] == '\n') {
+                    check_start -= 1;
+                }
+                var check_line_start = check_start;
+                while (check_line_start > 0 and content[check_line_start - 1] != '\n') {
+                    check_line_start -= 1;
+                }
+                const check_line = content[check_line_start .. check_start + 1];
+                if (!isBlankLine(check_line)) break;
+                start = check_line_start;
+            }
+
+            // Include blank lines after paragraph
+            while (end < content.len) {
+                var check_start = end;
+                if (check_start < content.len and content[check_start] == '\n') {
+                    check_start += 1;
+                }
+                if (check_start >= content.len) break;
+                var check_end = check_start;
+                while (check_end < content.len and content[check_end] != '\n') {
+                    check_end += 1;
+                }
+                const check_line = content[check_start..check_end];
+                if (!isBlankLine(check_line)) break;
+                end = check_end;
+                if (end < content.len and content[end] == '\n') {
+                    end += 1;
+                }
+            }
+        }
+
+        if (start >= end) return null;
+
+        return .{ .start = start, .end = end };
+    }
+
+    fn getBraceObject(self: *SimpleTUI, modifier: u8) !?TextObjectRange {
+        return try self.getPairObject(modifier, '{', '}');
+    }
+
+    fn getParenObject(self: *SimpleTUI, modifier: u8) !?TextObjectRange {
+        return try self.getPairObject(modifier, '(', ')');
+    }
+
+    fn getBracketObject(self: *SimpleTUI, modifier: u8) !?TextObjectRange {
+        return try self.getPairObject(modifier, '[', ']');
+    }
+
+    fn getPairObject(self: *SimpleTUI, modifier: u8, open: u8, close: u8) !?TextObjectRange {
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        const cursor = self.editor.cursor.offset;
+
+        // Find the nearest pair surrounding cursor
+        var start_pos: ?usize = null;
+        var end_pos: ?usize = null;
+
+        // Search backwards for opening bracket
+        var depth: i32 = 0;
+        var i: usize = cursor;
+        while (i > 0) {
+            i -= 1;
+            if (content[i] == close) {
+                depth += 1;
+            } else if (content[i] == open) {
+                if (depth == 0) {
+                    start_pos = i;
+                    break;
+                }
+                depth -= 1;
+            }
+        }
+
+        if (start_pos == null) return null;
+
+        // Search forwards for closing bracket
+        depth = 0;
+        i = cursor;
+        while (i < content.len) {
+            if (content[i] == open) {
+                depth += 1;
+            } else if (content[i] == close) {
+                if (depth == 0) {
+                    end_pos = i;
+                    break;
+                }
+                depth -= 1;
+            }
+            i += 1;
+        }
+
+        if (end_pos == null) return null;
+
+        // inner (i) excludes brackets, around (a) includes them
+        if (modifier == 'i') {
+            return .{ .start = start_pos.? + 1, .end = end_pos.? };
+        } else {
+            return .{ .start = start_pos.?, .end = end_pos.? + 1 };
+        }
+    }
+
+    fn getQuoteObject(self: *SimpleTUI, modifier: u8, quote: u8) !?TextObjectRange {
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        const cursor = self.editor.cursor.offset;
+
+        // Find nearest pair of quotes surrounding cursor
+        var start_pos: ?usize = null;
+        var end_pos: ?usize = null;
+
+        // Search backwards for opening quote
+        var i: usize = cursor;
+        var in_quote = false;
+        while (i > 0) {
+            i -= 1;
+            if (content[i] == quote and (i == 0 or content[i - 1] != '\\')) {
+                start_pos = i;
+                in_quote = true;
+                break;
+            }
+        }
+
+        if (start_pos == null) return null;
+
+        // Search forwards for closing quote
+        i = start_pos.? + 1;
+        while (i < content.len) {
+            if (content[i] == quote and (i == 0 or content[i - 1] != '\\')) {
+                end_pos = i;
+                break;
+            }
+            i += 1;
+        }
+
+        if (end_pos == null) return null;
+
+        // inner (i) excludes quotes, around (a) includes them
+        if (modifier == 'i') {
+            return .{ .start = start_pos.? + 1, .end = end_pos.? };
+        } else {
+            return .{ .start = start_pos.?, .end = end_pos.? + 1 };
+        }
+    }
+
+    fn getTagObject(self: *SimpleTUI, modifier: u8) !?TextObjectRange {
+        _ = self;
+        _ = modifier;
+        // TODO: Implement HTML/XML tag text object
+        return null;
+    }
+
+
+    fn deleteRange(self: *SimpleTUI, start: usize, end: usize) !void {
+        if (start >= end) return;
+
+        // Save deleted content to yank buffer
+        const deleted = try self.editor.rope.slice(.{ .start = start, .end = end });
+        if (self.editor.yank_buffer) |old_buf| {
+            self.allocator.free(old_buf);
+        }
+        self.editor.yank_buffer = try self.allocator.dupe(u8, deleted);
+        self.editor.yank_linewise = false;
+
+        // Delete the range
+        try self.editor.rope.delete(start, end - start);
+        self.editor.cursor.offset = start;
+        self.markHighlightsDirty();
+    }
+
+    fn yankRange(self: *SimpleTUI, start: usize, end: usize) !void {
+        if (start >= end) return;
+
+        const yanked = try self.editor.rope.slice(.{ .start = start, .end = end });
+        if (self.editor.yank_buffer) |old_buf| {
+            self.allocator.free(old_buf);
+        }
+        self.editor.yank_buffer = try self.allocator.dupe(u8, yanked);
+        self.editor.yank_linewise = false;
+
+        self.setStatusMessage("Yanked");
+    }
+
+    // ===== FUZZY FINDER FUNCTIONS =====
+
+    fn activateFuzzyFinder(self: *SimpleTUI) !void {
+        self.fuzzy_picker_active = true;
+        self.fuzzy_selected_idx = 0;
+        self.fuzzy_query.clearRetainingCapacity();
+
+        // Clear previous entries
+        self.fuzzy.entries.clearRetainingCapacity();
+        self.fuzzy.filtered.clearRetainingCapacity();
+
+        // Scan current directory for files
+        const cwd = try std.fs.cwd().realpathAlloc(self.allocator, ".");
+        defer self.allocator.free(cwd);
+
+        try self.fuzzy.findFiles(cwd, 10);
+        try self.fuzzy.filter(""); // Show all initially
+
+        self.setStatusMessage("Fuzzy Finder (type to filter, Enter to open, ESC to cancel)");
+    }
+
+    fn handleFuzzyPickerInput(self: *SimpleTUI, key: u8) !void {
+        switch (key) {
+            27 => { // ESC - cancel
+                self.fuzzy_picker_active = false;
+                self.clearStatusMessage();
+            },
+            13 => { // Enter - select file
+                const results = self.fuzzy.getResults();
+                if (results.len > 0 and self.fuzzy_selected_idx < results.len) {
+                    const selected = results[self.fuzzy_selected_idx];
+                    try self.loadFile(selected.entry.path);
+                    self.fuzzy_picker_active = false;
+                    self.clearStatusMessage();
+                }
+            },
+            8, 127 => { // Backspace/Delete
+                if (self.fuzzy_query.items.len > 0) {
+                    _ = self.fuzzy_query.pop();
+                    try self.fuzzy.filter(self.fuzzy_query.items);
+                    self.fuzzy_selected_idx = 0;
+                }
+            },
+            14 => { // Ctrl+N - move down
+                const results = self.fuzzy.getResults();
+                if (results.len > 0 and self.fuzzy_selected_idx + 1 < results.len) {
+                    self.fuzzy_selected_idx += 1;
+                }
+            },
+            16 => { // Ctrl+P - move up
+                if (self.fuzzy_selected_idx > 0) {
+                    self.fuzzy_selected_idx -= 1;
+                }
+            },
+            else => {
+                // Printable characters - add to query
+                if (key >= 32 and key < 127) {
+                    try self.fuzzy_query.append(self.allocator, key);
+                    try self.fuzzy.filter(self.fuzzy_query.items);
+                    self.fuzzy_selected_idx = 0;
+                }
+            },
+        }
+    }
+
+    // ========================================================================
+    // Session Management
+    // ========================================================================
+
+    fn saveSession(self: *SimpleTUI, filename: []const u8) !void {
+        const file = try std.fs.cwd().createFile(filename, .{});
+        defer file.close();
+
+        var write_buffer: [4096]u8 = undefined;
+        var file_writer = file.writer(&write_buffer);
+        const writer = &file_writer.interface;
+
+        // Write session header
+        try writer.writeAll("\" Grim Session File\n");
+        try writer.writeAll("\" Auto-generated - do not edit manually\n\n");
+
+        // Save current working directory
+        var cwd_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const cwd = try std.fs.cwd().realpath(".", &cwd_buf);
+        try writer.print("\" CWD: {s}\n\n", .{cwd});
+
+        // Save current buffer if we have one
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffers = pbm.buffers.items;
+
+            // Save all open buffers
+            for (buffers) |buf| {
+                if (buf.filePath()) |path| {
+                    try writer.print("edit {s}\n", .{path});
+                }
+            }
+
+            // Mark active buffer
+            try writer.print("\n\" Active buffer: {d}\n", .{pbm.active_buffer_id});
+        }
+
+        // Save cursor position
+        try writer.print("\" Cursor offset: {d}\n", .{self.editor.cursor.offset});
+
+        // Save macros
+        var macro_iter = self.macros.iterator();
+        while (macro_iter.next()) |entry| {
+            const register = entry.key_ptr.*;
+            const macro_content = entry.value_ptr.*;
+
+            // Encode macro as hex to preserve special characters
+            try writer.print("\" Macro {c}: ", .{register});
+            for (macro_content) |byte| {
+                try writer.print("{x:0>2}", .{byte});
+            }
+            try writer.writeAll("\n");
+        }
+
+        try writer.flush();
+        self.setStatusMessage("Session saved");
+    }
+
+    fn loadSession(self: *SimpleTUI, filename: []const u8) !void {
+        const file = try std.fs.cwd().openFile(filename, .{});
+        defer file.close();
+
+        var read_buffer: [4096]u8 = undefined;
+        var file_reader = file.reader(&read_buffer);
+        const reader = &file_reader.interface;
+
+        const content = try reader.readAlloc(self.allocator, 10 * 1024 * 1024); // 10MB limit
+        defer self.allocator.free(content);
+
+        var line_iter = std.mem.splitScalar(u8, content, '\n');
+        while (line_iter.next()) |line| {
+            // Skip empty lines and comments
+            if (line.len == 0 or line[0] == '"') continue;
+
+            // Parse edit commands
+            if (std.mem.startsWith(u8, line, "edit ")) {
+                const filepath = std.mem.trimLeft(u8, line[5..], " ");
+                self.loadFile(filepath) catch |err| {
+                    std.log.warn("Failed to load file from session: {s}: {}", .{ filepath, err });
+                };
+            }
+        }
+
+        self.setStatusMessage("Session loaded");
+    }
+
+    // ========================================================================
+    // Terminal Integration (Sprint 12) - IMPLEMENTED
+    // ========================================================================
+
+    fn openTerminal(self: *SimpleTUI, cmd: []const u8) !void {
+        // Create terminal buffer
+        const term_height = self.terminal_height - 2; // Leave space for status
+        const term_width = self.terminal_width;
+
+        const command = if (cmd.len > 0) cmd else null;
+
+        // Create terminal buffer through buffer manager
+        if (self.buffer_manager) |bm| {
+            _ = try bm.createTerminal(@intCast(term_height), @intCast(term_width), command);
+        }
+
+        var msg_buf: [128]u8 = undefined;
+        const msg = if (command) |c|
+            try std.fmt.bufPrint(&msg_buf, "Terminal opened: {s}", .{c})
+        else
+            try std.fmt.bufPrint(&msg_buf, "Terminal opened", .{});
+
+        self.setStatusMessage(msg);
+
+        // TODO: Remaining terminal implementation:
+        // 1. Async I/O for terminal output (poll for data in event loop)
+        // 2. Rendering terminal content (ANSI escape sequence parsing)
+        // 3. Input forwarding when in terminal buffer
+        // 4. Terminal resizing on window resize
+    }
+
+    // =============================================================================
+    // Sprint 7 & 8: Macros and Advanced Motions
+    // =============================================================================
+
+    /// Handle macro recording - q to start/stop
+    fn handleMacroRecording(self: *SimpleTUI) !void {
+        if (self.macro_recording) {
+            // Stop recording
+            self.macro_recording = false;
+
+            // Save recorded macro to register
+            if (self.macro_register) |register| {
+                // Allocate and copy macro buffer
+                const macro_copy = try self.allocator.alloc(u8, self.macro_buffer.items.len);
+                @memcpy(macro_copy, self.macro_buffer.items);
+
+                // Free old macro if it exists
+                if (self.macros.get(register)) |old_macro| {
+                    self.allocator.free(old_macro);
+                }
+
+                // Store new macro
+                try self.macros.put(register, macro_copy);
+
+                // Save macro to disk for persistence
+                self.saveMacroToDisk(register, macro_copy) catch |err| {
+                    std.log.warn("Failed to save macro to disk: {}", .{err});
+                };
+
+                var msg_buf: [64]u8 = undefined;
+                const msg = try std.fmt.bufPrint(&msg_buf, "Recorded macro '{c}'", .{register});
+                self.setStatusMessage(msg);
+            }
+
+            self.macro_register = null;
+            self.macro_buffer.clearRetainingCapacity();
+        } else {
+            // Start recording - need to wait for register key
+            self.setStatusMessage("Record macro: q<register>");
+            self.pending_vim_key = 'q';
+        }
+    }
+
+    /// Play macro from register
+    fn playMacro(self: *SimpleTUI, register: u8) std.mem.Allocator.Error!void {
+        if (self.macros.get(register)) |macro| {
+            self.last_macro_register = register;
+
+            // Replay each keystroke in the macro
+            // Note: We catch errors to prevent macro playback from breaking the editor
+            const saved_mode = self.editor.mode;
+            for (macro) |key| {
+                // Route to appropriate mode handler
+                switch (saved_mode) {
+                    .normal => self.handleNormalMode(key) catch |err| {
+                        std.log.warn("Macro playback error: {}", .{err});
+                        break;
+                    },
+                    .insert => self.handleInsertMode(key) catch |err| {
+                        std.log.warn("Macro playback error: {}", .{err});
+                        break;
+                    },
+                    .visual => self.handleVisualMode(key) catch |err| {
+                        std.log.warn("Macro playback error: {}", .{err});
+                        break;
+                    },
+                    .command => self.handleCommandMode(key) catch |err| {
+                        std.log.warn("Macro playback error: {}", .{err});
+                        break;
+                    },
+                }
+            }
+
+            var msg_buf: [64]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "Played macro '{c}'", .{register}) catch "Played macro";
+            self.setStatusMessage(msg);
+        } else {
+            var msg_buf: [64]u8 = undefined;
+            const msg = std.fmt.bufPrint(&msg_buf, "No macro in register '{c}'", .{register}) catch "No macro";
+            self.setStatusMessage(msg);
+        }
+    }
+
+    /// Repeat last played macro
+    fn playLastMacro(self: *SimpleTUI) std.mem.Allocator.Error!void {
+        if (self.last_macro_register) |register| {
+            try self.playMacro(register);
+        } else {
+            self.setStatusMessage("No previous macro");
+        }
+    }
+
+    /// Save a macro to disk for persistence
+    fn saveMacroToDisk(self: *SimpleTUI, register: u8, macro: []const u8) !void {
+        _ = self; // Function doesn't need self, but keeping parameter for consistency
+        // Create macros directory if it doesn't exist
+        const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const macros_dir = try std.fmt.bufPrint(&path_buf, "{s}/.local/share/grim/macros", .{home});
+
+        std.fs.cwd().makePath(macros_dir) catch |err| {
+            if (err != error.PathAlreadyExists) return err;
+        };
+
+        // Save macro to file named after the register
+        var file_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const file_path = try std.fmt.bufPrint(&file_path_buf, "{s}/{c}.macro", .{macros_dir, register});
+
+        const file = try std.fs.cwd().createFile(file_path, .{});
+        defer file.close();
+
+        var write_buffer: [4096]u8 = undefined;
+        var file_writer = file.writer(&write_buffer);
+        const writer = &file_writer.interface;
+
+        // Write macro as hex-encoded bytes
+        for (macro) |byte| {
+            try writer.print("{x:0>2}", .{byte});
+        }
+        try writer.flush();
+    }
+
+    /// Load all macros from disk
+    fn loadMacrosFromDisk(self: *SimpleTUI) !void {
+        const home = std.posix.getenv("HOME") orelse return;
+
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const macros_dir = std.fmt.bufPrint(&path_buf, "{s}/.local/share/grim/macros", .{home}) catch return;
+
+        var dir = std.fs.cwd().openDir(macros_dir, .{ .iterate = true }) catch return;
+        defer dir.close();
+
+        var iter = dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".macro")) continue;
+
+            // Extract register from filename
+            if (entry.name.len < 7) continue; // "X.macro" = 7 chars minimum
+            const register = entry.name[0];
+
+            // Read macro file
+            const file = dir.openFile(entry.name, .{}) catch continue;
+            defer file.close();
+
+            var read_buffer: [4096]u8 = undefined;
+            var file_reader = file.reader(&read_buffer);
+            const reader = &file_reader.interface;
+
+            const hex_content = reader.readAlloc(self.allocator, 64 * 1024) catch continue;
+            defer self.allocator.free(hex_content);
+
+            // Decode hex to bytes
+            if (hex_content.len % 2 != 0) continue; // Invalid hex
+
+            const macro_len = hex_content.len / 2;
+            const macro = try self.allocator.alloc(u8, macro_len);
+
+            var i: usize = 0;
+            while (i < macro_len) : (i += 1) {
+                const hex_byte = hex_content[i * 2 .. i * 2 + 2];
+                macro[i] = std.fmt.parseInt(u8, hex_byte, 16) catch {
+                    self.allocator.free(macro);
+                    continue;
+                };
+            }
+
+            // Store macro (free old one if exists)
+            if (self.macros.get(register)) |old_macro| {
+                self.allocator.free(old_macro);
+            }
+            try self.macros.put(register, macro);
+        }
+    }
+
+    /// Jump to matching bracket - % command
+    fn jumpToMatchingBracket(self: *SimpleTUI) !void {
+        const cursor = self.editor.cursor.offset;
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        if (cursor >= content.len) return;
+
+        const char_at_cursor = content[cursor];
+
+        // Define bracket pairs
+        const open_brackets = "({[";
+        const close_brackets = ")}]";
+
+        // Check if cursor is on a bracket
+        var is_open = false;
+        var is_close = false;
+        var bracket_idx: usize = 0;
+
+        for (open_brackets, 0..) |b, i| {
+            if (char_at_cursor == b) {
+                is_open = true;
+                bracket_idx = i;
+                break;
+            }
+        }
+
+        if (!is_open) {
+            for (close_brackets, 0..) |b, i| {
+                if (char_at_cursor == b) {
+                    is_close = true;
+                    bracket_idx = i;
+                    break;
+                }
+            }
+        }
+
+        if (!is_open and !is_close) {
+            self.setStatusMessage("No bracket under cursor");
+            return;
+        }
+
+        const open_char = open_brackets[bracket_idx];
+        const close_char = close_brackets[bracket_idx];
+
+        if (is_open) {
+            // Search forward for matching close bracket
+            var depth: usize = 1;
+            var i = cursor + 1;
+            while (i < content.len) : (i += 1) {
+                if (content[i] == open_char) {
+                    depth += 1;
+                } else if (content[i] == close_char) {
+                    depth -= 1;
+                    if (depth == 0) {
+                        self.editor.cursor.offset = i;
+                        return;
+                    }
+                }
+            }
+            self.setStatusMessage("No matching bracket found");
+        } else {
+            // Search backward for matching open bracket
+            var depth: usize = 1;
+            var i = cursor;
+            while (i > 0) {
+                i -= 1;
+                if (content[i] == close_char) {
+                    depth += 1;
+                } else if (content[i] == open_char) {
+                    depth -= 1;
+                    if (depth == 0) {
+                        self.editor.cursor.offset = i;
+                        return;
+                    }
+                }
+            }
+            self.setStatusMessage("No matching bracket found");
+        }
+    }
+
+    /// Search for word under cursor (* and # commands)
+    fn searchWordUnderCursor(self: *SimpleTUI, forward: bool) !void {
+        const cursor = self.editor.cursor.offset;
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        if (cursor >= content.len) return;
+
+        // Find word boundaries
+        var start = cursor;
+        var end = cursor;
+
+        // Move start to beginning of word
+        while (start > 0 and isWordChar(content[start - 1])) {
+            start -= 1;
+        }
+
+        // Move end to end of word
+        while (end < content.len and isWordChar(content[end])) {
+            end += 1;
+        }
+
+        if (start == end) {
+            self.setStatusMessage("No word under cursor");
+            return;
+        }
+
+        const word = content[start..end];
+
+        // Perform search using editor's search functionality
+        self.editor.setSearchPattern(word) catch {
+            self.setStatusMessage("Search failed");
+            return;
+        };
+
+        // Record jump before search moves cursor
+        try self.recordJump();
+
+        // Find next occurrence
+        const found = if (forward)
+            self.editor.repeatLastSearch() catch false
+        else
+            self.editor.repeatLastSearchReverse() catch false;
+
+        if (found) {
+            var msg_buf: [128]u8 = undefined;
+            const msg = try std.fmt.bufPrint(&msg_buf, "Search: {s}", .{word});
+            self.setStatusMessage(msg);
+        } else {
+            self.setStatusMessage("Pattern not found");
+        }
+    }
+
+    /// Character search (f, F, t, T commands)
+    fn charSearch(self: *SimpleTUI, char: u8, forward: bool, till: bool) !void {
+        // Save search parameters for repeat
+        self.last_char_search = char;
+        self.last_char_search_forward = forward;
+        self.last_char_search_till = till;
+
+        const cursor = self.editor.cursor.offset;
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        if (cursor >= content.len) return;
+
+        // Get current line bounds
+        var line_start = cursor;
+        while (line_start > 0 and content[line_start - 1] != '\n') {
+            line_start -= 1;
+        }
+
+        var line_end = cursor;
+        while (line_end < content.len and content[line_end] != '\n') {
+            line_end += 1;
+        }
+
+        if (forward) {
+            // Search forward on current line
+            var i = cursor + 1;
+            while (i < line_end) : (i += 1) {
+                if (content[i] == char) {
+                    // Found it - move cursor
+                    if (till and i > 0) {
+                        self.editor.cursor.offset = i - 1;
+                    } else {
+                        self.editor.cursor.offset = i;
+                    }
+                    return;
+                }
+            }
+        } else {
+            // Search backward on current line
+            var i = cursor;
+            while (i > line_start) {
+                i -= 1;
+                if (content[i] == char) {
+                    // Found it - move cursor
+                    if (till and i + 1 < content.len) {
+                        self.editor.cursor.offset = i + 1;
+                    } else {
+                        self.editor.cursor.offset = i;
+                    }
+                    return;
+                }
+            }
+        }
+
+        // Not found
+        var msg_buf: [64]u8 = undefined;
+        const msg = try std.fmt.bufPrint(&msg_buf, "'{c}' not found", .{char});
+        self.setStatusMessage(msg);
+    }
+
+    /// Repeat last character search (; and , commands)
+    fn repeatCharSearch(self: *SimpleTUI, same_direction: bool) !void {
+        if (self.last_char_search) |char| {
+            const forward = if (same_direction)
+                self.last_char_search_forward
+            else
+                !self.last_char_search_forward;
+
+            try self.charSearch(char, forward, self.last_char_search_till);
+        } else {
+            self.setStatusMessage("No previous character search");
+        }
+    }
+
+    /// Jump to previous paragraph (blank line) - { command
+    fn jumpToPreviousParagraph(self: *SimpleTUI) !void {
+        // Record jump before large movement
+        try self.recordJump();
+
+        const cursor = self.editor.cursor.offset;
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        if (cursor == 0) return;
+
+        // Find current line start
+        var pos = cursor;
+        while (pos > 0 and content[pos - 1] != '\n') {
+            pos -= 1;
+        }
+
+        // If we're on a blank line, skip it
+        var line_start = pos;
+        var line_end = pos;
+        while (line_end < content.len and content[line_end] != '\n') {
+            line_end += 1;
+        }
+        const is_blank = isLineBlank(content[line_start..line_end]);
+
+        if (is_blank and pos > 0) {
+            pos -= 1; // Move to previous line
+            while (pos > 0 and content[pos - 1] != '\n') {
+                pos -= 1;
+            }
+        }
+
+        // Search backward for a blank line
+        while (pos > 0) {
+            // Move to start of previous line
+            if (pos > 0) pos -= 1;
+            while (pos > 0 and content[pos - 1] != '\n') {
+                pos -= 1;
+            }
+
+            // Check if this line is blank
+            line_start = pos;
+            line_end = pos;
+            while (line_end < content.len and content[line_end] != '\n') {
+                line_end += 1;
+            }
+
+            if (isLineBlank(content[line_start..line_end])) {
+                self.editor.cursor.offset = pos;
+                return;
+            }
+        }
+
+        // No blank line found, go to beginning
+        self.editor.cursor.offset = 0;
+    }
+
+    /// Jump to next paragraph (blank line) - } command
+    fn jumpToNextParagraph(self: *SimpleTUI) !void {
+        // Record jump before large movement
+        try self.recordJump();
+
+        const cursor = self.editor.cursor.offset;
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        if (cursor >= content.len) return;
+
+        // Find current line start and end
+        var pos = cursor;
+        while (pos > 0 and content[pos - 1] != '\n') {
+            pos -= 1;
+        }
+
+        var line_start = pos;
+        var line_end = pos;
+        while (line_end < content.len and content[line_end] != '\n') {
+            line_end += 1;
+        }
+
+        // If we're on a blank line, skip it
+        const is_blank = isLineBlank(content[line_start..line_end]);
+        if (is_blank and line_end < content.len) {
+            pos = line_end + 1; // Move to next line
+        } else {
+            pos = line_end;
+            if (pos < content.len and content[pos] == '\n') pos += 1;
+        }
+
+        // Search forward for a blank line
+        while (pos < content.len) {
+            // Find line bounds
+            line_start = pos;
+            line_end = pos;
+            while (line_end < content.len and content[line_end] != '\n') {
+                line_end += 1;
+            }
+
+            if (isLineBlank(content[line_start..line_end])) {
+                self.editor.cursor.offset = line_start;
+                return;
+            }
+
+            // Move to next line
+            pos = line_end;
+            if (pos < content.len and content[pos] == '\n') pos += 1;
+        }
+
+        // No blank line found, go to end
+        self.editor.cursor.offset = content.len;
+    }
+
+    /// Jump to previous section - [[ command
+    /// Sections are lines starting with { at column 0
+    fn jumpToPreviousSection(self: *SimpleTUI) !void {
+        // Record jump before large movement
+        try self.recordJump();
+
+        const cursor = self.editor.cursor.offset;
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        if (cursor == 0) return;
+
+        // Find current line start
+        var pos = cursor;
+        while (pos > 0 and content[pos - 1] != '\n') {
+            pos -= 1;
+        }
+
+        // Move to previous line
+        if (pos > 0) {
+            pos -= 1; // Skip the \n
+            while (pos > 0 and content[pos - 1] != '\n') {
+                pos -= 1;
+            }
+        }
+
+        // Search backward for a section marker (line starting with {)
+        while (pos > 0) {
+            // Find line start
+            const line_start = pos;
+
+            // Check if this line starts with {
+            if (line_start < content.len and content[line_start] == '{') {
+                self.editor.cursor.offset = line_start;
+                return;
+            }
+
+            // Move to previous line
+            if (pos > 0) {
+                pos -= 1; // Skip the \n
+                while (pos > 0 and content[pos - 1] != '\n') {
+                    pos -= 1;
+                }
+            } else {
+                break;
+            }
+        }
+
+        // No section found, go to beginning
+        self.editor.cursor.offset = 0;
+    }
+
+    /// Jump to next section - ]] command
+    /// Sections are lines starting with { at column 0
+    fn jumpToNextSection(self: *SimpleTUI) !void {
+        // Record jump before large movement
+        try self.recordJump();
+
+        const cursor = self.editor.cursor.offset;
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        if (cursor >= content.len) return;
+
+        // Find current line end
+        var pos = cursor;
+        while (pos < content.len and content[pos] != '\n') {
+            pos += 1;
+        }
+
+        // Move to next line
+        if (pos < content.len) {
+            pos += 1; // Skip the \n
+        }
+
+        // Search forward for a section marker (line starting with {)
+        while (pos < content.len) {
+            const line_start = pos;
+
+            // Check if this line starts with {
+            if (content[line_start] == '{') {
+                self.editor.cursor.offset = line_start;
+                return;
+            }
+
+            // Move to next line
+            while (pos < content.len and content[pos] != '\n') {
+                pos += 1;
+            }
+            if (pos < content.len) {
+                pos += 1; // Skip the \n
+            }
+        }
+
+        // No section found, go to end
+        self.editor.cursor.offset = content.len;
+    }
+
+    // =============================================================================
+    // Jump List (Ctrl+O, Ctrl+I)
+    // =============================================================================
+
+    /// Record a jump in the jump list
+    pub fn recordJump(self: *SimpleTUI) !void {
+        const current_pos = self.editor.cursor.offset;
+
+        // Don't record if it's the same position or very close to last jump
+        if (self.jump_list.items.len > 0) {
+            const last_pos = self.jump_list.items[self.jump_list.items.len - 1];
+            // Only record if we've jumped more than 10 characters
+            const diff = if (current_pos > last_pos) current_pos - last_pos else last_pos - current_pos;
+            if (diff < 10) return;
+        }
+
+        // If we're in the middle of the jump list (after jumping back),
+        // truncate everything after current position
+        if (self.jump_list_index < self.jump_list.items.len) {
+            try self.jump_list.resize(self.allocator, self.jump_list_index);
+        }
+
+        // Add new jump
+        try self.jump_list.append(self.allocator, current_pos);
+        self.jump_list_index = self.jump_list.items.len;
+
+        // Limit jump list size to 100 entries
+        if (self.jump_list.items.len > 100) {
+            // Remove oldest entry
+            std.mem.copyForwards(usize, self.jump_list.items[0..99], self.jump_list.items[1..100]);
+            try self.jump_list.resize(self.allocator, 99);
+            self.jump_list_index = 99;
+        }
+    }
+
+    /// Jump back in the jump list - Ctrl+O
+    fn jumpBack(self: *SimpleTUI) !void {
+        if (self.jump_list.items.len == 0) {
+            self.setStatusMessage("Jump list is empty");
+            return;
+        }
+
+        // Record current position if not already at the end
+        if (self.jump_list_index >= self.jump_list.items.len) {
+            try self.recordJump();
+            if (self.jump_list.items.len < 2) {
+                self.setStatusMessage("Already at oldest jump");
+                return;
+            }
+            self.jump_list_index = self.jump_list.items.len - 1;
+        }
+
+        if (self.jump_list_index == 0) {
+            self.setStatusMessage("Already at oldest jump");
+            return;
+        }
+
+        // Move back in jump list
+        self.jump_list_index -= 1;
+        const jump_pos = self.jump_list.items[self.jump_list_index];
+
+        // Update cursor position
+        self.editor.cursor.offset = jump_pos;
+
+        var msg_buf: [64]u8 = undefined;
+        const msg = try std.fmt.bufPrint(&msg_buf, "Jump {d}/{d}", .{ self.jump_list_index + 1, self.jump_list.items.len });
+        self.setStatusMessage(msg);
+    }
+
+    /// Jump forward in the jump list - would be Ctrl+I but that conflicts with Tab
+    fn jumpForward(self: *SimpleTUI) !void {
+        if (self.jump_list.items.len == 0) {
+            self.setStatusMessage("Jump list is empty");
+            return;
+        }
+
+        if (self.jump_list_index >= self.jump_list.items.len - 1) {
+            self.setStatusMessage("Already at newest jump");
+            return;
+        }
+
+        // Move forward in jump list
+        self.jump_list_index += 1;
+        const jump_pos = self.jump_list.items[self.jump_list_index];
+
+        // Update cursor position
+        self.editor.cursor.offset = jump_pos;
+
+        var msg_buf: [64]u8 = undefined;
+        const msg = try std.fmt.bufPrint(&msg_buf, "Jump {d}/{d}", .{ self.jump_list_index + 1, self.jump_list.items.len });
+        self.setStatusMessage(msg);
     }
 };
 

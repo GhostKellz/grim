@@ -5,6 +5,8 @@ pub const fuzzy = @import("fuzzy.zig");
 pub const harpoon = @import("harpoon.zig");
 pub const zap = @import("zap.zig");
 pub const file_watcher = @import("file_watcher.zig");
+pub const terminal = @import("terminal.zig");
+pub const collaboration = @import("collaboration.zig");
 
 pub const Rope = rope.Rope;
 pub const Range = rope.Range;
@@ -15,3 +17,7 @@ pub const FilePicker = fuzzy.FilePicker;
 pub const Harpoon = harpoon.Harpoon;
 pub const ZapIntegration = zap.ZapIntegration;
 pub const FileWatcher = file_watcher.FileWatcher;
+pub const Terminal = terminal.Terminal;
+pub const CollaborationSession = collaboration.CollaborationSession;
+pub const Operation = collaboration.Operation;
+pub const UserPresence = collaboration.UserPresence;

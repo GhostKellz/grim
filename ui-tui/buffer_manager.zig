@@ -11,6 +11,11 @@ pub const BufferManager = struct {
     active_buffer_id: u32 = 0,
     next_buffer_id: u32 = 1,
 
+    pub const BufferType = enum {
+        file,
+        terminal,
+    };
+
     pub const Buffer = struct {
         id: u32,
         editor: editor_mod.Editor,
@@ -18,6 +23,8 @@ pub const BufferManager = struct {
         modified: bool = false,
         display_name: []const u8,
         last_accessed: i64,
+        buffer_type: BufferType = .file,
+        terminal: ?*core.Terminal = null,
 
         pub fn init(allocator: std.mem.Allocator, id: u32) !Buffer {
             const editor = try editor_mod.Editor.init(allocator);
@@ -31,10 +38,35 @@ pub const BufferManager = struct {
             };
         }
 
+        pub fn initTerminal(allocator: std.mem.Allocator, id: u32, rows: u16, cols: u16, cmd: ?[]const u8) !Buffer {
+            const editor = try editor_mod.Editor.init(allocator);
+            const terminal = try core.Terminal.init(allocator, rows, cols);
+            errdefer terminal.deinit();
+
+            try terminal.spawn(cmd);
+
+            const display_name = if (cmd) |c|
+                try std.fmt.allocPrint(allocator, "term://{s}", .{c})
+            else
+                try std.fmt.allocPrint(allocator, "term://shell", .{});
+
+            return Buffer{
+                .id = id,
+                .editor = editor,
+                .display_name = display_name,
+                .last_accessed = std.time.timestamp(),
+                .buffer_type = .terminal,
+                .terminal = terminal,
+            };
+        }
+
         pub fn deinit(self: *Buffer, allocator: std.mem.Allocator) void {
             self.editor.deinit();
             if (self.file_path) |path| {
                 allocator.free(path);
+            }
+            if (self.terminal) |term| {
+                term.deinit();
             }
             allocator.free(self.display_name);
         }
@@ -130,8 +162,20 @@ pub const BufferManager = struct {
         self.next_buffer_id += 1;
 
         const new_buffer = try Buffer.init(self.allocator, id);
-        try self.buffers.append(new_buffer);
+        try self.buffers.append(self.allocator, new_buffer);
 
+        return id;
+    }
+
+    /// Create a terminal buffer
+    pub fn createTerminal(self: *BufferManager, rows: u16, cols: u16, cmd: ?[]const u8) !u32 {
+        const id = self.next_buffer_id;
+        self.next_buffer_id += 1;
+
+        const terminal_buffer = try Buffer.initTerminal(self.allocator, id, rows, cols, cmd);
+        try self.buffers.append(self.allocator, terminal_buffer);
+
+        self.active_buffer_id = id;
         return id;
     }
 
