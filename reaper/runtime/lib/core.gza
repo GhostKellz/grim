@@ -15,11 +15,13 @@ end
 
 local function candidate_modules(name)
     -- WORKAROUND: Ghostlang 0.2.0 has memory leaks with array literals
-    -- Just try the most common path first
+    -- Build path from category.name format (e.g. "git.neogit" -> "plugins.git.neogit")
     local normalized = normalize_name(name)
 
-    -- Return single attempt for now until Ghostlang arrays are fixed
-    local module_path = "plugins.core." .. normalized
+    -- The name is in format "category.plugin-name"
+    -- We need to map it to "plugins.category.plugin-name"
+    local module_path = "plugins." .. normalized
+
     return module_path
 end
 
@@ -64,23 +66,17 @@ function core.load_plugin(name)
         return state.loaded[name]
     end
 
-    local last_error = nil
-    for _, module_name in ipairs(candidate_modules(name)) do
-        local ok, result = try_require(module_name)
-        if ok then
-            state.loaded[name] = result or true
-            return state.loaded[name]
-        else
-            last_error = result
-        end
+    -- Get the module path (now returns a single string instead of array)
+    local module_name = candidate_modules(name)
+    local ok, result = try_require(module_name)
+
+    if ok then
+        state.loaded[name] = result or true
+        return state.loaded[name]
     end
 
-    if last_error then
-        print("[core] Failed to load plugin " .. name .. ": " .. tostring(last_error))
-    else
-        print("[core] Failed to load plugin " .. name .. ": no candidates resolved")
-    end
-
+    -- Failed to load
+    print("[core] Failed to load plugin " .. name .. ": " .. tostring(result))
     return nil
 end
 

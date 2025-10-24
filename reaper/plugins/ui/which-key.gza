@@ -35,7 +35,7 @@ local DEFAULT_GROUPS = {
     ["<leader>c"] = { name = "Code", icon = "📝" },
     ["<leader>r"] = { name = "Refactor/Rename", icon = "♻️" },
     ["<leader>p"] = { name = "Project", icon = "📁" },
-    ["<leader>h"] = { name = "Help", icon = "❓" },
+    ["<leader>h"] = { name = "Harpoon", icon = "🎯" },
     ["<leader>x"] = { name = "Diagnostics/Quickfix", icon = "⚠️" },
     ["g"] = { name = "Goto", icon = "➡️" },
     ["z"] = { name = "Folds", icon = "📖" },
@@ -249,8 +249,9 @@ local function register_phantom_keymaps()
     plugin.register("n", "<leader>fh", ":FindHelp", { desc = "Find help" })
 
     -- Git operations (leader+g)
-    plugin.register("n", "<leader>gs", ":GitStatus", { desc = "Git status" })
-    plugin.register("n", "<leader>gc", ":GitCommit", { desc = "Git commit" })
+    plugin.register("n", "<leader>gs", ":Neogit", { desc = "Git status (Neogit)" })
+    plugin.register("n", "<leader>gl", ":NeogitLog", { desc = "Git log" })
+    plugin.register("n", "<leader>gc", ":NeogitCommit ", { desc = "Git commit" })
     plugin.register("n", "<leader>gp", ":GitPush", { desc = "Git push" })
     plugin.register("n", "<leader>gb", ":GitBlame", { desc = "Git blame" })
     plugin.register("n", "<leader>gd", ":GitDiff", { desc = "Git diff" })
@@ -296,6 +297,20 @@ local function register_phantom_keymaps()
     plugin.register("n", "<leader>xx", ":Diagnostics", { desc = "Show diagnostics" })
     plugin.register("n", "<leader>xq", ":Quickfix", { desc = "Show quickfix" })
     plugin.register("n", "<leader>xl", ":LocationList", { desc = "Location list" })
+
+    -- Harpoon operations (leader+h)
+    plugin.register("n", "<leader>ha", ":HarpoonAdd", { desc = "Harpoon: Add file" })
+    plugin.register("n", "<leader>hm", ":HarpoonMenu", { desc = "Harpoon: Menu" })
+    plugin.register("n", "<leader>hl", ":HarpoonList", { desc = "Harpoon: List" })
+    plugin.register("n", "<leader>h1", ":Harpoon1", { desc = "Harpoon: Jump 1" })
+    plugin.register("n", "<leader>h2", ":Harpoon2", { desc = "Harpoon: Jump 2" })
+    plugin.register("n", "<leader>h3", ":Harpoon3", { desc = "Harpoon: Jump 3" })
+    plugin.register("n", "<leader>h4", ":Harpoon4", { desc = "Harpoon: Jump 4" })
+
+    -- Undo operations (leader+u)
+    plugin.register("n", "<leader>u", ":UndotreeToggle", { desc = "Undotree: Toggle" })
+    plugin.register("n", "<leader>uu", ":Undo", { desc = "Undo" })
+    plugin.register("n", "<leader>ur", ":Redo", { desc = "Redo" })
 
     -- General
     plugin.register("n", "<leader>w", ":write", { desc = "Save file" })

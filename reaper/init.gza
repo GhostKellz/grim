@@ -35,6 +35,10 @@ core.ensure_plugins({
 	"editor.plugin-commands",
 	"editor.terminal",
 	"editor.theme-commands",
+	"editor.undotree",  -- Undo tree visualization
+
+	-- Navigation plugins
+	"navigation.harpoon",  -- Quick file navigation
 
 	-- UI plugins (Sprint 4)
 	"ui.bufferline",
@@ -44,6 +48,7 @@ core.ensure_plugins({
 
 	-- Git plugins (Sprint 4)
 	"git.git-signs",
+	"git.neogit",  -- Interactive git workflow
 
 	-- Integration plugins (Sprint 4)
 	"integration.tmux",

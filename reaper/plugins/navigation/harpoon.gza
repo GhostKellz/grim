@@ -1,0 +1,353 @@
+-- plugins/navigation/harpoon.gza
+-- Harpoon: Quick file navigation and marking system
+-- Inspired by ThePrimeagen's Harpoon plugin for Neovim
+--
+-- Features:
+-- - Mark frequently used files for quick access
+-- - Jump to marked files with single keybind
+-- - Persistent marks across sessions
+-- - Quick menu for managing marks
+
+local bridge = require("grim.bridge")
+local fs = require("grim.fs")
+
+local plugin = {
+    name = "harpoon",
+    version = "1.0.0",
+    state = {
+        initialized = false,
+        marks = {},  -- List of marked file paths
+        mark_file = nil,  -- Path to marks persistence file
+        menu_visible = false,
+        current_idx = 1,
+    },
+}
+
+local function log(message)
+    print("[harpoon] " .. message)
+end
+
+local function log_error(message)
+    print("[harpoon] ERROR: " .. message)
+end
+
+-- Get config directory for marks file
+local function get_config_dir()
+    local home = os.getenv("HOME") or os.getenv("USERPROFILE")
+    if not home then
+        log_error("Cannot determine home directory")
+        return nil
+    end
+
+    local config_dir = home .. "/.config/grim/harpoon"
+    return config_dir
+end
+
+-- Get marks file path for current project
+local function get_marks_file()
+    if plugin.state.mark_file then
+        return plugin.state.mark_file
+    end
+
+    local config_dir = get_config_dir()
+    if not config_dir then
+        return nil
+    end
+
+    -- Create harpoon directory if it doesn't exist
+    os.execute("mkdir -p " .. config_dir)
+
+    -- Use current working directory hash as filename
+    local cwd = os.getenv("PWD") or ""
+    local hash = 0
+    for i = 1, #cwd do
+        hash = ((hash * 31) + string.byte(cwd, i)) % 1000000
+    end
+
+    plugin.state.mark_file = config_dir .. "/marks_" .. tostring(hash) .. ".txt"
+    return plugin.state.mark_file
+end
+
+-- Load marks from file
+local function load_marks()
+    local marks_file = get_marks_file()
+    if not marks_file then
+        log_error("Cannot determine marks file path")
+        return false
+    end
+
+    local file = io.open(marks_file, "r")
+    if not file then
+        -- No marks file yet, start with empty list
+        plugin.state.marks = {}
+        return true
+    end
+
+    plugin.state.marks = {}
+    for line in file:lines() do
+        if line ~= "" then
+            table.insert(plugin.state.marks, line)
+        end
+    end
+    file:close()
+
+    log(string.format("Loaded %d marks from %s", #plugin.state.marks, marks_file))
+    return true
+end
+
+-- Save marks to file
+local function save_marks()
+    local marks_file = get_marks_file()
+    if not marks_file then
+        log_error("Cannot determine marks file path")
+        return false
+    end
+
+    local file = io.open(marks_file, "w")
+    if not file then
+        log_error("Cannot write marks file: " .. marks_file)
+        return false
+    end
+
+    for _, mark in ipairs(plugin.state.marks) do
+        file:write(mark .. "\n")
+    end
+    file:close()
+
+    log(string.format("Saved %d marks to %s", #plugin.state.marks, marks_file))
+    return true
+end
+
+-- Get current buffer path
+local function get_current_file()
+    -- TODO: Get from bridge
+    if bridge.get_current_file then
+        return bridge.get_current_file()
+    end
+
+    -- Fallback: try to get from environment
+    local file = os.getenv("GRIM_CURRENT_FILE")
+    if file and file ~= "" then
+        return file
+    end
+
+    log_error("Cannot determine current file")
+    return nil
+end
+
+-- Add current file to marks
+function plugin.add_file()
+    local file = get_current_file()
+    if not file then
+        log_error("No file to mark")
+        return false
+    end
+
+    -- Check if already marked
+    for i, mark in ipairs(plugin.state.marks) do
+        if mark == file then
+            log("File already marked at position " .. i)
+            return true
+        end
+    end
+
+    -- Add to marks
+    table.insert(plugin.state.marks, file)
+    save_marks()
+
+    log(string.format("Added file: %s (position %d)", file, #plugin.state.marks))
+    return true
+end
+
+-- Remove file from marks
+function plugin.remove_file(idx)
+    if not idx or idx < 1 or idx > #plugin.state.marks then
+        log_error("Invalid mark index: " .. tostring(idx))
+        return false
+    end
+
+    local removed = table.remove(plugin.state.marks, idx)
+    save_marks()
+
+    log(string.format("Removed mark %d: %s", idx, removed))
+    return true
+end
+
+-- Jump to marked file by index
+function plugin.select(idx)
+    if not idx or idx < 1 or idx > #plugin.state.marks then
+        log_error("Invalid mark index: " .. tostring(idx))
+        return false
+    end
+
+    local file = plugin.state.marks[idx]
+    if not file then
+        log_error("No mark at index " .. idx)
+        return false
+    end
+
+    log(string.format("Jumping to mark %d: %s", idx, file))
+
+    -- TODO: Open file via bridge
+    if bridge.open_file then
+        return bridge.open_file(file)
+    end
+
+    -- Fallback: Try to use grim command
+    os.execute(string.format("grim '%s' &", file))
+    return true
+end
+
+-- Format mark for display
+local function format_mark(idx, path)
+    -- Extract filename from path
+    local filename = path:match("([^/]+)$") or path
+
+    -- Truncate path if too long
+    local max_len = 60
+    local display_path = path
+    if #path > max_len then
+        display_path = "..." .. path:sub(-(max_len - 3))
+    end
+
+    return string.format("[%d] %s", idx, display_path)
+end
+
+-- Show harpoon menu
+function plugin.toggle_menu()
+    if plugin.state.menu_visible then
+        plugin.hide_menu()
+        return
+    end
+
+    log("Opening Harpoon menu...")
+
+    if #plugin.state.marks == 0 then
+        log("No marks yet. Use <leader>ha to mark files.")
+        return
+    end
+
+    -- Build menu content
+    local lines = {}
+    table.insert(lines, "╭─ Harpoon ─ Quick File Navigation ─────────────────────────────╮")
+    table.insert(lines, "│                                                                │")
+
+    for i, mark in ipairs(plugin.state.marks) do
+        local formatted = format_mark(i, mark)
+        local line = "│  " .. formatted
+
+        -- Pad to box width
+        local padding = 62 - #line
+        if padding > 0 then
+            line = line .. string.rep(" ", padding)
+        else
+            line = line:sub(1, 62)
+        end
+        line = line .. "│"
+
+        table.insert(lines, line)
+    end
+
+    table.insert(lines, "│                                                                │")
+    table.insert(lines, "│  [ha] Add file  [1-9] Jump  [d] Delete  [q] Quit              │")
+    table.insert(lines, "╰────────────────────────────────────────────────────────────────╯")
+
+    -- Display menu
+    for _, line in ipairs(lines) do
+        print(line)
+    end
+
+    plugin.state.menu_visible = true
+end
+
+-- Hide menu
+function plugin.hide_menu()
+    plugin.state.menu_visible = false
+    log("Menu closed")
+end
+
+-- Clear all marks
+function plugin.clear_all()
+    plugin.state.marks = {}
+    save_marks()
+    log("Cleared all marks")
+end
+
+-- Get mark count
+function plugin.count()
+    return #plugin.state.marks
+end
+
+-- List all marks
+function plugin.list()
+    if #plugin.state.marks == 0 then
+        log("No marks")
+        return
+    end
+
+    log(string.format("Harpoon marks (%d):", #plugin.state.marks))
+    for i, mark in ipairs(plugin.state.marks) do
+        print(format_mark(i, mark))
+    end
+end
+
+-- Setup function
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    opts = opts or {}
+
+    -- Load marks from file
+    if not load_marks() then
+        log_error("Failed to load marks")
+    end
+
+    -- Register commands
+    if command then
+        command("HarpoonAdd", function()
+            plugin.add_file()
+        end, { desc = "Harpoon: Add file to marks" })
+
+        command("HarpoonMenu", function()
+            plugin.toggle_menu()
+        end, { desc = "Harpoon: Toggle quick menu" })
+
+        command("HarpoonList", function()
+            plugin.list()
+        end, { desc = "Harpoon: List all marks" })
+
+        command("HarpoonClear", function()
+            plugin.clear_all()
+        end, { desc = "Harpoon: Clear all marks" })
+
+        -- Quick select commands
+        for i = 1, 9 do
+            command("Harpoon" .. i, function()
+                plugin.select(i)
+            end, { desc = "Harpoon: Jump to mark " .. i })
+        end
+    end
+
+    -- Register keybindings (if keymap available)
+    if keymap then
+        keymap("n", "<leader>ha", ":HarpoonAdd<CR>", { desc = "Harpoon: Add file", silent = true })
+        keymap("n", "<leader>hm", ":HarpoonMenu<CR>", { desc = "Harpoon: Menu", silent = true })
+        keymap("n", "<leader>hl", ":HarpoonList<CR>", { desc = "Harpoon: List", silent = true })
+
+        -- Quick jump keybinds
+        keymap("n", "<leader>h1", ":Harpoon1<CR>", { desc = "Harpoon: Jump 1", silent = true })
+        keymap("n", "<leader>h2", ":Harpoon2<CR>", { desc = "Harpoon: Jump 2", silent = true })
+        keymap("n", "<leader>h3", ":Harpoon3<CR>", { desc = "Harpoon: Jump 3", silent = true })
+        keymap("n", "<leader>h4", ":Harpoon4<CR>", { desc = "Harpoon: Jump 4", silent = true })
+    end
+
+    log(string.format("Initialized with %d marks", #plugin.state.marks))
+
+    return plugin
+end
+
+-- Auto-setup on load
+return plugin.setup()

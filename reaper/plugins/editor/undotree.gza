@@ -1,0 +1,342 @@
+-- plugins/editor/undotree.gza
+-- Undotree: Undo tree visualization and navigation
+-- Visualizes undo history as a tree instead of linear history
+--
+-- Features:
+-- - View complete undo/redo history as a tree
+-- - Navigate to any previous state
+-- - See diff between states
+-- - Time travel through edit history
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "undotree",
+    version = "1.0.0",
+    state = {
+        initialized = false,
+        visible = false,
+        tree_data = {},  -- Undo tree structure
+        current_node = nil,  -- Current position in tree
+        selected_node = nil,  -- Selected node in UI
+    },
+}
+
+local function log(message)
+    print("[undotree] " .. message)
+end
+
+local function log_error(message)
+    print("[undotree] ERROR: " .. message)
+end
+
+-- Build undo tree from PhantomBuffer
+local function build_tree()
+    -- TODO: Get undo tree from PhantomBuffer via bridge
+    if bridge.get_undo_tree then
+        local tree = bridge.get_undo_tree()
+        if tree then
+            plugin.state.tree_data = tree
+            plugin.state.current_node = tree.current
+            return true
+        end
+    end
+
+    -- Mock tree for testing
+    plugin.state.tree_data = {
+        root = {
+            id = 1,
+            timestamp = os.time(),
+            changes = "Initial state",
+            children = {},
+        },
+        current = 1,
+        total_nodes = 1,
+    }
+
+    log("Using mock undo tree (PhantomBuffer integration pending)")
+    return true
+end
+
+-- Format timestamp as relative time
+local function format_time(timestamp)
+    local now = os.time()
+    local diff = now - timestamp
+
+    if diff < 60 then
+        return string.format("%ds ago", diff)
+    elseif diff < 3600 then
+        return string.format("%dm ago", math.floor(diff / 60))
+    elseif diff < 86400 then
+        return string.format("%dh ago", math.floor(diff / 3600))
+    else
+        return string.format("%dd ago", math.floor(diff / 86400))
+    end
+end
+
+-- Render node in tree (recursive)
+local function render_node(node, prefix, is_last, lines, depth)
+    if depth > 20 then
+        return  -- Prevent infinite recursion
+    end
+
+    local marker = is_last and "└─" or "├─"
+    local continuation = is_last and "  " or "│ "
+
+    -- Build node display
+    local line = prefix .. marker
+
+    -- Add indicator if this is current state
+    if node.id == plugin.state.current_node then
+        line = line .. " [*] "
+    else
+        line = line .. " [ ] "
+    end
+
+    -- Add node info
+    local time_str = node.timestamp and format_time(node.timestamp) or "unknown"
+    local changes_str = node.changes or "unknown"
+
+    -- Truncate if too long
+    if #changes_str > 30 then
+        changes_str = changes_str:sub(1, 27) .. "..."
+    end
+
+    line = line .. string.format("%d: %s (%s)", node.id, changes_str, time_str)
+    table.insert(lines, line)
+
+    -- Render children
+    if node.children and #node.children > 0 then
+        for i, child in ipairs(node.children) do
+            local is_last_child = (i == #node.children)
+            local child_prefix = prefix .. continuation
+            render_node(child, child_prefix, is_last_child, lines, depth + 1)
+        end
+    end
+end
+
+-- Render the undo tree
+local function render_tree()
+    local lines = {}
+
+    table.insert(lines, "╭─ Undotree ─ Undo History Visualization ──────────────────────╮")
+    table.insert(lines, "│                                                               │")
+
+    if not plugin.state.tree_data.root then
+        table.insert(lines, "│  No undo history available                                    │")
+    else
+        local tree_lines = {}
+        render_node(plugin.state.tree_data.root, "", true, tree_lines, 0)
+
+        for _, tree_line in ipairs(tree_lines) do
+            local line = "│  " .. tree_line
+            -- Pad to box width
+            local padding = 63 - #line
+            if padding > 0 then
+                line = line .. string.rep(" ", padding)
+            else
+                line = line:sub(1, 63)
+            end
+            line = line .. "│"
+            table.insert(lines, line)
+        end
+    end
+
+    table.insert(lines, "│                                                               │")
+    table.insert(lines, "│  [*] = Current state                                          │")
+    table.insert(lines, "│  [j/k] Navigate  [Enter] Jump  [d] Diff  [q] Quit            │")
+    table.insert(lines, "╰───────────────────────────────────────────────────────────────╯")
+
+    return lines
+end
+
+-- Show undotree window
+function plugin.show()
+    if plugin.state.visible then
+        log("Undotree already visible")
+        return
+    end
+
+    log("Opening Undotree...")
+
+    -- Build tree from current buffer
+    if not build_tree() then
+        log_error("Failed to build undo tree")
+        return
+    end
+
+    -- Render tree
+    local lines = render_tree()
+
+    -- Display
+    for _, line in ipairs(lines) do
+        print(line)
+    end
+
+    plugin.state.visible = true
+end
+
+-- Hide undotree window
+function plugin.hide()
+    if not plugin.state.visible then
+        return
+    end
+
+    plugin.state.visible = false
+    log("Undotree closed")
+end
+
+-- Toggle undotree visibility
+function plugin.toggle()
+    if plugin.state.visible then
+        plugin.hide()
+    else
+        plugin.show()
+    end
+end
+
+-- Navigate to a specific undo state
+function plugin.goto_state(node_id)
+    if not node_id then
+        log_error("Invalid node ID")
+        return false
+    end
+
+    log(string.format("Navigating to undo state: %d", node_id))
+
+    -- TODO: Use PhantomBuffer to jump to state
+    if bridge.goto_undo_state then
+        return bridge.goto_undo_state(node_id)
+    end
+
+    log_error("PhantomBuffer integration not available")
+    return false
+end
+
+-- Undo to previous state
+function plugin.undo()
+    log("Undo")
+
+    -- TODO: Use PhantomBuffer undo
+    if bridge.undo then
+        local success = bridge.undo()
+        if success then
+            build_tree()  -- Rebuild tree
+            if plugin.state.visible then
+                plugin.show()  -- Refresh display
+            end
+        end
+        return success
+    end
+
+    log_error("Undo not available")
+    return false
+end
+
+-- Redo to next state
+function plugin.redo()
+    log("Redo")
+
+    -- TODO: Use PhantomBuffer redo
+    if bridge.redo then
+        local success = bridge.redo()
+        if success then
+            build_tree()  -- Rebuild tree
+            if plugin.state.visible then
+                plugin.show()  -- Refresh display
+            end
+        end
+        return success
+    end
+
+    log_error("Redo not available")
+    return false
+end
+
+-- Show diff between current state and selected state
+function plugin.show_diff(node_id)
+    log(string.format("Showing diff for state: %d", node_id or "current"))
+
+    -- TODO: Get diff from PhantomBuffer
+    if bridge.get_undo_diff then
+        local diff = bridge.get_undo_diff(node_id)
+        if diff then
+            print(diff)
+            return true
+        end
+    end
+
+    log_error("Diff not available")
+    return false
+end
+
+-- Get statistics about undo tree
+function plugin.stats()
+    local stats = {
+        total_states = plugin.state.tree_data.total_nodes or 0,
+        current_state = plugin.state.current_node or 0,
+        max_depth = 0,
+    }
+
+    -- TODO: Calculate max depth by traversing tree
+
+    return stats
+end
+
+-- Setup function
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    opts = opts or {}
+
+    -- Register commands
+    if command then
+        command("UndotreeToggle", function()
+            plugin.toggle()
+        end, { desc = "Undotree: Toggle visualization" })
+
+        command("UndotreeShow", function()
+            plugin.show()
+        end, { desc = "Undotree: Show" })
+
+        command("UndotreeHide", function()
+            plugin.hide()
+        end, { desc = "Undotree: Hide" })
+
+        command("UndotreeStats", function()
+            local stats = plugin.stats()
+            log(string.format("Stats: %d states, current: %d",
+                stats.total_states, stats.current_state))
+        end, { desc = "Undotree: Show stats" })
+    end
+
+    -- Register keybindings
+    if keymap then
+        keymap("n", "<leader>u", ":UndotreeToggle<CR>", {
+            desc = "Undotree: Toggle",
+            silent = true
+        })
+
+        -- Alternative keybinds for undo/redo
+        keymap("n", "<leader>uu", function() plugin.undo() end, {
+            desc = "Undotree: Undo",
+            silent = true
+        })
+
+        keymap("n", "<leader>ur", function() plugin.redo() end, {
+            desc = "Undotree: Redo",
+            silent = true
+        })
+    end
+
+    log("Initialized (PhantomBuffer integration: " ..
+        (bridge.get_undo_tree and "available" or "pending") .. ")")
+
+    return plugin
+end
+
+-- Auto-setup on load
+return plugin.setup()

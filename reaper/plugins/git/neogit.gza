@@ -1,0 +1,469 @@
+-- plugins/git/neogit.gza
+-- Neogit: Interactive Git workflow UI for Grim
+-- Magit-inspired git interface with status, staging, commits, and more
+--
+-- Features:
+-- - Interactive git status with staging
+-- - Commit workflow
+-- - Branch management
+-- - Log viewer
+-- - Diff integration
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "neogit",
+    version = "1.0.0",
+    state = {
+        initialized = false,
+        visible = false,
+        view = "status",  -- status, log, commit, branch
+        git_status = {},
+        staged = {},
+        unstaged = {},
+        untracked = {},
+        current_branch = "main",
+        selected_idx = 1,
+    },
+}
+
+local function log(message)
+    print("[neogit] " .. message)
+end
+
+local function log_error(message)
+    print("[neogit] ERROR: " .. message)
+end
+
+-- Execute git command and return output
+local function git_exec(args)
+    local cmd = "git " .. args .. " 2>&1"
+    local handle = io.popen(cmd)
+    if not handle then
+        log_error("Failed to execute: " .. cmd)
+        return nil
+    end
+
+    local result = handle:read("*a")
+    local success = handle:close()
+
+    return result, success
+end
+
+-- Get current git branch
+local function get_current_branch()
+    local result = git_exec("branch --show-current")
+    if result then
+        return result:gsub("%s+", "")
+    end
+    return "main"
+end
+
+-- Get git status
+local function get_git_status()
+    local result = git_exec("status --porcelain")
+    if not result then
+        return {}, {}, {}
+    end
+
+    local staged = {}
+    local unstaged = {}
+    local untracked = {}
+
+    for line in result:gmatch("[^\r\n]+") do
+        if #line >= 3 then
+            local status_code = line:sub(1, 2)
+            local file = line:sub(4)
+
+            if status_code:match("^%?%?") then
+                table.insert(untracked, file)
+            elseif status_code:match("^[MADRC]") then
+                -- Staged changes (first char is not space)
+                table.insert(staged, { file = file, status = status_code:sub(1, 1) })
+            else
+                -- Unstaged changes (second char is not space)
+                table.insert(unstaged, { file = file, status = status_code:sub(2, 2) })
+            end
+        end
+    end
+
+    return staged, unstaged, untracked
+end
+
+-- Stage file
+local function stage_file(file)
+    local result, success = git_exec("add " .. file)
+    if success then
+        log("Staged: " .. file)
+        return true
+    else
+        log_error("Failed to stage: " .. file)
+        return false
+    end
+end
+
+-- Unstage file
+local function unstage_file(file)
+    local result, success = git_exec("reset HEAD " .. file)
+    if success then
+        log("Unstaged: " .. file)
+        return true
+    else
+        log_error("Failed to unstage: " .. file)
+        return false
+    end
+end
+
+-- Stage all files
+local function stage_all()
+    local result, success = git_exec("add -A")
+    if success then
+        log("Staged all changes")
+        return true
+    end
+    return false
+end
+
+-- Unstage all files
+local function unstage_all()
+    local result, success = git_exec("reset HEAD")
+    if success then
+        log("Unstaged all changes")
+        return true
+    end
+    return false
+end
+
+-- Commit staged changes
+local function commit(message)
+    if not message or message == "" then
+        log_error("Commit message required")
+        return false
+    end
+
+    -- Escape message for shell
+    local escaped_msg = message:gsub("'", "'\\''")
+
+    local result, success = git_exec("commit -m '" .. escaped_msg .. "'")
+    if success then
+        log("Committed: " .. message)
+        return true
+    else
+        log_error("Commit failed")
+        return false
+    end
+end
+
+-- Get git log
+local function get_git_log(count)
+    count = count or 20
+    local result = git_exec("log --oneline -" .. count)
+    if not result then
+        return {}
+    end
+
+    local commits = {}
+    for line in result:gmatch("[^\r\n]+") do
+        -- Parse: <hash> <message>
+        local hash, message = line:match("^(%S+)%s+(.+)$")
+        if hash and message then
+            table.insert(commits, { hash = hash, message = message })
+        end
+    end
+
+    return commits
+end
+
+-- Get file diff
+local function get_diff(file, staged)
+    local args = staged and "--cached " or ""
+    local result = git_exec("diff " .. args .. file)
+    return result or "No diff available"
+end
+
+-- Render status view
+local function render_status()
+    local lines = {}
+
+    table.insert(lines, "╭─ Neogit ─ Git Status ────────────────────────────────────────╮")
+    table.insert(lines, string.format("│  Branch: %s                                                   │",
+        plugin.state.current_branch))
+    table.insert(lines, "│                                                               │")
+
+    -- Staged changes
+    if #plugin.state.staged > 0 then
+        table.insert(lines, "│  📦 Staged changes:                                           │")
+        for _, item in ipairs(plugin.state.staged) do
+            local status_icon = item.status == "M" and "✏️ " or
+                               item.status == "A" and "➕" or
+                               item.status == "D" and "🗑️ " or "  "
+            local line = string.format("│    %s %s", status_icon, item.file)
+            -- Pad to box width
+            local padding = 63 - #line
+            if padding > 0 then
+                line = line .. string.rep(" ", padding)
+            else
+                line = line:sub(1, 63)
+            end
+            table.insert(lines, line .. "│")
+        end
+        table.insert(lines, "│                                                               │")
+    end
+
+    -- Unstaged changes
+    if #plugin.state.unstaged > 0 then
+        table.insert(lines, "│  📝 Unstaged changes:                                         │")
+        for _, item in ipairs(plugin.state.unstaged) do
+            local status_icon = item.status == "M" and "✏️ " or
+                               item.status == "D" and "🗑️ " or "  "
+            local line = string.format("│    %s %s", status_icon, item.file)
+            local padding = 63 - #line
+            if padding > 0 then
+                line = line .. string.rep(" ", padding)
+            else
+                line = line:sub(1, 63)
+            end
+            table.insert(lines, line .. "│")
+        end
+        table.insert(lines, "│                                                               │")
+    end
+
+    -- Untracked files
+    if #plugin.state.untracked > 0 then
+        table.insert(lines, "│  ❓ Untracked files:                                          │")
+        for _, file in ipairs(plugin.state.untracked) do
+            local line = string.format("│    %s", file)
+            local padding = 63 - #line
+            if padding > 0 then
+                line = line .. string.rep(" ", padding)
+            else
+                line = line:sub(1, 63)
+            end
+            table.insert(lines, line .. "│")
+        end
+        table.insert(lines, "│                                                               │")
+    end
+
+    -- Empty state
+    if #plugin.state.staged == 0 and #plugin.state.unstaged == 0 and #plugin.state.untracked == 0 then
+        table.insert(lines, "│  ✅ Working tree clean                                        │")
+        table.insert(lines, "│                                                               │")
+    end
+
+    table.insert(lines, "│  [s] Stage  [u] Unstage  [c] Commit  [l] Log  [q] Quit        │")
+    table.insert(lines, "╰───────────────────────────────────────────────────────────────╯")
+
+    return lines
+end
+
+-- Render log view
+local function render_log()
+    local lines = {}
+    local commits = get_git_log(15)
+
+    table.insert(lines, "╭─ Neogit ─ Git Log ───────────────────────────────────────────╮")
+    table.insert(lines, string.format("│  Branch: %s                                                   │",
+        plugin.state.current_branch))
+    table.insert(lines, "│                                                               │")
+
+    if #commits == 0 then
+        table.insert(lines, "│  No commits yet                                               │")
+    else
+        for _, commit in ipairs(commits) do
+            local line = string.format("│  %s %s", commit.hash, commit.message)
+            local padding = 63 - #line
+            if padding > 0 then
+                line = line .. string.rep(" ", padding)
+            else
+                line = line:sub(1, 63)
+            end
+            table.insert(lines, line .. "│")
+        end
+    end
+
+    table.insert(lines, "│                                                               │")
+    table.insert(lines, "│  [Enter] Show commit  [d] Diff  [b] Back  [q] Quit           │")
+    table.insert(lines, "╰───────────────────────────────────────────────────────────────╯")
+
+    return lines
+end
+
+-- Refresh git data
+local function refresh()
+    plugin.state.current_branch = get_current_branch()
+    plugin.state.staged, plugin.state.unstaged, plugin.state.untracked = get_git_status()
+
+    log(string.format("Status: %d staged, %d unstaged, %d untracked",
+        #plugin.state.staged, #plugin.state.unstaged, #plugin.state.untracked))
+end
+
+-- Show Neogit window
+function plugin.show(view)
+    view = view or "status"
+    plugin.state.view = view
+
+    log("Opening Neogit (" .. view .. " view)...")
+
+    -- Refresh git data
+    refresh()
+
+    -- Render view
+    local lines
+    if view == "status" then
+        lines = render_status()
+    elseif view == "log" then
+        lines = render_log()
+    else
+        log_error("Unknown view: " .. view)
+        return
+    end
+
+    -- Display
+    for _, line in ipairs(lines) do
+        print(line)
+    end
+
+    plugin.state.visible = true
+end
+
+-- Hide Neogit window
+function plugin.hide()
+    if not plugin.state.visible then
+        return
+    end
+
+    plugin.state.visible = false
+    log("Neogit closed")
+end
+
+-- Toggle Neogit
+function plugin.toggle()
+    if plugin.state.visible then
+        plugin.hide()
+    else
+        plugin.show("status")
+    end
+end
+
+-- Stage current file or all
+function plugin.stage(file)
+    if file then
+        stage_file(file)
+    else
+        stage_all()
+    end
+    refresh()
+    if plugin.state.visible then
+        plugin.show(plugin.state.view)
+    end
+end
+
+-- Unstage current file or all
+function plugin.unstage(file)
+    if file then
+        unstage_file(file)
+    else
+        unstage_all()
+    end
+    refresh()
+    if plugin.state.visible then
+        plugin.show(plugin.state.view)
+    end
+end
+
+-- Commit with message
+function plugin.commit_with_message(message)
+    if commit(message) then
+        refresh()
+        if plugin.state.visible then
+            plugin.show(plugin.state.view)
+        end
+        return true
+    end
+    return false
+end
+
+-- Interactive commit (prompt for message)
+function plugin.commit_interactive()
+    -- TODO: Show commit message input buffer
+    log("Interactive commit not yet implemented")
+    log("Use :NeogitCommit <message> for now")
+end
+
+-- Show log view
+function plugin.show_log()
+    plugin.show("log")
+end
+
+-- Setup function
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    opts = opts or {}
+
+    -- Check if in git repo
+    local result = git_exec("rev-parse --git-dir")
+    if not result then
+        log("Not in a git repository")
+        return plugin
+    end
+
+    -- Register commands
+    if command then
+        command("Neogit", function()
+            plugin.toggle()
+        end, { desc = "Neogit: Toggle status" })
+
+        command("NeogitStatus", function()
+            plugin.show("status")
+        end, { desc = "Neogit: Show status" })
+
+        command("NeogitLog", function()
+            plugin.show_log()
+        end, { desc = "Neogit: Show log" })
+
+        command("NeogitStage", function()
+            plugin.stage()
+        end, { desc = "Neogit: Stage all" })
+
+        command("NeogitUnstage", function()
+            plugin.unstage()
+        end, { desc = "Neogit: Unstage all" })
+
+        command("NeogitCommit", function(args)
+            if args and args.args then
+                plugin.commit_with_message(args.args)
+            else
+                plugin.commit_interactive()
+            end
+        end, { desc = "Neogit: Commit", nargs = "*" })
+    end
+
+    -- Register keybindings
+    if keymap then
+        keymap("n", "<leader>gs", ":Neogit<CR>", {
+            desc = "Neogit: Git status",
+            silent = true
+        })
+
+        keymap("n", "<leader>gl", ":NeogitLog<CR>", {
+            desc = "Neogit: Git log",
+            silent = true
+        })
+
+        keymap("n", "<leader>gc", ":NeogitCommit ", {
+            desc = "Neogit: Commit",
+            silent = false  -- Keep command line open for message
+        })
+    end
+
+    log("Initialized in git repo: " .. plugin.state.current_branch)
+
+    return plugin
+end
+
+-- Auto-setup on load
+return plugin.setup()
