@@ -2124,8 +2124,9 @@ pub const SimpleTUI = struct {
     }
 
     fn clearScreen(self: *SimpleTUI) !void {
-        // Clear entire screen and move cursor to home position
-        try self.stdout.writeAll("\x1B[2J\x1B[H");
+        // Clear scrollback buffer + entire screen + move cursor to home position
+        // \x1B[3J clears scrollback, \x1B[2J clears screen, \x1B[H moves to home
+        try self.stdout.writeAll("\x1B[3J\x1B[2J\x1B[H");
     }
 
     fn setCursor(self: *SimpleTUI, row: usize, col: usize) !void {

@@ -12,7 +12,7 @@
     "system_calls": false,
     "editor_full_access": true
   },
-  "enable_on_startup": true,
+  "enable_on_startup": false,
   "lazy_load": {
     "commands": ["OmenCommit", "OmenHealth"]
   }
