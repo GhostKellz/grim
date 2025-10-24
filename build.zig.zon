@@ -54,7 +54,7 @@
         },
         .ghostlang = .{
             .url = "https://github.com/ghostkellz/ghostlang/archive/refs/heads/main.tar.gz",
-            .hash = "ghostlang-0.2.0-_SzSPc_-BQCjf7sNB6wE0rctwgTxKGbPvJaeHhSUzE0x",
+            .hash = "ghostlang-0.2.1-_SzSPa8iBgAWfv0ezCCILl8BUlmNtwnM6sbQq4nH6m9U",
         },
         .zap = .{
             .url = "https://github.com/ghostkellz/zap/archive/refs/heads/main.tar.gz",
@@ -62,7 +62,7 @@
         },
         .ghostls = .{
             .url = "https://github.com/ghostkellz/ghostls/archive/refs/heads/main.tar.gz",
-            .hash = "ghostls-0.4.0-fDo9dECsAwAlJ15Q2meC4NwdKPAm7_xh1gH0zshepk8k",
+            .hash = "ghostls-0.4.0-fDo9dEusAwD1b4Jm161z7j6qjG9q5TUfSpXerb2TlhZI",
         },
         .zhttp = .{
             .url = "https://github.com/ghostkellz/zhttp/archive/main.tar.gz",

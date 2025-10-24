@@ -83,7 +83,8 @@ pub const Git = struct {
             const git_dir = try std.fs.path.join(self.allocator, &[_][]const u8{ current_path, ".git" });
             defer self.allocator.free(git_dir);
 
-            std.fs.accessAbsolute(git_dir, .{}) catch {
+            // Use regular access, not accessAbsolute, since std.fs.path.join doesn't guarantee absolute paths
+            std.fs.cwd().access(git_dir, .{}) catch {
                 // Try parent directory
                 const parent = std.fs.path.dirname(current_path) orelse break;
                 // Free old current_path and allocate new

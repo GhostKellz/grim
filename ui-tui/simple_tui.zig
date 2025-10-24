@@ -75,6 +75,8 @@ pub const SimpleTUI = struct {
     file_tree: ?*file_tree_mod.FileTree,
     file_tree_active: bool,
     file_tree_width: usize,
+    // Vim key sequences (dd, yy, etc.)
+    pending_vim_key: ?u8,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
         var command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
@@ -133,6 +135,7 @@ pub const SimpleTUI = struct {
             .file_tree = null,
             .file_tree_active = false,
             .file_tree_width = 30,
+            .pending_vim_key = null,
         };
 
         // Initialize PhantomBufferManager if enabled
@@ -740,8 +743,31 @@ pub const SimpleTUI = struct {
     }
 
     fn handleNormalMode(self: *SimpleTUI, key: u8) !void {
+        // Handle two-key sequences (dd, yy, etc.)
+        if (self.pending_vim_key) |pending| {
+            defer self.pending_vim_key = null;
+
+            if (pending == 'd' and key == 'd') {
+                // dd - delete line
+                try self.deleteLineWithUndo();
+                return;
+            } else if (pending == 'y' and key == 'y') {
+                // yy - yank line
+                try self.yankLine();
+                return;
+            } else if (pending == 'g' and key == 'g') {
+                // gg - goto top
+                self.editor.cursor.offset = 0;
+                return;
+            }
+            // If no match, fall through to handle second key normally
+        }
+
         switch (key) {
-            27 => {}, // ESC in normal mode - already in normal
+            27 => {
+                // ESC - clear pending key
+                self.pending_vim_key = null;
+            },
             1 => self.triggerCodeActions(), // Ctrl+A - code actions menu
             2 => self.activateBufferPicker(), // Ctrl+B - buffer picker
             9 => self.toggleInlayHints(), // Ctrl+I (Tab) - toggle inlay hints
@@ -788,8 +814,25 @@ pub const SimpleTUI = struct {
             'b' => self.editor.moveWordBackward(),
             '0' => self.editor.moveCursorToLineStart(),
             '$' => self.editor.moveCursorToLineEnd(),
+            'd' => {
+                // Set pending key for dd sequence
+                self.pending_vim_key = 'd';
+            },
+            'y' => {
+                // Set pending key for yy sequence
+                self.pending_vim_key = 'y';
+            },
+            'p' => {
+                // Paste after cursor
+                try self.pasteAfter();
+            },
+            'P' => {
+                // Paste before cursor
+                try self.pasteBefore();
+            },
             'g' => {
-                // TODO: Handle 'gg' for goto top
+                // Set pending key for gg sequence
+                self.pending_vim_key = 'g';
             },
             'G' => self.editor.moveCursorToEnd(),
             'H' => self.requestLspHover(),
@@ -944,10 +987,22 @@ pub const SimpleTUI = struct {
                 }
                 self.switchMode(.normal);
             },
-            'h' => self.editor.moveCursorLeft(),
-            'j' => self.editor.moveCursorDown(),
-            'k' => self.editor.moveCursorUp(),
-            'l' => self.editor.moveCursorRight(),
+            'h' => {
+                self.editor.moveCursorLeft();
+                self.editor.selection_end = self.editor.cursor.offset;
+            },
+            'j' => {
+                self.editor.moveCursorDown();
+                self.editor.selection_end = self.editor.cursor.offset;
+            },
+            'k' => {
+                self.editor.moveCursorUp();
+                self.editor.selection_end = self.editor.cursor.offset;
+            },
+            'l' => {
+                self.editor.moveCursorRight();
+                self.editor.selection_end = self.editor.cursor.offset;
+            },
             'd' => {
                 if (self.visual_block_mode) {
                     try self.deleteVisualBlock();
@@ -1090,6 +1145,16 @@ pub const SimpleTUI = struct {
 
         if (new_mode != .insert) {
             self.closeCompletionPopup();
+        }
+
+        // Initialize visual mode selection
+        if (new_mode == .visual) {
+            self.editor.selection_start = self.editor.cursor.offset;
+            self.editor.selection_end = self.editor.cursor.offset;
+        } else if (current == .visual) {
+            // Clear selection when leaving visual mode
+            self.editor.selection_start = null;
+            self.editor.selection_end = null;
         }
 
         if (self.plugin_manager) |manager| {
@@ -3474,6 +3539,181 @@ pub const SimpleTUI = struct {
 
             if (content.len > 0) {
                 try self.editor.rope.insert(0, content);
+            }
+        }
+    }
+
+    fn deleteLineWithUndo(self: *SimpleTUI) !void {
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse return error.NoActiveBuffer;
+
+            // Find line boundaries
+            self.editor.cursor.moveToLineStart(&self.editor.rope);
+            const start = self.editor.cursor.offset;
+            self.editor.cursor.moveToLineEnd(&self.editor.rope);
+            var end = self.editor.cursor.offset;
+
+            // Include the newline if not at end of file
+            if (end < self.editor.rope.len()) {
+                end += 1;
+            }
+
+            if (end > start) {
+                // Store in yank buffer before deleting
+                const deleted = try buffer.phantom_buffer.rope.slice(.{ .start = start, .end = end });
+                if (self.editor.yank_buffer) |old_buf| {
+                    self.allocator.free(old_buf);
+                }
+                self.editor.yank_buffer = try self.allocator.dupe(u8, deleted);
+                self.editor.yank_linewise = true;
+
+                // Delete the line
+                try buffer.phantom_buffer.deleteRange(.{ .start = start, .end = end });
+                try self.syncEditorFromPhantomBuffer();
+                self.editor.cursor.offset = start;
+            }
+        } else {
+            // Find line boundaries and yank
+            self.editor.cursor.moveToLineStart(&self.editor.rope);
+            const start = self.editor.cursor.offset;
+            self.editor.cursor.moveToLineEnd(&self.editor.rope);
+            var end = self.editor.cursor.offset;
+
+            if (end < self.editor.rope.len()) {
+                end += 1;
+            }
+
+            if (end > start) {
+                const deleted = try self.editor.rope.slice(.{ .start = start, .end = end });
+                if (self.editor.yank_buffer) |old_buf| {
+                    self.allocator.free(old_buf);
+                }
+                self.editor.yank_buffer = try self.allocator.dupe(u8, deleted);
+                self.editor.yank_linewise = true;
+
+                try self.editor.rope.delete(start, end - start);
+                self.editor.cursor.offset = start;
+            }
+        }
+    }
+
+    fn yankLine(self: *SimpleTUI) !void {
+        // Find line boundaries
+        self.editor.cursor.moveToLineStart(&self.editor.rope);
+        const start = self.editor.cursor.offset;
+        self.editor.cursor.moveToLineEnd(&self.editor.rope);
+        var end = self.editor.cursor.offset;
+
+        // Include the newline if not at end of file
+        if (end < self.editor.rope.len()) {
+            end += 1;
+        }
+
+        if (end > start) {
+            const yanked = try self.editor.rope.slice(.{ .start = start, .end = end });
+
+            // Free old yank buffer
+            if (self.editor.yank_buffer) |old_buf| {
+                self.allocator.free(old_buf);
+            }
+
+            // Store yanked content
+            self.editor.yank_buffer = try self.allocator.dupe(u8, yanked);
+            self.editor.yank_linewise = true;
+            self.editor.cursor.offset = start;
+            self.setStatusMessage("Yanked line");
+        }
+    }
+
+    fn pasteAfter(self: *SimpleTUI) !void {
+        const yanked = self.editor.yank_buffer orelse return;
+
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse return error.NoActiveBuffer;
+
+            if (self.editor.yank_linewise) {
+                // Paste on next line
+                self.editor.cursor.moveToLineEnd(&self.editor.rope);
+                const insert_pos = if (self.editor.cursor.offset < self.editor.rope.len())
+                    self.editor.cursor.offset + 1
+                else
+                    self.editor.cursor.offset;
+
+                // If at end of file and no trailing newline, add one first
+                if (insert_pos == self.editor.rope.len() and self.editor.rope.len() > 0) {
+                    const last_char = (try self.editor.rope.slice(.{ .start = self.editor.rope.len() - 1, .end = self.editor.rope.len() }))[0];
+                    if (last_char != '\n') {
+                        try buffer.phantom_buffer.insertText(self.editor.rope.len(), "\n");
+                    }
+                }
+
+                try buffer.phantom_buffer.insertText(insert_pos, yanked);
+                try self.syncEditorFromPhantomBuffer();
+                self.editor.cursor.offset = insert_pos;
+            } else {
+                // Character-wise paste after cursor
+                self.editor.cursor.moveRight(&self.editor.rope);
+                const insert_pos = self.editor.cursor.offset;
+                try buffer.phantom_buffer.insertText(insert_pos, yanked);
+                try self.syncEditorFromPhantomBuffer();
+                self.editor.cursor.offset = insert_pos + yanked.len;
+            }
+        } else {
+            if (self.editor.yank_linewise) {
+                self.editor.cursor.moveToLineEnd(&self.editor.rope);
+                const insert_pos = if (self.editor.cursor.offset < self.editor.rope.len())
+                    self.editor.cursor.offset + 1
+                else
+                    self.editor.cursor.offset;
+
+                if (insert_pos == self.editor.rope.len() and self.editor.rope.len() > 0) {
+                    const last_char = (try self.editor.rope.slice(.{ .start = self.editor.rope.len() - 1, .end = self.editor.rope.len() }))[0];
+                    if (last_char != '\n') {
+                        try self.editor.rope.insert(self.editor.rope.len(), "\n");
+                    }
+                }
+
+                try self.editor.rope.insert(insert_pos, yanked);
+                self.editor.cursor.offset = insert_pos;
+            } else {
+                self.editor.cursor.moveRight(&self.editor.rope);
+                try self.editor.rope.insert(self.editor.cursor.offset, yanked);
+                self.editor.cursor.offset += yanked.len;
+            }
+        }
+    }
+
+    fn pasteBefore(self: *SimpleTUI) !void {
+        const yanked = self.editor.yank_buffer orelse return;
+
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse return error.NoActiveBuffer;
+
+            if (self.editor.yank_linewise) {
+                // Paste on previous line
+                self.editor.cursor.moveToLineStart(&self.editor.rope);
+                const insert_pos = self.editor.cursor.offset;
+
+                try buffer.phantom_buffer.insertText(insert_pos, yanked);
+                try self.syncEditorFromPhantomBuffer();
+                self.editor.cursor.offset = insert_pos;
+            } else {
+                // Character-wise paste before cursor
+                const insert_pos = self.editor.cursor.offset;
+                try buffer.phantom_buffer.insertText(insert_pos, yanked);
+                try self.syncEditorFromPhantomBuffer();
+                self.editor.cursor.offset = insert_pos + yanked.len;
+            }
+        } else {
+            if (self.editor.yank_linewise) {
+                self.editor.cursor.moveToLineStart(&self.editor.rope);
+                const insert_pos = self.editor.cursor.offset;
+                try self.editor.rope.insert(insert_pos, yanked);
+                self.editor.cursor.offset = insert_pos;
+            } else {
+                const insert_pos = self.editor.cursor.offset;
+                try self.editor.rope.insert(insert_pos, yanked);
+                self.editor.cursor.offset = insert_pos + yanked.len;
             }
         }
     }
