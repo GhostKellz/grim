@@ -80,9 +80,6 @@
             .url = "https://github.com/ghostkellz/zlog/archive/refs/heads/main.tar.gz",
             .hash = "zlog-0.1.0-kS0sWERcCAD4GivJW2gmFSr5XTSvs9go-5-9zZng-RjR",
         },
-        .thanos = .{
-            .path = "../thanos",
-        },
     },
     .paths = .{
         "build.zig",

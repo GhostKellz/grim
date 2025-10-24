@@ -85,11 +85,6 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
-    const thanos = b.dependency("thanos", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
     const ai_mod = b.createModule(.{
         .root_source_file = b.path("ai/mod.zig"),
         .target = target,
@@ -98,7 +93,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "zhttp", .module = zhttp.module("zhttp") },
             .{ .name = "zrpc", .module = zrpc.module("zrpc") },
             .{ .name = "core", .module = core_mod },
-            .{ .name = "thanos", .module = thanos.module("thanos") },
         },
     });
 

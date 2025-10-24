@@ -804,4 +804,126 @@ pub const GhostlangBridge = struct {
         }
         return grim_theme_load_default(bridge);
     }
+
+    // ========================================================================
+    // LSP API (for Ghostlang plugins)
+    // ========================================================================
+    // Note: These are placeholder stubs for Ghostlang plugins to call.
+    // The actual LSP integration happens in SimpleTUI's EditorLSP.
+    // Plugins can use these to trigger LSP requests, but results are
+    // handled by the editor UI layer.
+
+    /// Request hover information at cursor position
+    /// Returns: true if request was sent
+    pub export fn grim_lsp_hover(
+        bridge: *GhostlangBridge,
+        filepath: [*:0]const u8,
+        line: u32,
+        character: u32,
+    ) callconv(.C) bool {
+        _ = bridge;
+        _ = filepath;
+        _ = line;
+        _ = character;
+        // This is handled by SimpleTUI.requestLspHover()
+        // Ghostlang plugins should use the editor command system instead
+        return false;
+    }
+
+    /// Request go-to-definition at cursor position
+    /// Returns: true if request was sent
+    pub export fn grim_lsp_definition(
+        bridge: *GhostlangBridge,
+        filepath: [*:0]const u8,
+        line: u32,
+        character: u32,
+    ) callconv(.C) bool {
+        _ = bridge;
+        _ = filepath;
+        _ = line;
+        _ = character;
+        // This is handled by SimpleTUI.requestLspDefinition()
+        return false;
+    }
+
+    /// Request code completions at cursor position
+    /// Returns: true if request was sent
+    pub export fn grim_lsp_completion(
+        bridge: *GhostlangBridge,
+        filepath: [*:0]const u8,
+        line: u32,
+        character: u32,
+    ) callconv(.C) bool {
+        _ = bridge;
+        _ = filepath;
+        _ = line;
+        _ = character;
+        // This is handled by SimpleTUI.triggerCompletionRequest()
+        return false;
+    }
+
+    /// Request signature help at cursor position
+    /// Returns: true if request was sent
+    pub export fn grim_lsp_signature_help(
+        bridge: *GhostlangBridge,
+        filepath: [*:0]const u8,
+        line: u32,
+        character: u32,
+    ) callconv(.C) bool {
+        _ = bridge;
+        _ = filepath;
+        _ = line;
+        _ = character;
+        // This is handled by SimpleTUI signature help logic
+        return false;
+    }
+
+    /// Request code actions for a range
+    /// Returns: true if request was sent
+    pub export fn grim_lsp_code_actions(
+        bridge: *GhostlangBridge,
+        filepath: [*:0]const u8,
+        start_line: u32,
+        end_line: u32,
+    ) callconv(.C) bool {
+        _ = bridge;
+        _ = filepath;
+        _ = start_line;
+        _ = end_line;
+        // This is handled by SimpleTUI.triggerCodeActions()
+        return false;
+    }
+
+    /// Check if LSP server is active for current file
+    /// Returns: true if LSP server is running
+    pub export fn grim_lsp_is_active(bridge: *GhostlangBridge) callconv(.C) bool {
+        _ = bridge;
+        // This would need access to SimpleTUI's editor_lsp
+        // For now, return false as a stub
+        return false;
+    }
+
+    /// Get diagnostics count for current file
+    /// Returns: number of diagnostics (errors + warnings + hints)
+    pub export fn grim_lsp_diagnostics_count(
+        bridge: *GhostlangBridge,
+        filepath: [*:0]const u8,
+    ) callconv(.C) u32 {
+        _ = bridge;
+        _ = filepath;
+        // This would need access to SimpleTUI's editor_lsp
+        return 0;
+    }
+
+    /// Get diagnostics as JSON array
+    /// Returns: JSON array of diagnostics
+    pub export fn grim_lsp_diagnostics(
+        bridge: *GhostlangBridge,
+        filepath: [*:0]const u8,
+    ) callconv(.C) [*:0]const u8 {
+        _ = bridge;
+        _ = filepath;
+        // This would need access to SimpleTUI's editor_lsp
+        return "[]";
+    }
 };

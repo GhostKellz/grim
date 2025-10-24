@@ -283,6 +283,15 @@ pub const FontManager = struct {
         }
     }
 
+    /// Fuzzy finder icon
+    pub fn getFuzzyFinderIcon(self: *const FontManager) []const u8 {
+        if (self.nerd_fonts_enabled) {
+            return "\u{f002}"; //  (magnifying glass)
+        } else {
+            return "[F]";
+        }
+    }
+
     // LSP-specific icons
 
     /// Completion item kind icons

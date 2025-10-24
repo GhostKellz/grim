@@ -1,5 +1,29 @@
 -- plugins/lsp/lsp-config.gza
--- Auto-start LSP servers by filetype
+-- LSP Configuration and keybinding documentation
+--
+-- This plugin documents the built-in LSP integration in Grim.
+-- LSP features are implemented natively in SimpleTUI's EditorLSP.
+--
+-- Built-in LSP Keybindings:
+--   gd          - Go to definition
+--   H           - Show hover information (displayed in statusline)
+--   Ctrl+Space  - Trigger completion popup
+--   Ctrl+A      - Show code actions menu
+--   Ctrl+I      - Toggle inlay hints
+--
+-- Automatic Features:
+--   - Diagnostics displayed in gutter (E/W/I/H markers)
+--   - Real-time diagnostics via textDocument/didChange
+--   - Completion on trigger characters (., :, (, etc.)
+--   - Signature help on ( and ,
+--
+-- Supported LSP Servers:
+--   - zls (Zig Language Server)
+--   - rust-analyzer (Rust)
+--   - typescript-language-server (JavaScript/TypeScript)
+--   - pylsp (Python)
+--   - clangd (C/C++)
+--   - ghostls (Ghostlang)
 
 local autocmd = autocmd or function(event, pattern, callback)
     print(string.format("[lsp-config] Register autocmd: %s %s", tostring(event), tostring(pattern)))
@@ -9,28 +33,6 @@ end
 local command = command or function(name, callback, opts)
     print(string.format("[lsp-config] Register command: %s", tostring(name)))
     return true
-end
-
-local function get_cursor()
-    return { line = 0, col = 0 }
-end
-
-local function current_file()
-    return ""
-end
-
-local function open_file(uri, line, col)
-    print(string.format("[lsp-config] Jump to: %s (%s:%s)", tostring(uri), tostring(line), tostring(col)))
-end
-
-local function show_completion(items)
-    local count = type(items) == "table" and #items or 0
-    print(string.format("[lsp-config] Completions: %s", tostring(count)))
-end
-
-local function show_diagnostics(diagnostics)
-    local count = type(diagnostics) == "table" and #diagnostics or 0
-    print(string.format("[lsp-config] Diagnostics: %s", tostring(count)))
 end
 
 local vim = vim or {}
@@ -52,19 +54,47 @@ local plugin = {
     version = "0.1.0",
 }
 
--- Server configurations
+-- Server configurations (for reference - servers auto-start on file open)
 local servers = {
     zig = {
         cmd = "zls",
-        root_markers = [ "build.zig", ".git" ],
+        root_markers = { "build.zig", ".git" },
+        note = "Zig Language Server - provides completion, hover, diagnostics",
     },
     rust = {
         cmd = "rust-analyzer",
-        root_markers = [ "Cargo.toml", ".git" ],
+        root_markers = { "Cargo.toml", ".git" },
+        note = "Rust Language Server - full IDE features for Rust",
+    },
+    javascript = {
+        cmd = "typescript-language-server",
+        root_markers = { "package.json", ".git" },
+        note = "TypeScript/JavaScript LSP",
+    },
+    typescript = {
+        cmd = "typescript-language-server",
+        root_markers = { "package.json", "tsconfig.json", ".git" },
+        note = "TypeScript LSP with full type checking",
+    },
+    python = {
+        cmd = "pylsp",
+        root_markers = { "pyproject.toml", "setup.py", ".git" },
+        note = "Python Language Server",
+    },
+    c = {
+        cmd = "clangd",
+        root_markers = { "compile_commands.json", ".git" },
+        note = "Clang-based C/C++ Language Server",
+    },
+    cpp = {
+        cmd = "clangd",
+        root_markers = { "compile_commands.json", ".git" },
+        note = "Clang-based C/C++ Language Server",
     },
     ghostlang = {
         cmd = "ghostls",
-        root_markers = [ ".git" ],
+        root_markers = { ".git" },
+        note = "Ghostlang LSP v0.4.0 - completion, hover, GShell FFI",
     },
 }
 
@@ -72,64 +102,19 @@ local servers = {
 function plugin.setup(opts)
     opts = opts or {}
 
-    -- Merge user config with defaults
-    if opts.servers then
-        for ft, config in pairs(opts.servers) do
-            servers[ft] = config
-        end
-    end
+    -- Note: LSP integration is built into SimpleTUI's EditorLSP
+    -- Servers auto-start when files are opened based on detected language
+    -- This plugin just documents the available features and servers
 
-    -- Register FileType autocmds for each server
-    for ft, config in pairs(servers) do
-        autocmd("FileType", ft, function(event)
-            local path = event.file or ""
-            if path ~= "" then
-                -- Start LSP server for this filetype
-                local bridge = require("grim.bridge")
-                bridge.lsp_start(ft, config.cmd)
-                bridge.lsp_open(path, ft, "")
-            end
-        end)
-    end
-
-    -- Register LSP commands
-    command("LspHover", function()
-        local bridge = require("grim.bridge")
-        local cursor = get_cursor()
-        local path = current_file()
-        local result = bridge.lsp_hover(path, cursor.line, cursor.col)
-        print(result)
-    end, { desc = "Show hover information" })
-
-    command("LspDefinition", function()
-        local bridge = require("grim.bridge")
-        local cursor = get_cursor()
-        local path = current_file()
-        local result = bridge.lsp_definition(path, cursor.line, cursor.col)
-        -- Jump to definition location
-        if result and result.uri then
-            open_file(result.uri, result.line, result.col)
-        end
-    end, { desc = "Go to definition" })
-
-    command("LspCompletion", function()
-        local bridge = require("grim.bridge")
-        local cursor = get_cursor()
-        local path = current_file()
-        local items = bridge.lsp_completion(path, cursor.line, cursor.col)
-        -- Show completion menu
-        show_completion(items)
-    end, { desc = "Request completions" })
-
-    command("LspDiagnostics", function()
-        local bridge = require("grim.bridge")
-        local path = current_file()
-        local diagnostics = bridge.lsp_diagnostics(path)
-        -- Display diagnostics
-        show_diagnostics(diagnostics)
-    end, { desc = "Show diagnostics" })
-
-    print("[lsp-config] LSP servers configured for: " .. table.concat(vim.tbl_keys(servers), ", "))
+    print("[lsp-config] LSP integration ready!")
+    print("[lsp-config] Supported languages: " .. table.concat(vim.tbl_keys(servers), ", "))
+    print("[lsp-config] Keybindings:")
+    print("[lsp-config]   gd - Go to definition")
+    print("[lsp-config]   H  - Show hover")
+    print("[lsp-config]   Ctrl+Space - Completion")
+    print("[lsp-config]   Ctrl+A - Code actions")
+    print("[lsp-config]   Ctrl+I - Toggle inlay hints")
+    print("[lsp-config] Diagnostics shown in gutter: E=Error, W=Warning, I=Info, H=Hint")
 end
 
 return plugin
