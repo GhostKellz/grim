@@ -339,7 +339,7 @@ pub const PhantomBuffer = struct {
         self.redo_stack.clearRetainingCapacity();
     }
 
-    fn clearUndoRedo(self: *PhantomBuffer) void {
+    pub fn clearUndoRedo(self: *PhantomBuffer) void {
         for (self.undo_stack.items) |*entry| {
             entry.deinit(self.allocator);
         }

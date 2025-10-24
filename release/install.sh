@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Grim Editor - Installation Script
-# Version: 0.1.0
+# Version: 0.1.0 BETA
 # Author: Ghost Ecosystem
 # License: MIT
 
@@ -45,7 +45,7 @@ print_banner() {
   \____|_|   |_|_| |_| |_|
 
   The Zig-Powered Modal Editor
-  Version 0.1.0
+  Version 0.1.0 BETA
 
 EOF
 }
@@ -246,11 +246,12 @@ ${BLUE}Installation Summary:${NC}
   • Plugins:       $HOME/.local/share/grim/plugins/
 
 ${BLUE}What You Got:${NC}
-  ✓ Grim editor (core)
-  ✓ Phantom.grim distribution (LSP, fuzzy finder, git signs, themes, AI)
-  ✓ Full vim motions (hjkl, dd, yy, p, visual mode, search, undo/redo)
-  ✓ TokyoNight theme with mint/aqua accents
-  ✓ Statusline with git branch and file info
+  ✓ Grim editor (core) - Dynamic terminal, scrolling, undo/redo
+  ✓ Phantom.grim distribution (LSP, fuzzy finder, git signs, themes)
+  ✓ Full vim motions (hjkl, dd, yy, p, visual mode, search)
+  ✓ 1000-level undo/redo (u, Ctrl+R)
+  ✓ Syntax highlighting (14+ languages via tree-sitter)
+  ✓ TokyoNight theme + statusline with git integration
 
 ${BLUE}Quick Start:${NC}
   1. Run: ${GREEN}grim myfile.txt${NC}

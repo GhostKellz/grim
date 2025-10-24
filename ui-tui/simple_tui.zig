@@ -79,6 +79,13 @@ pub const SimpleTUI = struct {
     pending_vim_key: ?u8,
     // Terminal state
     original_termios: std.posix.termios,
+    // Terminal size (dynamic)
+    terminal_width: u16,
+    terminal_height: u16,
+    needs_resize: bool,
+    // Viewport (scrolling)
+    viewport_top_line: usize,
+    viewport_left_col: usize,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
         var command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
@@ -139,6 +146,11 @@ pub const SimpleTUI = struct {
             .file_tree_width = 30,
             .pending_vim_key = null,
             .original_termios = undefined,
+            .terminal_width = 80,
+            .terminal_height = 24,
+            .needs_resize = false,
+            .viewport_top_line = 0,
+            .viewport_left_col = 0,
         };
 
         // Initialize PhantomBufferManager if enabled
@@ -206,12 +218,23 @@ pub const SimpleTUI = struct {
         try self.enableRawMode();
         defer self.disableRawMode() catch {};
 
+        // Clear screen and position cursor at top-left
         try self.clearScreen();
+        try self.setCursor(1, 1);
+
+        // Do initial render before showing cursor
+        try self.render();
         try self.showCursor();
 
         while (self.running) {
-            try self.render();
+            // Check for terminal resize
+            if (self.needs_resize) {
+                try self.getTerminalSize();
+                self.needs_resize = false;
+            }
+
             try self.handleInput();
+            try self.render();
         }
     }
 
@@ -226,6 +249,26 @@ pub const SimpleTUI = struct {
         try self.editor.loadFile(path);
         self.closeCompletionPopup();
         self.markHighlightsDirty();
+
+        // Sync to PhantomBuffer if enabled
+        if (self.phantom_buffer_manager) |pbm| {
+            const buffer = pbm.getActiveBuffer() orelse return error.NoActiveBuffer;
+
+            // Clear phantom buffer
+            const pb_len = buffer.phantom_buffer.rope.len();
+            if (pb_len > 0) {
+                try buffer.phantom_buffer.rope.delete(0, pb_len);
+            }
+
+            // Copy from editor to phantom buffer
+            const editor_content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+            if (editor_content.len > 0) {
+                try buffer.phantom_buffer.rope.insert(0, editor_content);
+            }
+
+            // Clear undo/redo stacks on file load
+            buffer.phantom_buffer.clearUndoRedo();
+        }
 
         const filename = self.editor.current_filename orelse path;
 
@@ -244,7 +287,10 @@ pub const SimpleTUI = struct {
 
         if (self.editor_lsp) |lsp| {
             lsp.openFile(filename) catch |err| {
-                std.log.warn("Failed to open file for LSP: {}", .{err});
+                // Only log real errors, not expected failures
+                if (err != error.ServerCrashed and err != error.NotInitialized) {
+                    std.log.warn("Failed to open file for LSP: {}", .{err});
+                }
             };
         }
 
@@ -396,12 +442,66 @@ pub const SimpleTUI = struct {
         self.emitBufferClosed(self.current_buffer_id);
     }
 
+    fn getOffsetForLine(self: *SimpleTUI, target_line: usize) usize {
+        const content = self.editor.rope.slice(.{
+            .start = 0,
+            .end = self.editor.rope.len(),
+        }) catch return 0;
+
+        var current_line: usize = 0;
+        var offset: usize = 0;
+
+        while (offset < content.len and current_line < target_line) {
+            if (content[offset] == '\n') {
+                current_line += 1;
+            }
+            offset += 1;
+        }
+
+        return offset;
+    }
+
+    fn scrollToCursor(self: *SimpleTUI) !void {
+        const cursor_line = self.getCursorLine();
+        const cursor_col = self.getCursorColumn();
+        const height = self.terminal_height;
+        const width = self.terminal_width;
+
+        // Vertical scrolling
+        // Scroll down if cursor below viewport
+        if (cursor_line >= self.viewport_top_line + height - 2) {
+            self.viewport_top_line = cursor_line - height + 3;
+        }
+
+        // Scroll up if cursor above viewport
+        if (cursor_line < self.viewport_top_line) {
+            self.viewport_top_line = cursor_line;
+        }
+
+        // Horizontal scrolling
+        const gutter_width: usize = 7; // 4 (line num) + 1 (diag) + 1 (git) + 1 (space)
+        const visible_width = if (width > gutter_width) width - gutter_width else 0;
+
+        // Scroll right if cursor beyond right edge
+        if (cursor_col >= self.viewport_left_col + visible_width) {
+            self.viewport_left_col = cursor_col - visible_width + 1;
+        }
+
+        // Scroll left if cursor before left edge
+        if (cursor_col < self.viewport_left_col) {
+            self.viewport_left_col = cursor_col;
+        }
+    }
+
     fn render(self: *SimpleTUI) !void {
-        // Get terminal size (simplified)
-        const width = 80;
-        const height = 24;
+        // Use dynamic terminal size
+        const width = self.terminal_width;
+        const height = self.terminal_height;
 
         self.applyPendingDefinition();
+
+        // Ensure cursor is in viewport
+        try self.scrollToCursor();
 
         try self.clearScreen();
         try self.setCursor(1, 1);
@@ -428,44 +528,55 @@ pub const SimpleTUI = struct {
             }
         }
 
-        var line_start: usize = 0;
-        var logical_line: usize = 0;
+        // Start rendering from viewport top line
+        const viewport_start_offset = self.getOffsetForLine(self.viewport_top_line);
+        var line_start: usize = viewport_start_offset;
+        var screen_line: usize = 0;
 
-        while (logical_line < height - 2 and line_start <= content.len) {
+        while (screen_line < height - 2 and line_start <= content.len) {
+            const actual_line_num = self.viewport_top_line + screen_line;
             const remaining = content[line_start..];
             const rel_newline = std.mem.indexOfScalar(u8, remaining, '\n');
             const line_end = if (rel_newline) |rel| line_start + rel else content.len;
-            const line_slice = content[line_start..line_end];
+            var line_slice = content[line_start..line_end];
+
+            // Apply horizontal scrolling (but keep full line for highlighting)
+            const display_slice = if (self.viewport_left_col < line_slice.len)
+                line_slice[self.viewport_left_col..]
+            else
+                "";
 
             // Line numbers + diagnostic marker + git sign columns
             var line_buf: [16]u8 = undefined;
-            const line_str = try std.fmt.bufPrint(&line_buf, "{d:4}", .{logical_line + 1});
+            const line_str = try std.fmt.bufPrint(&line_buf, "{d:4}", .{actual_line_num + 1});
             try self.stdout.writeAll(line_str);
 
             // Diagnostic marker
-            const line_diag = selectLineDiagnostic(diagnostics_entries, logical_line);
+            const line_diag = selectLineDiagnostic(diagnostics_entries, actual_line_num);
             const diag_marker = if (line_diag) |diag| severityMarker(diag.severity) else ' ';
             var diag_marker_buf = [1]u8{diag_marker};
             try self.stdout.writeAll(diag_marker_buf[0..]);
 
             // Git sign
-            const git_sign = self.getGitSignForLine(logical_line);
+            const git_sign = self.getGitSignForLine(actual_line_num);
             var git_sign_buf = [1]u8{git_sign};
             try self.stdout.writeAll(git_sign_buf[0..]);
 
             try self.stdout.writeAll(" ");
 
             if (content_width > 0) {
-                try self.renderHighlightedLine(line_slice, logical_line, content_width);
+                // Use display_slice for rendering (with horizontal scroll applied)
+                try self.renderHighlightedLine(display_slice, actual_line_num, content_width);
             }
 
             try self.stdout.writeAll("\r\n");
 
             line_start = if (rel_newline) |_| line_end + 1 else content.len + 1;
-            logical_line += 1;
+            screen_line += 1;
         }
 
-        while (logical_line < height - 2) : (logical_line += 1) {
+        // Fill remaining lines with ~
+        while (screen_line < height - 2) : (screen_line += 1) {
             try self.stdout.writeAll("~\r\n");
         }
 
@@ -676,10 +787,18 @@ pub const SimpleTUI = struct {
         try self.stdout.writeAll(status[0..@min(status.len, width)]);
         try self.resetColor();
 
-        // Position cursor
-        const screen_line = @min(cursor_line + 1, height - 2);
-        const screen_col = cursor_col + 6; // Account for line numbers
-        try self.setCursor(screen_line, screen_col);
+        // Position cursor (accounting for viewport)
+        const viewport_line = if (cursor_line >= self.viewport_top_line)
+            cursor_line - self.viewport_top_line
+        else
+            0;
+        const screen_line_pos = @min(viewport_line + 1, height - 2);
+        const viewport_col = if (cursor_col >= self.viewport_left_col)
+            cursor_col - self.viewport_left_col
+        else
+            0;
+        const screen_col_pos = viewport_col + 7; // Account for gutter (7 chars)
+        try self.setCursor(screen_line_pos, screen_col_pos);
 
         // Flush stdout
     }
@@ -1689,7 +1808,29 @@ pub const SimpleTUI = struct {
         self.setStatusMessage(builder.items);
     }
 
+    fn getTerminalSize(self: *SimpleTUI) !void {
+        var winsize: std.posix.winsize = undefined;
+        const result = std.posix.system.ioctl(
+            self.stdout.handle,
+            std.posix.T.IOCGWINSZ,
+            @intFromPtr(&winsize),
+        );
+
+        if (result < 0) {
+            // Fallback to default size
+            self.terminal_width = 80;
+            self.terminal_height = 24;
+            return;
+        }
+
+        self.terminal_width = winsize.col;
+        self.terminal_height = winsize.row;
+    }
+
     fn enableRawMode(self: *SimpleTUI) !void {
+        // Get initial terminal size
+        try self.getTerminalSize();
+
         // Enter alternate screen buffer
         try self.stdout.writeAll("\x1B[?1049h");
 
@@ -1979,7 +2120,8 @@ pub const SimpleTUI = struct {
     }
 
     fn clearScreen(self: *SimpleTUI) !void {
-        try self.stdout.writeAll("\x1B[2J");
+        // Clear entire screen and move cursor to home position
+        try self.stdout.writeAll("\x1B[2J\x1B[H");
     }
 
     fn setCursor(self: *SimpleTUI, row: usize, col: usize) !void {
@@ -2547,11 +2689,11 @@ pub const SimpleTUI = struct {
     }
 
     fn clearCompletionDisplay(self: *SimpleTUI) void {
-        if (self.completion_items_heap) {
+        if (self.completion_items_heap and self.completion_items.len > 0) {
             self.allocator.free(self.completion_items);
+            self.completion_items_heap = false;
         }
         self.completion_items = &.{};
-        self.completion_items_heap = false;
         self.completion_selected_index = 0;
     }
 
@@ -2572,7 +2714,7 @@ pub const SimpleTUI = struct {
     fn captureCompletionContext(self: *SimpleTUI) !void {
         const cursor_offset = self.editor.cursor.offset;
         const head = try self.editor.rope.slice(.{ .start = 0, .end = cursor_offset });
-        defer self.allocator.free(head);
+        // Note: rope.slice() returns arena-allocated memory, do NOT free
 
         var anchor = cursor_offset;
         while (anchor > 0) {
@@ -3048,7 +3190,12 @@ pub const SimpleTUI = struct {
 
         // Try to get new highlights
         const new_highlights = self.editor.getSyntaxHighlights() catch |err| {
-            // Store error message
+            // Suppress ParserNotInitialized - this is expected before file is loaded
+            if (err == error.ParserNotInitialized) {
+                return;
+            }
+
+            // Store error message for other errors
             const err_msg = std.fmt.allocPrint(
                 self.allocator,
                 "Highlight error: {s}",
@@ -3488,6 +3635,8 @@ pub const SimpleTUI = struct {
                 }
             };
 
+            // Sync back to editor for rendering
+            try self.syncEditorFromPhantomBuffer();
             self.setStatusMessage("Undo");
         } else {
             self.setStatusMessage("Undo not available (PhantomBuffer not enabled)");
@@ -3511,6 +3660,8 @@ pub const SimpleTUI = struct {
                 }
             };
 
+            // Sync back to editor for rendering
+            try self.syncEditorFromPhantomBuffer();
             self.setStatusMessage("Redo");
         } else {
             self.setStatusMessage("Redo not available (PhantomBuffer not enabled)");
