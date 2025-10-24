@@ -99,41 +99,41 @@ fn printVersion() !void {
 }
 
 fn printHelp() !void {
-    const help_text =
-        \\gpkg - Grim Package Manager
+    std.debug.print(
         \\
-        \\USAGE:
-        \\    gpkg <COMMAND> [OPTIONS]
+        \\\x1b[1;36mgpkg\x1b[0m - Grim Package Manager \x1b[2m(v{s})\x1b[0m
         \\
-        \\COMMANDS:
-        \\    install [PLUGIN]    Install plugin(s) - all if no name given
-        \\    update              Update all installed plugins
-        \\    list                List installed plugins
-        \\    remove <PLUGIN>     Remove a plugin
-        \\    build [PATH]        Build a zig plugin (runs zig build)
-        \\    info <PLUGIN>       Show info about an installed plugin
-        \\    search <QUERY>      Search for plugins (registry)
-        \\    lock                Generate lockfile from current plugins
-        \\    version, -v         Show version
-        \\    help, -h            Show this help
+        \\\x1b[1mUSAGE:\x1b[0m
+        \\    gpkg \x1b[33m<COMMAND>\x1b[0m [OPTIONS]
         \\
-        \\EXAMPLES:
-        \\    gpkg install                 # Install all from plugins.zon
-        \\    gpkg install thanos          # Install specific plugin
-        \\    gpkg update                  # Update all plugins
-        \\    gpkg list                    # List installed plugins
-        \\    gpkg build .                 # Build plugin in current dir
-        \\    gpkg info thanos             # Show thanos plugin info
-        \\    gpkg remove thanos           # Remove plugin
-        \\    gpkg lock                    # Generate phantom.lock.zon
+        \\\x1b[1mCOMMANDS:\x1b[0m
+        \\    \x1b[32minstall\x1b[0m [PLUGIN]    Install plugin(s) - all if no name given
+        \\    \x1b[32mupdate\x1b[0m              Update all installed plugins
+        \\    \x1b[32mlist\x1b[0m                List installed plugins with details
+        \\    \x1b[32mremove\x1b[0m <PLUGIN>     Remove a plugin
+        \\    \x1b[32mbuild\x1b[0m [PATH]        Build a zig plugin (runs zig build)
+        \\    \x1b[32minfo\x1b[0m <PLUGIN>       Show detailed info about a plugin
+        \\    \x1b[32msearch\x1b[0m <QUERY>      Search for plugins (registry)
+        \\    \x1b[32mlock\x1b[0m                Generate lockfile from current plugins
+        \\    \x1b[32mversion\x1b[0m, -v         Show version
+        \\    \x1b[32mhelp\x1b[0m, -h            Show this help
         \\
-        \\FILES:
-        \\    ~/.config/grim/plugins.zon       Plugin manifest
-        \\    ~/.config/grim/phantom.lock.zon  Lockfile (versions)
-        \\    ~/.local/share/grim/plugins/     Installed plugins
+        \\\x1b[1mEXAMPLES:\x1b[0m
+        \\    gpkg install                 \x1b[2m# Install all from plugins.zon\x1b[0m
+        \\    gpkg install thanos          \x1b[2m# Install specific plugin\x1b[0m
+        \\    gpkg update                  \x1b[2m# Update all plugins\x1b[0m
+        \\    gpkg list                    \x1b[2m# List installed plugins\x1b[0m
+        \\    gpkg build .                 \x1b[2m# Build plugin in current dir\x1b[0m
+        \\    gpkg info thanos             \x1b[2m# Show thanos plugin info\x1b[0m
+        \\    gpkg remove thanos           \x1b[2m# Remove plugin\x1b[0m
         \\
-    ;
-    std.debug.print("{s}\n", .{help_text});
+        \\\x1b[1mFILES:\x1b[0m
+        \\    \x1b[2m~/.config/grim/plugins.zon      \x1b[0m Plugin manifest
+        \\    \x1b[2m~/.config/grim/phantom.lock.zon \x1b[0m Lockfile (versions)
+        \\    \x1b[2m~/.local/share/grim/plugins/    \x1b[0m Installed plugins
+        \\
+        \\
+    , .{GPKG_VERSION});
 }
 
 // Plugin management functions
@@ -234,7 +234,7 @@ fn installZigPlugin(allocator: std.mem.Allocator, name: []const u8, url: []const
     std.fs.deleteTreeAbsolute(temp_dir) catch {};
     try std.fs.makeDirAbsolute(temp_dir);
 
-    std.debug.print("  Fetching {s}...\n", .{url});
+    std.debug.print("  \x1b[34m⬇\x1b[0m  Downloading from {s}...\n", .{url});
 
     // Download tarball
     const tarball_path = try std.fmt.allocPrint(allocator, "{s}/plugin.tar.gz", .{temp_dir});
@@ -251,12 +251,12 @@ fn installZigPlugin(allocator: std.mem.Allocator, name: []const u8, url: []const
     defer allocator.free(curl_result.stderr);
 
     if (curl_result.term.Exited != 0) {
-        std.debug.print("  Error: curl failed\n", .{});
+        std.debug.print("  \x1b[31m✗\x1b[0m  Download failed\n", .{});
         return error.DownloadFailed;
     }
 
     // Extract tarball
-    std.debug.print("  Extracting...\n", .{});
+    std.debug.print("  \x1b[35m📦\x1b[0m Extracting tarball...\n", .{});
     const tar_result = std.process.Child.run(.{
         .allocator = allocator,
         .argv = &[_][]const u8{ "tar", "-xzf", tarball_path, "-C", temp_dir },
@@ -290,20 +290,20 @@ fn installZigPlugin(allocator: std.mem.Allocator, name: []const u8, url: []const
     defer allocator.free(src_dir);
 
     // Build the plugin
-    std.debug.print("  Building...\n", .{});
+    std.debug.print("  \x1b[33m🔨\x1b[0m Building with zig...\n", .{});
     const build_result = std.process.Child.run(.{
         .allocator = allocator,
         .argv = &[_][]const u8{ "zig", "build", "-Doptimize=ReleaseSafe" },
         .cwd = src_dir,
     }) catch |err| {
-        std.debug.print("  Error: Build failed\n", .{});
+        std.debug.print("  \x1b[31m✗\x1b[0m  Build failed\n", .{});
         return err;
     };
     defer allocator.free(build_result.stdout);
     defer allocator.free(build_result.stderr);
 
     if (build_result.term.Exited != 0) {
-        std.debug.print("  Build output:\n{s}\n", .{build_result.stderr});
+        std.debug.print("  \x1b[31m✗\x1b[0m  Build failed:\n\x1b[2m{s}\x1b[0m\n", .{build_result.stderr});
         return error.BuildFailed;
     }
 
@@ -316,7 +316,7 @@ fn installZigPlugin(allocator: std.mem.Allocator, name: []const u8, url: []const
     const zig_out_lib = try std.fmt.allocPrint(allocator, "{s}/zig-out/lib", .{src_dir});
     defer allocator.free(zig_out_lib);
 
-    std.debug.print("  Installing to {s}...\n", .{plugins_dir});
+    std.debug.print("  \x1b[36m📥\x1b[0m Installing to \x1b[2m{s}\x1b[0m...\n", .{plugins_dir});
 
     const cp_result = std.process.Child.run(.{
         .allocator = allocator,
@@ -342,7 +342,7 @@ fn installZigPlugin(allocator: std.mem.Allocator, name: []const u8, url: []const
     defer allocator.free(cp_all_result.stdout);
     defer allocator.free(cp_all_result.stderr);
 
-    std.debug.print("  ✓ Installed {s}\n", .{name});
+    std.debug.print("  \x1b[32m✓\x1b[0m  Successfully installed \x1b[1m{s}\x1b[0m\n", .{name});
 
     // Cleanup
     std.fs.deleteTreeAbsolute(temp_dir) catch {};
@@ -366,7 +366,8 @@ fn listInstalledPlugins(allocator: std.mem.Allocator) !void {
 
     var dir = std.fs.openDirAbsolute(plugins_dir, .{ .iterate = true }) catch |err| {
         if (err == error.FileNotFound) {
-            std.debug.print("  (No plugins installed)\n", .{});
+            std.debug.print("\x1b[33m📦 No plugins directory found\x1b[0m\n", .{});
+            std.debug.print("   Run '\x1b[1mgpkg install\x1b[0m' to install plugins\n", .{});
             return;
         }
         return err;
@@ -375,18 +376,47 @@ fn listInstalledPlugins(allocator: std.mem.Allocator) !void {
 
     var iter = dir.iterate();
     var count: usize = 0;
+    var zig_count: usize = 0;
+    var ghostlang_count: usize = 0;
+
     while (try iter.next()) |entry| {
         if (entry.kind == .directory) {
             count += 1;
-            std.debug.print("  - {s}\n", .{entry.name});
+
+            // Check plugin type
+            const plugin_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ plugins_dir, entry.name });
+            defer allocator.free(plugin_path);
+
+            var plugin_dir = std.fs.openDirAbsolute(plugin_path, .{}) catch continue;
+            defer plugin_dir.close();
+
+            const has_lib = blk: {
+                plugin_dir.access("zig-out/lib", .{}) catch break :blk false;
+                break :blk true;
+            };
+
+            const has_bin = blk: {
+                plugin_dir.access("zig-out/bin", .{}) catch break :blk false;
+                break :blk true;
+            };
+
+            if (has_lib or has_bin) {
+                zig_count += 1;
+                std.debug.print("  \x1b[36m⚡\x1b[0m {s} \x1b[2m(zig)\x1b[0m\n", .{entry.name});
+            } else {
+                ghostlang_count += 1;
+                std.debug.print("  \x1b[35m👻\x1b[0m {s} \x1b[2m(ghostlang)\x1b[0m\n", .{entry.name});
+            }
         }
     }
 
     if (count == 0) {
-        std.debug.print("  (No plugins installed)\n", .{});
+        std.debug.print("\x1b[33m📦 No plugins installed\x1b[0m\n", .{});
+        std.debug.print("   Run '\x1b[1mgpkg install\x1b[0m' to install from plugins.zon\n", .{});
+    } else {
+        std.debug.print("\n\x1b[1mTotal:\x1b[0m {d} plugins ({d} zig, {d} ghostlang)\n", .{ count, zig_count, ghostlang_count });
+        std.debug.print("   Use '\x1b[1mgpkg info <name>\x1b[0m' for details\n", .{});
     }
-
-    _ = allocator;
 }
 
 fn removePlugin(allocator: std.mem.Allocator, name: []const u8) !void {
@@ -441,7 +471,8 @@ fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
 
 fn infoCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
-        std.debug.print("Error: Please specify a plugin name\n", .{});
+        std.debug.print("\x1b[31m❌ Error:\x1b[0m Please specify a plugin name\n", .{});
+        std.debug.print("   Usage: \x1b[1mgpkg info <plugin-name>\x1b[0m\n", .{});
         std.process.exit(1);
     }
 
@@ -453,16 +484,18 @@ fn infoCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
     // Check if plugin exists
     var dir = std.fs.openDirAbsolute(plugin_path, .{}) catch |err| {
         if (err == error.FileNotFound) {
-            std.debug.print("Plugin '{s}' not found\n", .{plugin_name});
-            std.debug.print("Use 'gpkg list' to see installed plugins\n", .{});
+            std.debug.print("\x1b[31m❌ Plugin '\x1b[1m{s}\x1b[0m\x1b[31m' not found\x1b[0m\n", .{plugin_name});
+            std.debug.print("   Use '\x1b[1mgpkg list\x1b[0m' to see installed plugins\n", .{});
             return;
         }
         return err;
     };
     defer dir.close();
 
-    std.debug.print("Plugin: {s}\n", .{plugin_name});
-    std.debug.print("Location: {s}\n", .{plugin_path});
+    // Header
+    std.debug.print("\n╭─ \x1b[1m{s}\x1b[0m ─────────────────────────────\n", .{plugin_name});
+    std.debug.print("│\n", .{});
+    std.debug.print("│ \x1b[2mLocation:\x1b[0m {s}\n", .{plugin_path});
 
     // Check for build artifacts
     const has_lib = blk: {
@@ -475,41 +508,46 @@ fn infoCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
         break :blk true;
     };
 
+    if (has_lib or has_bin) {
+        std.debug.print("│ \x1b[2mType:\x1b[0m     \x1b[36m⚡ Zig native plugin\x1b[0m\n", .{});
+    } else {
+        std.debug.print("│ \x1b[2mType:\x1b[0m     \x1b[35m👻 Ghostlang script\x1b[0m\n", .{});
+    }
+
     if (has_lib) {
-        std.debug.print("Type: Native library (.so)\n", .{});
+        std.debug.print("│\n", .{});
+        std.debug.print("│ \x1b[1mLibraries:\x1b[0m\n", .{});
 
         // List library files
         var lib_dir = try dir.openDir("zig-out/lib", .{ .iterate = true });
         defer lib_dir.close();
 
-        std.debug.print("Libraries:\n", .{});
         var iter = lib_dir.iterate();
         while (try iter.next()) |entry| {
             if (entry.kind == .file) {
-                std.debug.print("  - {s}\n", .{entry.name});
+                std.debug.print("│   • {s}\n", .{entry.name});
             }
         }
     }
 
     if (has_bin) {
-        std.debug.print("Type: Executable\n", .{});
+        std.debug.print("│\n", .{});
+        std.debug.print("│ \x1b[1mExecutables:\x1b[0m\n", .{});
 
         // List executables
         var bin_dir = try dir.openDir("zig-out/bin", .{ .iterate = true });
         defer bin_dir.close();
 
-        std.debug.print("Executables:\n", .{});
         var iter = bin_dir.iterate();
         while (try iter.next()) |entry| {
             if (entry.kind == .file) {
-                std.debug.print("  - {s}\n", .{entry.name});
+                std.debug.print("│   • {s}\n", .{entry.name});
             }
         }
     }
 
-    if (!has_lib and !has_bin) {
-        std.debug.print("Type: Ghostlang script\n", .{});
-    }
+    std.debug.print("│\n", .{});
+    std.debug.print("╰─────────────────────────────────────────\n\n", .{});
 
     _ = allocator;
 }
