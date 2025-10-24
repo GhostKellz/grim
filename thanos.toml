@@ -1,0 +1,65 @@
+# Thanos Configuration for Grim Editor
+# AI-powered completions routing through Omen gateway
+
+[general]
+debug = false
+preferred_provider = "omen"  # Route everything through Omen gateway
+
+# Provider endpoints
+[endpoints]
+omen = "http://localhost:8080"  # Omen Docker container
+ollama = "http://localhost:11434"
+
+# Omen Gateway - Handles all provider routing
+[providers.omen]
+enabled = true
+# Omen handles routing to: Claude, OpenAI, xAI, GitHub Copilot, Ollama
+# API keys stored in Omen (via .env or Docker secrets)
+routing_strategy = "cost-optimized"  # or "latency-optimized", "quality-optimized"
+preferred_providers = ["ollama", "anthropic", "openai"]  # Prefer local first
+timeout_seconds = 30
+
+# Local Ollama (fallback if Omen unavailable)
+[providers.ollama]
+enabled = true
+model = "codellama:latest"
+max_tokens = 2048
+temperature = 0.3  # Lower for code
+
+# Direct Anthropic (fallback)
+[providers.anthropic]
+enabled = false  # Disabled - use Omen instead
+api_key = "${ANTHROPIC_API_KEY}"
+model = "claude-sonnet-4-20250514"
+
+# Code completion settings
+[completion]
+max_tokens = 150  # Short completions
+temperature = 0.2  # Deterministic for code
+show_inline = true  # Show ghost text
+trigger_on_keystroke = false  # Manual trigger only (Ctrl+Space)
+
+# Chat/explanation settings
+[chat]
+max_tokens = 500
+temperature = 0.7
+context_lines_before = 50  # Lines before cursor
+context_lines_after = 10   # Lines after cursor
+include_diagnostics = true  # Include LSP errors in context
+
+# Conversation settings
+[conversation]
+system_prompt = "You are an expert coding assistant integrated into the Grim editor. Provide concise, accurate code completions and explanations."
+context_window = 8000
+save_history = false  # Don't persist chat history
+
+# Performance
+[performance]
+timeout_seconds = 30
+retry_attempts = 2
+enable_caching = true
+cache_ttl_minutes = 30
+
+# Routing fallback chain
+[routing]
+fallback_chain = ["omen", "ollama"]  # Try Omen first, then local Ollama
