@@ -260,6 +260,17 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(pkg_exe);
 
+    // gpkg - Grim Package Manager
+    const gpkg_exe = b.addExecutable(.{
+        .name = "gpkg",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("tools/gpkg/src/main.zig"),
+            .target = target,
+            .optimize = optimize,
+        }),
+    });
+    b.installArtifact(gpkg_exe);
+
     // This creates a top level step. Top level steps have a name and can be
     // invoked by name when running `zig build` (e.g. `zig build run`).
     // This will evaluate the `run` step rather than the default step.

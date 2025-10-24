@@ -118,6 +118,13 @@ install_grim() {
     cp zig-out/bin/grim "$INSTALL_PREFIX/bin/grim"
     chmod +x "$INSTALL_PREFIX/bin/grim"
 
+    # Install gpkg
+    if [ -f "zig-out/bin/gpkg" ]; then
+        print_info "Installing gpkg..."
+        cp zig-out/bin/gpkg "$INSTALL_PREFIX/bin/gpkg"
+        chmod +x "$INSTALL_PREFIX/bin/gpkg"
+    fi
+
     # Install runtime files
     print_info "Installing runtime files..."
     if [ -d "runtime" ]; then
