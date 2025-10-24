@@ -179,6 +179,32 @@ pub const BufferManager = struct {
         return id;
     }
 
+    /// Poll all terminal buffers for output
+    pub fn pollTerminals(self: *BufferManager) !void {
+        for (self.buffers.items) |*buffer| {
+            if (buffer.terminal) |term| {
+                // Check if terminal is still running
+                const still_running = try term.checkStatus();
+                if (!still_running) {
+                    // Terminal exited, could update display_name or mark as exited
+                    continue;
+                }
+
+                // Read terminal output
+                var read_buf: [4096]u8 = undefined;
+                const n = try term.read(&read_buf);
+
+                if (n > 0) {
+                    // Append to editor buffer (simple implementation)
+                    // TODO: Proper ANSI parsing and screen buffer management
+                    const output = read_buf[0..n];
+                    const current_len = buffer.editor.rope.len();
+                    try buffer.editor.rope.insert(current_len, output);
+                }
+            }
+        }
+    }
+
     /// Create a buffer from file
     pub fn openFile(self: *BufferManager, path: []const u8) !u32 {
         // Check if file is already open

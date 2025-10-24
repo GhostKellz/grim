@@ -166,8 +166,9 @@ pub const Terminal = struct {
         if (!self.running) return Error.NotRunning;
 
         // Set non-blocking mode
+        const O_NONBLOCK: u32 = 0o4000; // O_NONBLOCK constant for Linux
         const flags = try posix.fcntl(self.pty_master, posix.F.GETFL, 0);
-        _ = try posix.fcntl(self.pty_master, posix.F.SETFL, flags | posix.O.NONBLOCK);
+        _ = try posix.fcntl(self.pty_master, posix.F.SETFL, @as(u32, @intCast(flags)) | O_NONBLOCK);
 
         const n = posix.read(self.pty_master, buffer) catch |err| {
             if (err == error.WouldBlock) return 0;

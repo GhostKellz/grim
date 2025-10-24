@@ -323,6 +323,13 @@ pub const SimpleTUI = struct {
                 self.needs_resize = false;
             }
 
+            // Poll terminal buffers for output
+            if (self.buffer_manager) |bm| {
+                bm.pollTerminals() catch |err| {
+                    std.log.warn("Terminal poll failed: {}", .{err});
+                };
+            }
+
             try self.handleInput();
             try self.render();
         }
