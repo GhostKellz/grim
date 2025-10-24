@@ -77,6 +77,8 @@ pub const SimpleTUI = struct {
     file_tree_width: usize,
     // Vim key sequences (dd, yy, etc.)
     pending_vim_key: ?u8,
+    // Terminal state
+    original_termios: std.posix.termios,
 
     pub fn init(allocator: std.mem.Allocator) !*SimpleTUI {
         var command_buffer = try std.ArrayList(u8).initCapacity(allocator, 0);
@@ -136,6 +138,7 @@ pub const SimpleTUI = struct {
             .file_tree_active = false,
             .file_tree_width = 30,
             .pending_vim_key = null,
+            .original_termios = undefined,
         };
 
         // Initialize PhantomBufferManager if enabled
@@ -149,6 +152,9 @@ pub const SimpleTUI = struct {
     }
 
     pub fn deinit(self: *SimpleTUI) void {
+        // Restore terminal state
+        self.disableRawMode() catch {};
+
         self.clearCompletionDisplay();
         self.completion_prefix.deinit(self.allocator);
         if (self.highlight_cache.len > 0) {
@@ -1684,9 +1690,46 @@ pub const SimpleTUI = struct {
     }
 
     fn enableRawMode(self: *SimpleTUI) !void {
-        _ = self;
-        // Platform-specific raw mode setup would go here
-        // For now, just a placeholder
+        // Enter alternate screen buffer
+        try self.stdout.writeAll("\x1B[?1049h");
+
+        // Hide cursor
+        try self.stdout.writeAll("\x1B[?25l");
+
+        // Enable raw mode using termios
+        const stdin_fd = std.posix.STDIN_FILENO;
+
+        // Get current terminal settings
+        self.original_termios = try std.posix.tcgetattr(stdin_fd);
+
+        // Create modified settings for raw mode
+        var raw = self.original_termios;
+
+        // Disable canonical mode, echo, and signals
+        raw.lflag.ECHO = false;
+        raw.lflag.ICANON = false;
+        raw.lflag.ISIG = false;
+        raw.lflag.IEXTEN = false;
+
+        // Disable input processing
+        raw.iflag.IXON = false;
+        raw.iflag.ICRNL = false;
+        raw.iflag.BRKINT = false;
+        raw.iflag.INPCK = false;
+        raw.iflag.ISTRIP = false;
+
+        // Disable output processing
+        raw.oflag.OPOST = false;
+
+        // Set character size to 8 bits
+        raw.cflag.CSIZE = .CS8;
+
+        // Set read timeout (100ms)
+        raw.cc[@intFromEnum(std.posix.V.TIME)] = 1;
+        raw.cc[@intFromEnum(std.posix.V.MIN)] = 0;
+
+        // Apply settings
+        try std.posix.tcsetattr(stdin_fd, .FLUSH, raw);
     }
 
     fn bridgeGetCurrentBuffer(ctx: *anyopaque) runtime.PluginAPI.BufferId {
@@ -1924,8 +1967,15 @@ pub const SimpleTUI = struct {
     }
 
     fn disableRawMode(self: *SimpleTUI) !void {
-        _ = self;
-        // Platform-specific raw mode cleanup would go here
+        // Show cursor
+        try self.stdout.writeAll("\x1B[?25h");
+
+        // Exit alternate screen buffer
+        try self.stdout.writeAll("\x1B[?1049l");
+
+        // Restore original terminal settings
+        const stdin_fd = std.posix.STDIN_FILENO;
+        try std.posix.tcsetattr(stdin_fd, .FLUSH, self.original_termios);
     }
 
     fn clearScreen(self: *SimpleTUI) !void {
