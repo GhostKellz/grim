@@ -515,18 +515,74 @@ pub const SimpleTUI = struct {
         else
             self.font_manager.getLspInactiveIcon();
 
+        // Get filename
+        const filename = if (self.editor.current_filename) |path| blk: {
+            const basename = std.fs.path.basename(path);
+            break :blk basename;
+        } else "[No Name]";
+
+        // Get git branch and stats
+        const git_branch = self.git.getCurrentBranch() catch null;
+        var added_count: usize = 0;
+        var modified_count: usize = 0;
+        var removed_count: usize = 0;
+        for (self.git_hunks) |hunk| {
+            switch (hunk.hunk_type) {
+                .added => added_count += 1,
+                .modified => modified_count += 1,
+                .deleted => removed_count += 1,
+            }
+        }
+
         var status_buf: [512]u8 = undefined;
         var status_len: usize = 0;
-        const base_slice = try std.fmt.bufPrint(status_buf[status_len..], " {s} {s} {s}{d} {s}{d} | {d} bytes | {s}", .{
-            mode_str,
-            lsp_icon,
-            line_icon,
-            cursor_line + 1,
-            col_icon,
-            cursor_col + 1,
-            self.editor.rope.len(),
-            language,
-        });
+
+        // Mode + filename + git
+        var base_slice: []const u8 = undefined;
+        if (git_branch) |branch| {
+            if (added_count > 0 or modified_count > 0 or removed_count > 0) {
+                base_slice = try std.fmt.bufPrint(status_buf[status_len..], " {s} {s}  {s} +{d} ~{d} -{d} {s} {s}{d} {s}{d} | {d} bytes | {s}", .{
+                    mode_str,
+                    filename,
+                    branch,
+                    added_count,
+                    modified_count,
+                    removed_count,
+                    lsp_icon,
+                    line_icon,
+                    cursor_line + 1,
+                    col_icon,
+                    cursor_col + 1,
+                    self.editor.rope.len(),
+                    language,
+                });
+            } else {
+                base_slice = try std.fmt.bufPrint(status_buf[status_len..], " {s} {s}  {s} {s} {s}{d} {s}{d} | {d} bytes | {s}", .{
+                    mode_str,
+                    filename,
+                    branch,
+                    lsp_icon,
+                    line_icon,
+                    cursor_line + 1,
+                    col_icon,
+                    cursor_col + 1,
+                    self.editor.rope.len(),
+                    language,
+                });
+            }
+        } else {
+            base_slice = try std.fmt.bufPrint(status_buf[status_len..], " {s} {s} {s} {s}{d} {s}{d} | {d} bytes | {s}", .{
+                mode_str,
+                filename,
+                lsp_icon,
+                line_icon,
+                cursor_line + 1,
+                col_icon,
+                cursor_col + 1,
+                self.editor.rope.len(),
+                language,
+            });
+        }
         status_len += base_slice.len;
 
         if (self.highlight_error) |err_msg| {
