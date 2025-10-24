@@ -71,12 +71,23 @@ pub const SimpleTUI = struct {
     // Git integration
     git: core.Git,
     git_hunks: []core.Git.Hunk,
+    git_status_active: bool,
+    git_log_active: bool,
+    git_selected_commit: usize,
+    // Harpoon integration
+    harpoon: core.Harpoon,
+    harpoon_menu_active: bool,
+    harpoon_selected_idx: usize,
     // File tree sidebar
     file_tree: ?*file_tree_mod.FileTree,
     file_tree_active: bool,
     file_tree_width: usize,
     // Vim key sequences (dd, yy, etc.)
     pending_vim_key: ?u8,
+    // Leader key for custom keybindings (Space)
+    leader_key_pending: bool,
+    leader_key_timestamp: i64,
+    leader_key_sequence: std.ArrayList(u8),
     // Terminal state
     original_termios: std.posix.termios,
     // Terminal size (dynamic)
@@ -141,10 +152,19 @@ pub const SimpleTUI = struct {
             .visual_block_start_column = 0,
             .git = core.Git.init(allocator),
             .git_hunks = &.{},
+            .git_status_active = false,
+            .git_log_active = false,
+            .git_selected_commit = 0,
+            .harpoon = core.Harpoon.init(allocator),
+            .harpoon_menu_active = false,
+            .harpoon_selected_idx = 0,
             .file_tree = null,
             .file_tree_active = false,
             .file_tree_width = 30,
             .pending_vim_key = null,
+            .leader_key_pending = false,
+            .leader_key_timestamp = 0,
+            .leader_key_sequence = .{},
             .original_termios = undefined,
             .terminal_width = 80,
             .terminal_height = 24,
@@ -166,6 +186,11 @@ pub const SimpleTUI = struct {
     pub fn deinit(self: *SimpleTUI) void {
         // Restore terminal state
         self.disableRawMode() catch {};
+
+        // Clean up native integrations
+        self.harpoon.deinit();
+        self.git.deinit();
+        self.leader_key_sequence.deinit(self.allocator);
 
         self.clearCompletionDisplay();
         self.completion_prefix.deinit(self.allocator);
@@ -201,7 +226,6 @@ pub const SimpleTUI = struct {
         if (self.git_hunks.len > 0) {
             self.allocator.free(self.git_hunks);
         }
-        self.git.deinit();
         // Clean up file tree
         if (self.file_tree) |tree| {
             tree.deinit();
@@ -867,6 +891,24 @@ pub const SimpleTUI = struct {
                 return;
             }
 
+            // Harpoon menu mode takes precedence
+            if (self.harpoon_menu_active) {
+                // TODO: Implement harpoon menu// try self.handleHarpoonMenuInput(key);
+                return;
+            }
+
+            // Git status mode takes precedence
+            if (self.git_status_active) {
+                // TODO: Implement git status// try self.handleGitStatusInput(key);
+                return;
+            }
+
+            // Leader key sequence handling (normal mode only)
+            if (self.editor.mode == .normal and self.leader_key_pending) {
+                // TODO: Implement leader key sequence// try self.handleLeaderKeySequence(key);
+                return;
+            }
+
             // Mode-specific commands
             switch (self.editor.mode) {
                 .normal => try self.handleNormalMode(key),
@@ -949,6 +991,13 @@ pub const SimpleTUI = struct {
         }
 
         switch (key) {
+            ' ' => { // Space - Leader key
+                self.leader_key_pending = true;
+                self.leader_key_timestamp = std.time.milliTimestamp();
+                self.leader_key_sequence.clearRetainingCapacity();
+                self.setStatusMessage("Leader: <Space>...");
+                return;
+            },
             27 => {
                 // ESC - clear pending key
                 self.pending_vim_key = null;
