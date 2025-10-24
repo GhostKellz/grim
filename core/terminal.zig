@@ -5,6 +5,7 @@
 const std = @import("std");
 const posix = std.posix;
 const builtin = @import("builtin");
+const ansi = @import("ansi.zig");
 
 /// Terminal instance managing a PTY and child process
 pub const Terminal = struct {
@@ -22,6 +23,12 @@ pub const Terminal = struct {
 
     /// Output buffer (ring buffer for scrollback)
     output_buffer: std.array_list.AlignedManaged(u8, null),
+
+    /// Screen buffer for ANSI rendering
+    screen: ?*ansi.ScreenBuffer = null,
+
+    /// ANSI parser
+    parser: ?*ansi.AnsiParser = null,
 
     /// Whether the child process is still running
     running: bool,
@@ -42,6 +49,14 @@ pub const Terminal = struct {
     /// Initialize a new terminal instance
     pub fn init(allocator: std.mem.Allocator, rows: u16, cols: u16) !*Terminal {
         const self = try allocator.create(Terminal);
+        errdefer allocator.destroy(self);
+
+        const screen = try ansi.ScreenBuffer.init(allocator, rows, cols);
+        errdefer screen.deinit();
+
+        const parser = try ansi.AnsiParser.init(allocator, screen);
+        errdefer parser.deinit();
+
         self.* = .{
             .allocator = allocator,
             .pty_master = -1,
@@ -49,6 +64,8 @@ pub const Terminal = struct {
             .rows = rows,
             .cols = cols,
             .output_buffer = std.array_list.AlignedManaged(u8, null).init(allocator),
+            .screen = screen,
+            .parser = parser,
             .running = false,
             .title = null,
         };
@@ -66,6 +83,14 @@ pub const Terminal = struct {
         }
 
         self.output_buffer.deinit();
+
+        if (self.parser) |parser| {
+            parser.deinit();
+        }
+
+        if (self.screen) |screen| {
+            screen.deinit();
+        }
 
         if (self.title) |title| {
             self.allocator.free(title);
@@ -177,6 +202,11 @@ pub const Terminal = struct {
 
         // Append to output buffer for scrollback
         try self.output_buffer.appendSlice(buffer[0..n]);
+
+        // Process through ANSI parser
+        if (self.parser) |parser| {
+            try parser.process(buffer[0..n]);
+        }
 
         // Limit scrollback buffer size (e.g., 1MB)
         const max_scrollback = 1024 * 1024;

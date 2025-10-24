@@ -7,6 +7,8 @@ pub const zap = @import("zap.zig");
 pub const file_watcher = @import("file_watcher.zig");
 pub const terminal = @import("terminal.zig");
 pub const collaboration = @import("collaboration.zig");
+pub const websocket = @import("websocket.zig");
+pub const ansi = @import("ansi.zig");
 
 pub const Rope = rope.Rope;
 pub const Range = rope.Range;
@@ -21,3 +23,6 @@ pub const Terminal = terminal.Terminal;
 pub const CollaborationSession = collaboration.CollaborationSession;
 pub const Operation = collaboration.Operation;
 pub const UserPresence = collaboration.UserPresence;
+pub const WebSocketClient = websocket.WebSocketClient;
+pub const AnsiParser = ansi.AnsiParser;
+pub const ScreenBuffer = ansi.ScreenBuffer;
