@@ -1,0 +1,60 @@
+-- runtime/defaults/grim-tutor/basics.gza
+-- Grim Tutor: Basic motions lesson
+
+local tutor = require("tutor")
+
+tutor.lesson("Grim Motions: The Reaper's Way", {
+    title = "Welcome to Grim!",
+    description = "Learn the enhanced Vim motions that make Grim powerful",
+
+    steps = {
+        {
+            title = "Navigation with hjkl",
+            instructions = [[
+Use h, j, k, l to move around the editor.
+
+     k (up)
+h (left)  l (right)
+     j (down)
+
+Navigate to the X below and press Enter:
+]],
+            content = [[
+Start here ->
+
+
+
+        X  <- Move here!
+]],
+            validate = function()
+                -- Check if cursor is at the X
+                return true -- TODO: Implement cursor position check
+            end,
+            hint = "Use h,j,k,l to move. j goes down, k goes up."
+        },
+
+        {
+            title = "Grim Motion: Harvest (H)",
+            instructions = [[
+NEW in Grim: 'H' (Harvest)
+
+H - Select entire function or logical block
+HH - Select entire paragraph
+
+Try H on the function below:
+]],
+            content = [[
+function example() {
+    console.log("Hello");
+    console.log("World");
+}
+]],
+            validate = function()
+                return true -- TODO: Check if block is selected
+            end,
+            hint = "Press H with cursor inside the function"
+        }
+    }
+})
+
+print("Grim tutor basics loaded")

@@ -1,0 +1,214 @@
+-- plugins/core/treesitter.gza
+-- Automatic syntax highlighting via grim.syntax + grove (tree-sitter)
+
+local existing_autocmd = rawget(_G, "autocmd")
+local autocmd = existing_autocmd or function(event, pattern, callback)
+    print(string.format("[treesitter] Register autocmd: %s %s", tostring(event), tostring(pattern)))
+    return true
+end
+
+local existing_command = rawget(_G, "command")
+local command = existing_command or function(name, callback, opts)
+    print(string.format("[treesitter] Register command: %s", tostring(name)))
+    return true
+end
+
+local function get_filetype()
+    local ft_provider = rawget(_G, "get_filetype")
+    if type(ft_provider) == "function" then
+        local ok, value = pcall(ft_provider)
+        if ok then
+            return value
+        end
+    end
+    return "zig"
+end
+
+local function get_buffer_content()
+    local content_provider = rawget(_G, "get_buffer_content")
+    if type(content_provider) == "function" then
+        local ok, value = pcall(content_provider)
+        if ok then
+            return value
+        end
+    end
+    return ""
+end
+
+local function apply_highlights(highlights)
+    if type(highlights) == "table" then
+        print(string.format("[treesitter] Applied %d highlights", #highlights))
+    else
+        print("[treesitter] Applied highlights")
+    end
+end
+
+local function clear_highlights()
+    print("[treesitter] Cleared highlights")
+end
+
+local plugin = {
+    name = "core.treesitter",
+    version = "0.1.0",
+}
+
+-- Supported languages with their tree-sitter grammars
+local languages = {
+    "zig",
+    "rust",
+    "ghostlang",
+    "typescript",
+    "javascript",
+    "python",
+    "go",
+    "c",
+    "cpp",
+    "lua",
+    "json",
+    "toml",
+    "yaml",
+    "markdown",
+}
+
+-- Configuration
+local config = {
+    highlight = {
+        enable = true,
+        additional_vim_regex_highlighting = false,
+    },
+    ensure_installed = languages,
+    auto_install = false,
+}
+
+-- Get syntax bridge
+local function get_syntax_bridge()
+    local ok, bridge = pcall(require, "grim.bridge")
+    if ok then
+        return bridge
+    end
+    return nil
+end
+
+local function language_supported(ft)
+    if type(ft) ~= "string" or ft == "" then
+        return false
+    end
+    for _, lang in ipairs(languages) do
+        if lang == ft then
+            return true
+        end
+    end
+    return false
+end
+
+-- Apply syntax highlighting to current buffer
+local function highlight_buffer()
+    local bridge = get_syntax_bridge()
+    if not bridge or type(bridge.syntax_highlight) ~= "function" then
+        print("[treesitter] syntax_highlight unavailable")
+        return
+    end
+
+    local ft = get_filetype()
+    local content = get_buffer_content()
+
+    if not ft or ft == "" then
+        return
+    end
+
+    if not language_supported(ft) then
+        print("[treesitter] Language not supported: " .. ft)
+        return
+    end
+
+    local ok, highlights = pcall(function()
+        return bridge.syntax_highlight(ft, content)
+    end)
+
+    if ok and highlights then
+        if type(highlights) ~= "table" then
+            print("[treesitter] Unexpected highlight payload for " .. ft)
+            return
+        end
+        apply_highlights(highlights)
+    else
+        print("[treesitter] Highlighting failed for " .. ft)
+        if not ok then
+            print("[treesitter] Error: " .. tostring(highlights))
+        end
+    end
+end
+
+-- Setup function
+function plugin.setup(opts)
+    opts = opts or {}
+
+    -- Merge user config
+    if opts.highlight then
+        for k, v in pairs(opts.highlight) do
+            config.highlight[k] = v
+        end
+    end
+
+    if opts.ensure_installed then
+        config.ensure_installed = opts.ensure_installed
+    end
+
+    if opts.auto_install ~= nil then
+        config.auto_install = not not opts.auto_install
+    end
+
+    if not config.highlight.enable then
+        print("[treesitter] Syntax highlighting disabled")
+        return
+    end
+
+    -- Register autocmds for syntax highlighting
+    autocmd("BufRead", "*", function()
+        highlight_buffer()
+    end)
+
+    autocmd("BufEnter", "*", function()
+        highlight_buffer()
+    end)
+
+    autocmd("TextChanged", "*", function()
+        if config.highlight.enable then
+            highlight_buffer()
+        end
+    end)
+
+    autocmd("TextChangedI", "*", function()
+        if config.highlight.enable then
+            highlight_buffer()
+        end
+    end)
+
+    -- Register commands
+    command("TSToggle", function()
+        config.highlight.enable = not config.highlight.enable
+        if config.highlight.enable then
+            print("[treesitter] Syntax highlighting enabled")
+            highlight_buffer()
+        else
+            print("[treesitter] Syntax highlighting disabled")
+            clear_highlights()
+        end
+    end, { desc = "Toggle treesitter highlighting" })
+
+    command("TSUpdate", function()
+        print("[treesitter] Re-highlighting buffer...")
+        highlight_buffer()
+    end, { desc = "Re-apply syntax highlighting" })
+
+    command("TSInfo", function()
+        local ft = get_filetype()
+        print("[treesitter] Current filetype: " .. (ft or "none"))
+        print("[treesitter] Highlighting: " .. (config.highlight.enable and "enabled" or "disabled"))
+        print("[treesitter] Languages: " .. table.concat(languages, ", "))
+    end, { desc = "Show treesitter info" })
+
+    print(string.format("[treesitter] Syntax highlighting enabled for %d languages", #languages))
+end
+
+return plugin

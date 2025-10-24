@@ -1,0 +1,233 @@
+-- plugins/ui/dashboard.gza
+-- Welcome screen for Phantom.grim
+-- Shows recent files, quick actions, session info
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "dashboard",
+    state = {
+        initialized = false,
+        options = {},
+        recent_files = {},
+        max_recent = 10,
+        show_on_startup = true,
+    },
+}
+
+local function log(message)
+    print("[dashboard] " .. message)
+end
+
+-- ASCII art header
+local PHANTOM_HEADER = {
+    "   ____  __                 __                    ",
+    "  / __ \\/ /_  ____ _____  / /_____  ____ ___     ",
+    " / /_/ / __ \\/ __ `/ __ \\/ __/ __ \\/ __ `__ \\    ",
+    "/ ____/ / / / /_/ / / / / /_/ /_/ / / / / / /    ",
+    "/_/   /_/ /_/\\__,_/_/ /_/\\__/\\____/_/ /_/ /_/     ",
+    "                                                  ",
+    "      🔮 The LazyVim of Grim 🔮                  ",
+}
+
+-- Get recent files
+local function get_recent_files()
+    -- TODO: Read from history file or grim's recent files API
+    -- For now, return placeholder
+    return {
+        "~/projects/phantom.grim/init.gza",
+        "~/projects/grim/core/editor.zig",
+        "~/.config/grim/config.gza",
+    }
+end
+
+-- Format recent files section
+local function format_recent_files()
+    local lines = {}
+    local files = get_recent_files()
+
+    table.insert(lines, "📁 Recent Files")
+    table.insert(lines, "")
+
+    if #files == 0 then
+        table.insert(lines, "  No recent files")
+    else
+        for i, file in ipairs(files) do
+            local short_path = file:gsub(os.getenv("HOME"), "~")
+            table.insert(lines, string.format("  %d. %s", i, short_path))
+        end
+    end
+
+    return lines
+end
+
+-- Format quick actions
+local function format_quick_actions()
+    local lines = {}
+
+    table.insert(lines, "")
+    table.insert(lines, "⚡ Quick Actions")
+    table.insert(lines, "")
+    table.insert(lines, "  f  Find files")
+    table.insert(lines, "  g  Live grep")
+    table.insert(lines, "  r  Recent files")
+    table.insert(lines, "  e  File tree")
+    table.insert(lines, "  n  New file")
+    table.insert(lines, "  q  Quit")
+
+    return lines
+end
+
+-- Format session info
+local function format_session_info()
+    local lines = {}
+
+    table.insert(lines, "")
+    table.insert(lines, "ℹ️  Session Info")
+    table.insert(lines, "")
+
+    -- Git info
+    local git_status = bridge.git and bridge.git.status()
+    if git_status and git_status.available then
+        table.insert(lines, string.format("  Branch: %s", git_status.branch or "unknown"))
+    end
+
+    -- Tmux info
+    local tmux_status = bridge.tmux and bridge.tmux.in_tmux()
+    if tmux_status then
+        local tmux_info = bridge.tmux.get_statusline_info()
+        if tmux_info then
+            table.insert(lines, string.format("  Tmux: %s", tmux_info.format))
+        end
+    end
+
+    -- Phantom version
+    table.insert(lines, "  Phantom.grim v0.1.0-alpha")
+
+    return lines
+end
+
+-- Render full dashboard
+function plugin.render()
+    local lines = {}
+
+    -- Header
+    for _, line in ipairs(PHANTOM_HEADER) do
+        table.insert(lines, "  " .. line)
+    end
+
+    table.insert(lines, "")
+    table.insert(lines, "")
+
+    -- Recent files
+    for _, line in ipairs(format_recent_files()) do
+        table.insert(lines, "  " .. line)
+    end
+
+    -- Quick actions
+    for _, line in ipairs(format_quick_actions()) do
+        table.insert(lines, "  " .. line)
+    end
+
+    -- Session info
+    for _, line in ipairs(format_session_info()) do
+        table.insert(lines, "  " .. line)
+    end
+
+    -- Footer
+    table.insert(lines, "")
+    table.insert(lines, "")
+    table.insert(lines, "  Press any key to continue...")
+
+    return lines
+end
+
+-- Show dashboard in buffer
+function plugin.show()
+    -- TODO: Create new buffer and render dashboard
+    -- For now, just print to console
+    log("Dashboard:")
+    local lines = plugin.render()
+    for _, line in ipairs(lines) do
+        print(line)
+    end
+end
+
+-- Open file from recent list
+function plugin.open_recent(index)
+    local files = get_recent_files()
+    if index < 1 or index > #files then
+        log("Invalid recent file index")
+        return false
+    end
+
+    local file = files[index]
+    -- TODO: Use grim's file open API
+    log("Opening: " .. file)
+    return true
+end
+
+-- Handle keypress on dashboard
+function plugin.on_key(key)
+    if key == "f" then
+        -- Find files
+        bridge.execute_command("FuzzyFiles")
+    elseif key == "g" then
+        -- Live grep
+        bridge.execute_command("LiveGrep")
+    elseif key == "r" then
+        -- Recent files
+        bridge.execute_command("FindRecent")
+    elseif key == "e" then
+        -- File tree
+        bridge.execute_command("FileTree")
+    elseif key == "n" then
+        -- New file
+        bridge.execute_command("enew")
+    elseif key == "q" then
+        -- Quit
+        bridge.execute_command("quit")
+    elseif tonumber(key) then
+        -- Open recent file by number
+        plugin.open_recent(tonumber(key))
+    else
+        -- Any other key closes dashboard
+        plugin.hide()
+    end
+end
+
+-- Hide dashboard
+function plugin.hide()
+    -- TODO: Close dashboard buffer
+    log("Dashboard hidden")
+end
+
+-- Setup function
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.options = opts or {}
+
+    if opts.max_recent then
+        plugin.state.max_recent = opts.max_recent
+    end
+
+    if opts.show_on_startup ~= nil then
+        plugin.state.show_on_startup = opts.show_on_startup
+    end
+
+    -- Show on startup if no files opened
+    if plugin.state.show_on_startup then
+        -- TODO: Check if any buffers are open
+        -- If not, show dashboard
+        -- plugin.show()
+    end
+
+    log("Dashboard initialized")
+    return plugin
+end
+
+return plugin.setup()

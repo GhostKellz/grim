@@ -1,0 +1,327 @@
+-- plugins/ui/indent-guides.gza
+-- Visual indent guides for Phantom.grim
+-- Shows vertical lines for indentation levels
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "indent-guides",
+    state = {
+        initialized = false,
+        options = {},
+        enabled = true,
+        char = "│", -- Character to use for guide
+        highlight_current_context = true,
+        current_context_char = "┃",
+        show_first_indent_level = true,
+        indent_levels = 30, -- Max depth to show
+        exclude_filetypes = { "dashboard", "help", "terminal" },
+        scope_enabled = true, -- Highlight active scope
+    },
+}
+
+local function log(message)
+    print("[indent-guides] " .. message)
+end
+
+-- Detect indent size for buffer
+local function detect_indent_size(bufnr)
+    -- TODO: Use grim's buffer options API
+    -- For now, return common default
+    return 4
+end
+
+-- Get buffer lines
+local function get_buffer_lines(bufnr)
+    -- TODO: Use grim's buffer API
+    -- bridge.get_buffer_lines(bufnr)
+    -- For now, return empty
+    return {}
+end
+
+-- Calculate indent level for line
+local function get_indent_level(line, indent_size)
+    local leading_spaces = line:match("^%s*")
+    if not leading_spaces then
+        return 0
+    end
+
+    -- Count spaces and tabs
+    local spaces = 0
+    for i = 1, #leading_spaces do
+        local char = leading_spaces:sub(i, i)
+        if char == " " then
+            spaces = spaces + 1
+        elseif char == "\t" then
+            spaces = spaces + indent_size -- Tabs = indent_size spaces
+        end
+    end
+
+    return math.floor(spaces / indent_size)
+end
+
+-- Get current scope (active indentation block)
+local function get_current_scope(bufnr, cursor_line)
+    local lines = get_buffer_lines(bufnr)
+    local indent_size = detect_indent_size(bufnr)
+
+    if #lines == 0 or cursor_line > #lines then
+        return nil
+    end
+
+    local current_level = get_indent_level(lines[cursor_line], indent_size)
+
+    -- Find start of scope (first line at or less than current indent)
+    local scope_start = cursor_line
+    for i = cursor_line - 1, 1, -1 do
+        local level = get_indent_level(lines[i], indent_size)
+        if level < current_level then
+            scope_start = i + 1
+            break
+        end
+    end
+
+    -- Find end of scope
+    local scope_end = cursor_line
+    for i = cursor_line + 1, #lines do
+        local level = get_indent_level(lines[i], indent_size)
+        if level < current_level then
+            scope_end = i - 1
+            break
+        end
+        scope_end = i
+    end
+
+    return {
+        start_line = scope_start,
+        end_line = scope_end,
+        level = current_level,
+    }
+end
+
+-- Render indent guides for buffer
+function plugin.render(bufnr)
+    if not plugin.state.enabled then
+        return
+    end
+
+    bufnr = bufnr or bridge.get_current_buffer()
+    local lines = get_buffer_lines(bufnr)
+    local indent_size = detect_indent_size(bufnr)
+    local cursor_line = bridge.get_cursor_line()
+
+    -- Get current scope if enabled
+    local scope = nil
+    if plugin.state.scope_enabled then
+        scope = get_current_scope(bufnr, cursor_line)
+    end
+
+    -- TODO: Use grim's virtual text / overlay API to render guides
+    -- For each line, calculate indent level and place guide characters
+
+    for line_num, line in ipairs(lines) do
+        local level = get_indent_level(line, indent_size)
+
+        if level == 0 and not plugin.state.show_first_indent_level then
+            goto continue
+        end
+
+        -- Render guides for each indent level
+        for i = 1, math.min(level, plugin.state.indent_levels) do
+            local col = (i - 1) * indent_size + 1
+            local char = plugin.state.char
+
+            -- Highlight current context
+            if plugin.state.highlight_current_context and scope then
+                if line_num >= scope.start_line and line_num <= scope.end_line then
+                    if i == scope.level then
+                        char = plugin.state.current_context_char
+                    end
+                end
+            end
+
+            -- TODO: Place virtual text at column
+            -- bridge.set_virtual_text(bufnr, line_num, col, char, "IndentGuide")
+        end
+
+        ::continue::
+    end
+end
+
+-- Update indent guides for current buffer
+function plugin.update()
+    if not plugin.state.enabled then
+        return
+    end
+
+    local bufnr = bridge.get_current_buffer()
+    local filetype = bridge.get_buffer_filetype(bufnr)
+
+    -- Check if filetype is excluded
+    for _, ft in ipairs(plugin.state.exclude_filetypes) do
+        if filetype == ft then
+            return
+        end
+    end
+
+    plugin.render(bufnr)
+end
+
+-- Toggle indent guides
+function plugin.toggle()
+    plugin.state.enabled = not plugin.state.enabled
+
+    if plugin.state.enabled then
+        log("Indent guides enabled")
+        plugin.update()
+    else
+        log("Indent guides disabled")
+        -- TODO: Clear all virtual text
+        -- bridge.clear_virtual_text()
+    end
+end
+
+-- Toggle scope highlighting
+function plugin.toggle_scope()
+    plugin.state.scope_enabled = not plugin.state.scope_enabled
+
+    if plugin.state.scope_enabled then
+        log("Scope highlighting enabled")
+    else
+        log("Scope highlighting disabled")
+    end
+
+    plugin.update()
+end
+
+-- Set indent guide character
+function plugin.set_char(char)
+    if not char or #char == 0 then
+        log("Invalid character")
+        return false
+    end
+
+    plugin.state.char = char
+    log("Indent guide character set to: " .. char)
+    plugin.update()
+
+    return true
+end
+
+-- Set current context character
+function plugin.set_context_char(char)
+    if not char or #char == 0 then
+        log("Invalid character")
+        return false
+    end
+
+    plugin.state.current_context_char = char
+    log("Context character set to: " .. char)
+    plugin.update()
+
+    return true
+end
+
+-- Add filetype to exclusion list
+function plugin.exclude_filetype(ft)
+    if not ft or #ft == 0 then
+        return false
+    end
+
+    -- Check if already excluded
+    for _, excluded in ipairs(plugin.state.exclude_filetypes) do
+        if excluded == ft then
+            return true
+        end
+    end
+
+    table.insert(plugin.state.exclude_filetypes, ft)
+    log("Excluded filetype: " .. ft)
+
+    return true
+end
+
+-- Remove filetype from exclusion list
+function plugin.include_filetype(ft)
+    if not ft or #ft == 0 then
+        return false
+    end
+
+    for i, excluded in ipairs(plugin.state.exclude_filetypes) do
+        if excluded == ft then
+            table.remove(plugin.state.exclude_filetypes, i)
+            log("Included filetype: " .. ft)
+            return true
+        end
+    end
+
+    return false
+end
+
+-- Setup function
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.options = opts or {}
+
+    -- Override defaults with options
+    if opts.enabled ~= nil then
+        plugin.state.enabled = opts.enabled
+    end
+
+    if opts.char then
+        plugin.state.char = opts.char
+    end
+
+    if opts.highlight_current_context ~= nil then
+        plugin.state.highlight_current_context = opts.highlight_current_context
+    end
+
+    if opts.current_context_char then
+        plugin.state.current_context_char = opts.current_context_char
+    end
+
+    if opts.show_first_indent_level ~= nil then
+        plugin.state.show_first_indent_level = opts.show_first_indent_level
+    end
+
+    if opts.indent_levels then
+        plugin.state.indent_levels = opts.indent_levels
+    end
+
+    if opts.exclude_filetypes then
+        plugin.state.exclude_filetypes = opts.exclude_filetypes
+    end
+
+    if opts.scope_enabled ~= nil then
+        plugin.state.scope_enabled = opts.scope_enabled
+    end
+
+    -- Register autocommands
+    -- TODO: Auto-update on cursor move, buffer enter, text changed
+    -- autocmd CursorMoved,BufEnter,TextChanged * :lua require("indent-guides").update()
+
+    -- Initial render
+    if plugin.state.enabled then
+        plugin.update()
+    end
+
+    log("Indent guides initialized")
+    return plugin
+end
+
+-- Get status
+function plugin.status()
+    return {
+        enabled = plugin.state.enabled,
+        char = plugin.state.char,
+        context_char = plugin.state.current_context_char,
+        scope_enabled = plugin.state.scope_enabled,
+        excluded_filetypes = plugin.state.exclude_filetypes,
+    }
+end
+
+return plugin.setup()

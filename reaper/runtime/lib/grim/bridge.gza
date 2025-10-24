@@ -1,0 +1,716 @@
+-- runtime/lib/grim/bridge.gza
+-- Thin Ghostlang wrapper around the Grim C FFI bridge.
+-- Provides safe helpers with graceful fallbacks when the editor bridge
+-- has not been linked yet (e.g. during unit tests).
+
+local bridge = {}
+local host_ffi = rawget(_G, "ffi")
+local active_ffi = host_ffi
+
+local debug_state = {
+    last_error = nil,
+    last_symbol = nil,
+    last_kind = nil,
+    attempts = 0,
+}
+
+local function reset_debug()
+    debug_state.last_error = nil
+    debug_state.last_symbol = nil
+    debug_state.last_kind = nil
+    debug_state.attempts = 0
+end
+
+local function record_attempt(kind, symbol, err)
+    debug_state.last_kind = kind
+    debug_state.last_symbol = symbol
+    debug_state.last_error = err
+    debug_state.attempts = debug_state.attempts + 1
+end
+
+local json_ok, json = pcall(require, "json")
+if not json_ok then
+    json = nil
+end
+
+local symbol_aliases = {
+    fuzzy_find = { "grim_fuzzy_find", "grim_fuzzy_files" },
+    git_status = { "grim_git_status", "grim_gitStatus" },
+    git_branch = { "grim_git_branch", "grim_gitBranch" },
+    harpoon_list = { "grim_harpoon_list", "grim_harpoonMarks" },
+    syntax_highlight = { "grim_syntax_highlight", "grim_syntaxHighlight" },
+    git_diff_staged = { "grim_git_diff_staged" },
+    git_diff_head = { "grim_git_diff_head" },
+    zap_init = { "grim_zap_init" },
+    zap_available = { "grim_zap_available" },
+    zap_commit_message = { "grim_zap_commit_message" },
+    zap_explain_changes = { "grim_zap_explain_changes" },
+    zap_resolve_conflict = { "grim_zap_resolve_conflict" },
+    zap_review_code = { "grim_zap_review_code" },
+    zap_generate_docs = { "grim_zap_generate_docs" },
+    zap_suggest_names = { "grim_zap_suggest_names" },
+    zap_detect_issues = { "grim_zap_detect_issues" },
+    plugin_install = { "grim_plugin_install" },
+    plugin_update = { "grim_plugin_update" },
+    lsp_start = { "grim_lsp_start" },
+    lsp_did_open = { "grim_lsp_did_open" },
+    lsp_did_change = { "grim_lsp_did_change" },
+    lsp_did_close = { "grim_lsp_did_close" },
+    lsp_completion = { "grim_lsp_request_completion" },
+    lsp_hover = { "grim_lsp_request_hover" },
+    lsp_definition = { "grim_lsp_request_definition" },
+    lsp_diagnostics = { "grim_lsp_request_diagnostics" },
+}
+
+local keyword_sets = {
+    zig = { "const", "fn", "pub", "struct", "return", "var", "if", "else", "while", "for" },
+    rust = { "fn", "let", "pub", "struct", "impl", "match", "if", "else", "return" },
+    lua = { "local", "function", "end", "if", "then", "else", "return" },
+    ghostlang = { "let", "fn", "return", "plugin", "require", "map" },
+    default = { "function", "const", "var", "if", "else", "return" },
+}
+
+local theme_symbol_aliases = {
+    load_default = { "grim_theme_load_default" },
+    load = { "grim_theme_load", "grim_theme_set" },
+    get_name = { "grim_theme_get_name" },
+    get_color = { "grim_theme_get_color" },
+    get_info = { "grim_theme_get_info" },
+    is_loaded = { "grim_theme_is_loaded" },
+    reload = { "grim_theme_reload" },
+}
+
+local theme_pointer_aliases = {
+    "grim_theme_bridge_ptr",
+    "grim_theme_get_bridge",
+    "grim_theme_context",
+    "grim_theme_get_context",
+}
+
+local theme_fallback_palette = {
+    foreground = "#c8d3f5",
+    background = "#222436",
+    cursor = "#8aff80",
+    selection = "#a0ffe8",
+    line_number = "#636da6",
+    status_bar_bg = "#1e2030",
+    status_bar_fg = "#c0caf5",
+    keyword = "#89ddff",
+    string = "#c3e88d",
+    number = "#ffc777",
+    comment = "#57c7ff",
+    function = "#8aff80",
+    type = "#65bcff",
+    variable = "#c8d3f5",
+    operator = "#c0caf5",
+    default = "#c8d3f5",
+    filename = "#8aff80",
+    match = "#8aff80",
+}
+
+local function clone_table(source)
+    if type(source) ~= "table" then
+        return {}
+    end
+    local copy = {}
+    for key, value in pairs(source) do
+        if type(value) == "table" then
+            copy[key] = clone_table(value)
+        else
+            copy[key] = value
+        end
+    end
+    return copy
+end
+
+local theme_state = {
+    bridge_ptr = false, -- false = unresolved, nil = unavailable
+    cache = {},
+    last_name = "ghost-hacker-blue",
+}
+
+local function reset_theme_cache()
+    theme_state.cache = {}
+end
+
+local function get_theme_pointer()
+    if theme_state.bridge_ptr ~= false then
+        return theme_state.bridge_ptr
+    end
+
+    local ffi_ctx = active_ffi
+    if not ffi_ctx then
+        theme_state.bridge_ptr = nil
+        return nil
+    end
+
+    for _, symbol in ipairs(theme_pointer_aliases) do
+        local fn = select(1, resolve_symbol(ffi_ctx, symbol))
+        if fn then
+            local ok, ptr = pcall(fn)
+            if ok and ptr then
+                theme_state.bridge_ptr = ptr
+                return ptr
+            end
+        end
+    end
+
+    theme_state.bridge_ptr = nil
+    return nil
+end
+
+local function theme_call(symbol_key, is_bool, ...)
+    local aliases = theme_symbol_aliases[symbol_key]
+    if not aliases then
+        return is_bool and false or nil
+    end
+
+    local ffi_ctx = active_ffi
+    if not ffi_ctx then
+        return is_bool and false or nil
+    end
+
+    local ptr = get_theme_pointer()
+    local args = { ... }
+
+    for _, symbol in ipairs(aliases) do
+        local fn, err = resolve_symbol(ffi_ctx, symbol)
+        if fn then
+            local call_args = { ptr }
+            for i = 1, #args do
+                call_args[#call_args + 1] = args[i]
+            end
+
+            local ok, result = pcall(fn, table.unpack(call_args))
+            if ok then
+                if is_bool then
+                    return result and true or false
+                end
+
+                if type(result) == "cdata" and ffi_ctx.string then
+                    local str = ffi_ctx.string(result)
+                    if str and #str > 0 then
+                        return str
+                    end
+                elseif type(result) == "string" and #result > 0 then
+                    return result
+                end
+
+                return nil
+            else
+                record_attempt("theme", symbol, result)
+            end
+        else
+            record_attempt("theme", symbol, err)
+        end
+    end
+
+    return is_bool and false or nil
+end
+
+local function normalize_hex_color(value)
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    local trimmed = value:match("^%s*(.-)%s*$")
+    if not trimmed or #trimmed == 0 then
+        return nil
+    end
+
+    if not trimmed:find("#", 1, true) then
+        trimmed = "#" .. trimmed
+    end
+
+    if #trimmed == 4 then
+        local r = trimmed:sub(2, 2)
+        local g = trimmed:sub(3, 3)
+        local b = trimmed:sub(4, 4)
+        trimmed = "#" .. r .. r .. g .. g .. b .. b
+    end
+
+    if #trimmed ~= 7 then
+        return nil
+    end
+
+    if not trimmed:match("^#%x%x%x%x%x%x$") then
+        return nil
+    end
+
+    return trimmed:lower()
+end
+
+local function make_theme_api()
+    local api = {}
+
+    function api.clear_cache()
+        reset_theme_cache()
+        theme_state.bridge_ptr = false
+    end
+
+    function api.load_default()
+        local ok = theme_call("load_default", true)
+        if ok then
+            reset_theme_cache()
+            theme_state.last_name = "ghost-hacker-blue"
+        end
+        return ok
+    end
+
+    function api.load(name)
+        if type(name) ~= "string" or #name == 0 then
+            return false
+        end
+        local ok = theme_call("load", true, name)
+        if ok then
+            reset_theme_cache()
+            theme_state.last_name = name
+        end
+        return ok
+    end
+
+    function api.get_name()
+        local name = theme_call("get_name", false)
+        if not name or #name == 0 then
+            return theme_state.last_name
+        end
+        theme_state.last_name = name
+        return name
+    end
+
+    function api.is_loaded()
+        return theme_call("is_loaded", true)
+    end
+
+    function api.reload()
+        local ok = theme_call("reload", true)
+        if ok then
+            reset_theme_cache()
+        end
+        return ok
+    end
+
+    function api.get_color(name)
+        if type(name) ~= "string" or #name == 0 then
+            return theme_fallback_palette.default
+        end
+
+        local key = name
+        if theme_state.cache[key] then
+            return theme_state.cache[key]
+        end
+
+        local value = theme_call("get_color", false, name)
+        value = normalize_hex_color(value) or theme_fallback_palette[name] or theme_fallback_palette.default
+        theme_state.cache[key] = value
+        return value
+    end
+
+    function api.get_info()
+        local info_str = theme_call("get_info", false)
+        if info_str and #info_str > 0 then
+            if json and json.decode then
+                local ok, data = pcall(json.decode, info_str)
+                if ok and type(data) == "table" then
+                    return data
+                end
+            end
+            return info_str
+        end
+
+        return {
+            loaded = api.is_loaded(),
+            name = api.get_name(),
+            colors = clone_table(theme_fallback_palette),
+        }
+    end
+
+    function api.palette()
+        local colors = clone_table(theme_fallback_palette)
+        for key, value in pairs(theme_state.cache) do
+            colors[key] = value
+        end
+        return colors
+    end
+
+    return api
+end
+
+local function make_zap_api()
+    local api = {}
+    local state = {
+        initialized = false,
+    }
+
+    local function ensure_init()
+        if not bridge.available() then
+            return false
+        end
+        if state.initialized then
+            return true
+        end
+
+        local ok = call_alias("zap_init")
+        state.initialized = ok and true or false
+        return state.initialized
+    end
+
+    local function call_string(kind, value)
+        if not ensure_init() then
+            return ""
+        end
+        local result = call_alias(kind, value or "")
+        if type(result) ~= "string" then
+            return ""
+        end
+        return result
+    end
+
+    function api.ensure()
+        return ensure_init()
+    end
+
+    function api.available()
+        if not ensure_init() then
+            return false
+        end
+        local ok = call_alias("zap_available")
+        return not not ok
+    end
+
+    function api.commit_message(diff)
+        return call_string("zap_commit_message", diff)
+    end
+
+    function api.explain_changes(changes)
+        return call_string("zap_explain_changes", changes)
+    end
+
+    function api.resolve_conflict(conflict)
+        return call_string("zap_resolve_conflict", conflict)
+    end
+
+    function api.review_code(code)
+        return call_string("zap_review_code", code)
+    end
+
+    function api.generate_docs(code)
+        return call_string("zap_generate_docs", code)
+    end
+
+    function api.suggest_names(code)
+        return call_string("zap_suggest_names", code)
+    end
+
+    function api.detect_issues(code)
+        return call_string("zap_detect_issues", code)
+    end
+
+    return api
+end
+
+local function classify_keywords(language)
+    return keyword_sets[language] or keyword_sets.default
+end
+
+local function push_keyword_ranges(source, language, highlights)
+    local keywords = classify_keywords(language)
+    for _, kw in ipairs(keywords) do
+        local start_pos = 1
+        local pattern = "%f[%w]" .. kw .. "%f[^%w]"
+        while true do
+            local s, e = source:find(pattern, start_pos)
+            if not s then break end
+            table.insert(highlights, {
+                start = s - 1,
+                stop = e,
+                token = "keyword",
+            })
+            start_pos = e + 1
+        end
+    end
+end
+
+local function push_string_ranges(source, highlights)
+    local start_pos = 1
+    while true do
+        local s, e = source:find('".-"', start_pos)
+        if not s then break end
+        table.insert(highlights, {
+            start = s - 1,
+            stop = e,
+            token = "string",
+        })
+        start_pos = e + 1
+    end
+
+    start_pos = 1
+    while true do
+        local s, e = source:find("'.-'", start_pos)
+        if not s then break end
+        table.insert(highlights, {
+            start = s - 1,
+            stop = e,
+            token = "string",
+        })
+        start_pos = e + 1
+    end
+end
+
+local function fallback_highlight(language, source)
+    if type(source) ~= "string" or #source == 0 then
+        return {}
+    end
+
+    local highlights = {}
+    push_keyword_ranges(source, language or "default", highlights)
+    push_string_ranges(source, highlights)
+
+    return highlights
+end
+
+local function decode(payload)
+    if type(payload) ~= "string" then
+        return payload
+    end
+
+    if json and json.decode then
+        local ok, result = pcall(json.decode, payload)
+        if ok then
+            return result
+        end
+    end
+
+    return payload
+end
+
+local function resolve_symbol(ffi_ctx, symbol)
+    if not ffi_ctx then
+        return nil, "ffi-unavailable"
+    end
+
+    local ok_direct, direct_or_err = pcall(function()
+        return ffi_ctx[symbol]
+    end)
+    if ok_direct and direct_or_err ~= nil then
+        return direct_or_err
+    end
+
+    local last_error = ok_direct and "symbol-null" or direct_or_err
+
+    local container = nil
+    if type(ffi_ctx) == "table" then
+        container = rawget(ffi_ctx, "C")
+    else
+        local ok_container, value_or_err = pcall(function()
+            return ffi_ctx.C
+        end)
+        if ok_container then
+            container = value_or_err
+        else
+            last_error = value_or_err or last_error
+        end
+    end
+
+    if container ~= nil then
+        local ok_from_c, from_c_or_err = pcall(function()
+            return container[symbol]
+        end)
+        if ok_from_c and from_c_or_err ~= nil then
+            return from_c_or_err
+        end
+        if not ok_from_c then
+            last_error = from_c_or_err or last_error
+        end
+    end
+
+    return nil, last_error or "symbol-unresolved"
+end
+
+local function fallback(kind, ...)
+    local args = { ... }
+    if kind == "fuzzy_find" then
+        return {
+            items = {},
+            source = "fallback",
+        }
+    elseif kind == "git_status" then
+        return {
+            branch = "main",
+            staged = {},
+            unstaged = {},
+            untracked = {},
+        }
+    elseif kind == "git_branch" then
+        return "main"
+    elseif kind == "harpoon_list" then
+        return {}
+    elseif kind == "syntax_highlight" then
+        local language = args[1] or "plain"
+        local source = args[2] or ""
+        return fallback_highlight(language, source)
+    elseif kind == "git_diff_staged" or kind == "git_diff_head" then
+        return ""
+    elseif kind == "zap_init" or kind == "zap_available" then
+        return false
+    elseif kind == "zap_commit_message"
+        or kind == "zap_explain_changes"
+        or kind == "zap_resolve_conflict"
+        or kind == "zap_review_code"
+        or kind == "zap_generate_docs"
+        or kind == "zap_suggest_names"
+        or kind == "zap_detect_issues" then
+        return ""
+    elseif kind == "plugin_install" or kind == "plugin_update" then
+        return false
+    end
+
+    return nil
+end
+
+local function call_alias(kind, ...)
+    reset_debug()
+
+    local ffi_ctx = active_ffi
+    if not ffi_ctx then
+        record_attempt(kind, nil, "ffi-unavailable")
+        return fallback(kind, ...)
+    end
+
+    local aliases = symbol_aliases[kind]
+    if not aliases then
+        error("grim.bridge unknown symbol kind: " .. tostring(kind))
+    end
+
+    for _, symbol in ipairs(aliases) do
+        local fn, err = resolve_symbol(ffi_ctx, symbol)
+        if fn then
+            local ok, result = pcall(fn, ...)
+            if ok then
+                record_attempt(kind, symbol, nil)
+                return decode(result)
+            else
+                record_attempt(kind, symbol, result)
+            end
+        else
+            record_attempt(kind, symbol, err)
+        end
+    end
+
+    local value = fallback(kind, ...)
+    if value ~= nil then
+        return value
+    end
+
+    error("Grim FFI symbol not found for " .. kind)
+end
+
+function bridge.available()
+    return active_ffi ~= nil
+end
+
+function bridge.fuzzy_find(path)
+    return call_alias("fuzzy_find", path or ".")
+end
+
+function bridge.git_status(path)
+    return call_alias("git_status", path or ".")
+end
+
+function bridge.git_branch(path)
+    return call_alias("git_branch", path or ".")
+end
+
+function bridge.git_diff_staged()
+    local result = call_alias("git_diff_staged")
+    if type(result) == "string" then
+        return result
+    end
+    return ""
+end
+
+function bridge.git_diff_head()
+    local result = call_alias("git_diff_head")
+    if type(result) == "string" then
+        return result
+    end
+    return ""
+end
+
+function bridge.harpoon_list()
+    return call_alias("harpoon_list")
+end
+
+function bridge.syntax_highlight(language, source)
+    return call_alias("syntax_highlight", language or "plain", source or "")
+end
+
+function bridge.plugin_install(name, version)
+    local plugin_name = name or ""
+    local plugin_version = version or ""
+    local ok = call_alias("plugin_install", plugin_name, plugin_version)
+    return ok and true or false
+end
+
+function bridge.plugin_update(name, version)
+    local plugin_name = name or ""
+    local plugin_version = version or ""
+    local ok = call_alias("plugin_update", plugin_name, plugin_version)
+    return ok and true or false
+end
+
+function bridge.lsp_start(language, server)
+    return call_alias("lsp_start", language or "", server or "")
+end
+
+function bridge.lsp_open(path, language, content)
+    return call_alias("lsp_did_open", path or "", language or "", content or "")
+end
+
+function bridge.lsp_change(path, content)
+    return call_alias("lsp_did_change", path or "", content or "")
+end
+
+function bridge.lsp_close(path)
+    return call_alias("lsp_did_close", path or "")
+end
+
+function bridge.lsp_completion(path, line, character)
+    return call_alias("lsp_completion", path or "", line or 0, character or 0)
+end
+
+function bridge.lsp_hover(path, line, character)
+    return call_alias("lsp_hover", path or "", line or 0, character or 0)
+end
+
+function bridge.lsp_definition(path, line, character)
+    return call_alias("lsp_definition", path or "", line or 0, character or 0)
+end
+
+function bridge.lsp_diagnostics(path)
+    return call_alias("lsp_diagnostics", path or "")
+end
+
+function bridge.__debug_set_ffi(mock)
+    active_ffi = mock
+    reset_debug()
+end
+
+function bridge.__debug_reset_ffi()
+    active_ffi = host_ffi
+    reset_debug()
+end
+
+function bridge.__debug_last_error()
+    return {
+        last_error = debug_state.last_error,
+        last_symbol = debug_state.last_symbol,
+        last_kind = debug_state.last_kind,
+        attempts = debug_state.attempts,
+    }
+end
+
+bridge.theme = bridge.theme or make_theme_api()
+bridge.zap = bridge.zap or make_zap_api()
+
+return bridge

@@ -1,0 +1,492 @@
+-- plugins/core/theme.gza
+-- Theme manager plugin delivering LazyVim-style ergonomics for Grim.
+
+local bridge = require("grim.bridge")
+local core = require("core")
+
+local plugin = {
+    name = "theme",
+    state = {
+        initialized = false,
+        options = {},
+        catalog = {},
+        catalog_version = 0,
+        current = nil,
+        history = {},
+        max_history = 20,
+    },
+}
+
+local builtin_themes = {
+    { name = "ghost-hacker-blue", source = "builtin", path = "ghost-hacker-blue" },
+    { name = "tokyonight-moon", source = "builtin", path = "tokyonight-moon" },
+    { name = "tokyonight-storm", source = "builtin", path = "tokyonight-storm" },
+}
+
+local default_search_paths = {
+    "themes",
+    "~/.config/grim/themes",
+    "/usr/share/grim/themes",
+    "/usr/local/share/grim/themes",
+}
+
+local function log(message)
+    print("[theme] " .. message)
+end
+
+local function normalize_options(opts)
+    opts = opts or {}
+    local config = {
+        default = opts.default or "ghost-hacker-blue",
+        fallback = opts.fallback or "ghost-hacker-blue",
+        search_paths = {},
+        extra_themes = opts.extra_themes or {},
+    }
+
+    local seen = {}
+    local function append(list)
+        for _, value in ipairs(list or {}) do
+            if type(value) == "string" and value ~= "" then
+                if not seen[value] then
+                    seen[value] = true
+                    table.insert(config.search_paths, value)
+                end
+            end
+        end
+    end
+
+    append(opts.search_paths)
+    append(default_search_paths)
+
+    return config
+end
+
+local function add_history(name)
+    if not name then
+        return
+    end
+
+    local history = plugin.state.history
+    local filtered = {}
+    for _, entry in ipairs(history) do
+        if entry ~= name then
+            table.insert(filtered, entry)
+        end
+    end
+    table.insert(filtered, 1, name)
+
+    while #filtered > plugin.state.max_history do
+        table.remove(filtered)
+    end
+
+    plugin.state.history = filtered
+end
+
+local function extract_items(response)
+    if type(response) == "table" then
+        if type(response.items) == "table" then
+            return response.items
+        end
+        return response
+    end
+    return {}
+end
+
+local function basename(path)
+    if type(path) ~= "string" then
+        return nil
+    end
+    local match = path:match("([^/\\]+)$")
+    return match or path
+end
+
+local function strip_extension(filename)
+    if type(filename) ~= "string" then
+        return nil
+    end
+    return filename:gsub("%.[^%.]+$", "")
+end
+
+local function resolve_theme_name(path)
+    local base = basename(path)
+    if not base then
+        return nil
+    end
+    if base:match("%.toml$") or base:match("%.gza$") then
+        return strip_extension(base)
+    end
+    return base
+end
+
+local function add_catalog_entry(catalog, entry)
+    if not entry or not entry.name then
+        return
+    end
+    catalog[entry.name] = catalog[entry.name] or {}
+    table.insert(catalog[entry.name], entry)
+end
+
+local function collect_from_path(catalog, path)
+    if type(path) ~= "string" or path == "" then
+        return
+    end
+
+    local ok, response = pcall(bridge.fuzzy_find, path)
+    if not ok then
+        return
+    end
+
+    local items = extract_items(response)
+    for _, item in ipairs(items) do
+        local candidate = item
+        if type(item) == "table" and item.path then
+            candidate = item.path
+        end
+
+        if type(candidate) == "string" then
+            if candidate:match("%.toml$") or candidate:match("%.gza$") then
+                add_catalog_entry(catalog, {
+                    name = resolve_theme_name(candidate),
+                    path = candidate,
+                    source = path,
+                })
+            end
+        end
+    end
+end
+
+local function build_catalog()
+    local catalog = {}
+
+    for _, entry in ipairs(builtin_themes) do
+        add_catalog_entry(catalog, entry)
+    end
+
+    collect_from_path(catalog, "themes")
+
+    for _, path in ipairs(plugin.state.options.search_paths or {}) do
+        collect_from_path(catalog, path)
+    end
+
+    for _, extra in ipairs(plugin.state.options.extra_themes or {}) do
+        if type(extra) == "string" and extra ~= "" then
+            add_catalog_entry(catalog, { name = extra, path = extra, source = "user" })
+        elseif type(extra) == "table" and extra.name then
+            add_catalog_entry(catalog, {
+                name = extra.name,
+                path = extra.path or extra.name,
+                source = extra.source or "user",
+            })
+        end
+    end
+
+    local flattened = {}
+    for name, entries in pairs(catalog) do
+        table.sort(entries, function(a, b)
+            return (a.source or "") < (b.source or "")
+        end)
+        table.insert(flattened, {
+            name = name,
+            variants = entries,
+        })
+    end
+
+    table.sort(flattened, function(a, b)
+        return (a.name or "") < (b.name or "")
+    end)
+
+    plugin.state.catalog = flattened
+    plugin.state.catalog_version = plugin.state.catalog_version + 1
+
+    return flattened
+end
+
+local function ensure_catalog()
+    if plugin.state.catalog and #plugin.state.catalog > 0 then
+        return plugin.state.catalog
+    end
+    return build_catalog()
+end
+
+local function current_theme_name()
+    local ok, name = pcall(function()
+        return bridge.theme and bridge.theme.get_name and bridge.theme.get_name()
+    end)
+    if ok and type(name) == "string" and #name > 0 then
+        return name
+    end
+    return nil
+end
+
+local function mark_current(name)
+    plugin.state.current = name
+    add_history(name)
+end
+
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        if opts then
+            plugin.configure(opts)
+        end
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.options = normalize_options(opts)
+    plugin.state.catalog = {}
+    plugin.state.catalog_version = 0
+    plugin.state.history = {}
+
+    local current = current_theme_name()
+    if current then
+        mark_current(current)
+    end
+
+    if plugin.state.options.default then
+        plugin.ensure_default()
+    end
+
+    log("initialized")
+    return plugin
+end
+
+function plugin.configure(opts)
+    if type(opts) ~= "table" then
+        return plugin.state.options
+    end
+
+    local normalized = normalize_options(opts)
+
+    if normalized.default then
+        plugin.state.options.default = normalized.default
+    end
+
+    if normalized.fallback then
+        plugin.state.options.fallback = normalized.fallback
+    end
+
+    if normalized.search_paths and #normalized.search_paths > 0 then
+        plugin.state.options.search_paths = normalized.search_paths
+    end
+
+    if normalized.extra_themes then
+        plugin.state.options.extra_themes = normalized.extra_themes
+    end
+
+    plugin.reload_catalog()
+    return plugin.state.options
+end
+
+function plugin.reload_catalog()
+    log("refreshing theme catalog")
+    return build_catalog()
+end
+
+function plugin.catalog()
+    return ensure_catalog()
+end
+
+function plugin.find(name)
+    if not name then
+        return nil
+    end
+
+    local catalog = ensure_catalog()
+    for _, entry in ipairs(catalog) do
+        if entry.name == name then
+            return entry
+        end
+    end
+    return nil
+end
+
+function plugin.ensure_default()
+    local desired = plugin.state.options.default or plugin.state.options.fallback
+    if not desired then
+        return false
+    end
+
+    if plugin.state.current == desired then
+        return true
+    end
+
+    return plugin.set(desired, { silent = true })
+end
+
+local function call_theme(fn_name, ...)
+    if not bridge.theme or not bridge.theme[fn_name] then
+        return nil
+    end
+    local ok, result = pcall(bridge.theme[fn_name], ...)
+    if ok then
+        return result
+    end
+    return nil
+end
+
+function plugin.set(name, opts)
+    opts = opts or {}
+    if type(name) ~= "string" or #name == 0 then
+        return false
+    end
+
+    local loaded = call_theme("load", name)
+    if not loaded then
+        log("failed to load theme " .. name .. ", falling back to default")
+        loaded = call_theme("load_default")
+        if not loaded then
+            return false
+        end
+        mark_current(plugin.state.options.fallback)
+        return true
+    end
+
+    mark_current(name)
+
+    if not opts.silent then
+        log("theme set to " .. name)
+    end
+
+    return true
+end
+
+function plugin.reload()
+    local reloaded = call_theme("reload")
+    if reloaded then
+        log("theme reloaded")
+    end
+    return reloaded
+end
+
+function plugin.current()
+    return plugin.state.current or current_theme_name() or plugin.state.options.default
+end
+
+function plugin.history()
+    return plugin.state.history
+end
+
+function plugin.info(name)
+    if name and name ~= "" and name ~= plugin.current() then
+        return plugin.find(name)
+    end
+
+    local info = call_theme("get_info")
+    if type(info) == "table" then
+        return info
+    end
+
+    return {
+        name = plugin.current(),
+        loaded = call_theme("is_loaded") or false,
+        palette = call_theme("palette") or {},
+    }
+end
+
+local function score_entry(entry, query)
+    if not query or query == "" then
+        return 0
+    end
+
+    local lower_query = query:lower()
+    local score = math.huge
+
+    local function scan(text)
+        if type(text) ~= "string" then
+            return
+        end
+        local idx = text:lower():find(lower_query, 1, true)
+        if idx and idx < score then
+            score = idx
+        end
+    end
+
+    scan(entry.name)
+    if entry.variants then
+        for _, variant in ipairs(entry.variants) do
+            scan(variant.path)
+            scan(variant.source)
+        end
+    end
+
+    if score == math.huge then
+        return nil
+    end
+    return score
+end
+
+function plugin.search(opts)
+    opts = opts or {}
+    local query = opts.query
+    local catalog = ensure_catalog()
+    if not query or query == "" then
+        return catalog
+    end
+
+    local matches = {}
+    for _, entry in ipairs(catalog) do
+        local score = score_entry(entry, query)
+        if score then
+            table.insert(matches, { entry = entry, score = score })
+        end
+    end
+
+    table.sort(matches, function(a, b)
+        if a.score == b.score then
+            return a.entry.name < b.entry.name
+        end
+        return a.score < b.score
+    end)
+
+    local results = {}
+    for _, match in ipairs(matches) do
+        table.insert(results, match.entry)
+    end
+    return results
+end
+
+function plugin.browser(opts)
+    opts = opts or {}
+    local query = opts.query
+    local results = plugin.search({ query = query })
+
+    if opts.limit and type(opts.limit) == "number" then
+        local limited = {}
+        for index = 1, math.min(opts.limit, #results) do
+            table.insert(limited, results[index])
+        end
+        return limited
+    end
+
+    return results
+end
+
+function plugin.random(opts)
+    opts = opts or {}
+    local catalog = ensure_catalog()
+    if #catalog == 0 then
+        return nil
+    end
+
+    local seed = opts.seed or os.time()
+    math.randomseed(seed + (#plugin.state.history or 0))
+    local choice = catalog[math.random(1, #catalog)]
+
+    if not opts.preview then
+        plugin.set(choice.name, { silent = true })
+    end
+
+    return choice
+end
+
+function plugin.summary()
+    local catalog = ensure_catalog()
+    return {
+        current = plugin.current(),
+        total = #catalog,
+        history = plugin.history(),
+        version = plugin.state.catalog_version,
+    }
+end
+
+return plugin.setup()

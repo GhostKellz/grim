@@ -1,0 +1,374 @@
+-- plugins/ui/bufferline.gza
+-- Visual buffer tabs for Phantom.grim
+-- Like barbar/bufferline.nvim - tab-like display at top
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "bufferline",
+    state = {
+        initialized = false,
+        options = {},
+        enabled = true,
+        sort_by = "id", -- id, name, directory, extension, tabs
+        show_close_icon = true,
+        show_buffer_close_icons = true,
+        show_modified_icon = true,
+        show_buffer_icons = true,
+        separator_style = "slant", -- slant, padded, thick, thin
+        max_name_length = 18,
+        max_prefix_length = 15,
+        tab_size = 18,
+    },
+}
+
+local function log(message)
+    print("[bufferline] " .. message)
+end
+
+-- Get all buffers
+local function get_buffers()
+    -- TODO: Use grim's buffer API to get all buffers
+    -- bridge.get_buffers()
+    -- For now, return mock data
+    return {
+        { id = 1, name = "init.gza", modified = false, active = true },
+        { id = 2, name = "config.gza", modified = true, active = false },
+        { id = 3, name = "README.md", modified = false, active = false },
+    }
+end
+
+-- Get buffer icon based on filetype
+local function get_buffer_icon(buffer)
+    if not plugin.state.show_buffer_icons then
+        return ""
+    end
+
+    -- TODO: Integrate with devicons or custom icon mapping
+    local ext = buffer.name:match("%.([^%.]+)$")
+
+    local icon_map = {
+        gza = "👻",
+        zig = "⚡",
+        md = "📝",
+        lua = "🌙",
+        rs = "🦀",
+        go = "🐹",
+        py = "🐍",
+        js = "📜",
+        ts = "📘",
+        html = "🌐",
+        css = "🎨",
+        json = "📋",
+    }
+
+    return icon_map[ext] or "📄"
+end
+
+-- Get separator style characters
+local function get_separators()
+    local styles = {
+        slant = { left = "", right = "" },
+        padded = { left = "▎", right = " " },
+        thick = { left = "▌", right = "▐" },
+        thin = { left = "│", right = "│" },
+    }
+
+    return styles[plugin.state.separator_style] or styles.slant
+end
+
+-- Format buffer name
+local function format_buffer_name(buffer)
+    local name = buffer.name
+    local max_len = plugin.state.max_name_length
+
+    -- Truncate if too long
+    if #name > max_len then
+        name = "…" .. name:sub(-(max_len - 1))
+    end
+
+    -- Add icon
+    local icon = get_buffer_icon(buffer)
+    if icon ~= "" then
+        name = icon .. " " .. name
+    end
+
+    -- Add modified indicator
+    if buffer.modified and plugin.state.show_modified_icon then
+        name = name .. " ●"
+    end
+
+    return name
+end
+
+-- Render single buffer tab
+local function render_buffer_tab(buffer, is_first, is_last)
+    local separators = get_separators()
+    local name = format_buffer_name(buffer)
+
+    -- Padding
+    local padding = math.max(0, plugin.state.tab_size - #name)
+    local left_pad = math.floor(padding / 2)
+    local right_pad = padding - left_pad
+
+    local tab = string.rep(" ", left_pad) .. name .. string.rep(" ", right_pad)
+
+    -- Add separators
+    local left_sep = is_first and "" or separators.left
+    local right_sep = is_last and "" or separators.right
+
+    -- Add close button
+    local close_btn = ""
+    if plugin.state.show_buffer_close_icons then
+        close_btn = " ✕"
+    end
+
+    return left_sep .. tab .. close_btn .. right_sep
+end
+
+-- Render full bufferline
+function plugin.render()
+    local buffers = get_buffers()
+
+    if #buffers == 0 then
+        return ""
+    end
+
+    -- Sort buffers
+    if plugin.state.sort_by == "name" then
+        table.sort(buffers, function(a, b)
+            return a.name < b.name
+        end)
+    elseif plugin.state.sort_by == "directory" then
+        table.sort(buffers, function(a, b)
+            local dir_a = a.name:match("(.*/)")  or ""
+            local dir_b = b.name:match("(.*/)")  or ""
+            return dir_a < dir_b
+        end)
+    end
+
+    -- Render tabs
+    local tabs = {}
+    for i, buffer in ipairs(buffers) do
+        local is_first = i == 1
+        local is_last = i == #buffers
+
+        local tab = render_buffer_tab(buffer, is_first, is_last)
+
+        -- Highlight active tab differently
+        if buffer.active then
+            tab = "【" .. tab .. "】" -- Highlight active
+        end
+
+        table.insert(tabs, tab)
+    end
+
+    return table.concat(tabs, "")
+end
+
+-- Update bufferline display
+function plugin.update()
+    if not plugin.state.enabled then
+        return
+    end
+
+    local line = plugin.render()
+
+    -- TODO: Display in grim's bufferline area (top of window)
+    -- bridge.set_bufferline(line)
+
+    -- For now, log to console
+    -- log("Bufferline: " .. line)
+end
+
+-- Navigate to next buffer
+function plugin.next()
+    -- TODO: Use grim's buffer navigation
+    -- bridge.buffer_next()
+    log("Next buffer")
+    plugin.update()
+end
+
+-- Navigate to previous buffer
+function plugin.prev()
+    -- TODO: Use grim's buffer navigation
+    -- bridge.buffer_prev()
+    log("Previous buffer")
+    plugin.update()
+end
+
+-- Go to buffer by index
+function plugin.goto(index)
+    local buffers = get_buffers()
+    if index < 1 or index > #buffers then
+        log("Invalid buffer index: " .. index)
+        return false
+    end
+
+    local buffer = buffers[index]
+    -- TODO: Switch to buffer
+    -- bridge.switch_buffer(buffer.id)
+
+    log("Switching to buffer: " .. buffer.name)
+    plugin.update()
+    return true
+end
+
+-- Close buffer by index
+function plugin.close(index)
+    local buffers = get_buffers()
+
+    if index then
+        if index < 1 or index > #buffers then
+            log("Invalid buffer index: " .. index)
+            return false
+        end
+
+        local buffer = buffers[index]
+        -- TODO: Close buffer
+        -- bridge.close_buffer(buffer.id)
+
+        log("Closed buffer: " .. buffer.name)
+    else
+        -- Close current buffer
+        -- TODO: Get active buffer and close it
+        -- bridge.close_current_buffer()
+        log("Closed current buffer")
+    end
+
+    plugin.update()
+    return true
+end
+
+-- Close all buffers except current
+function plugin.close_others()
+    -- TODO: Implement close others
+    -- bridge.close_other_buffers()
+    log("Closed other buffers")
+    plugin.update()
+end
+
+-- Close all buffers to the left
+function plugin.close_left()
+    -- TODO: Implement close left
+    log("Closed buffers to the left")
+    plugin.update()
+end
+
+-- Close all buffers to the right
+function plugin.close_right()
+    -- TODO: Implement close right
+    log("Closed buffers to the right")
+    plugin.update()
+end
+
+-- Sort buffers
+function plugin.sort(sort_by)
+    if not sort_by then
+        log("Available sort options: id, name, directory, extension, tabs")
+        return
+    end
+
+    plugin.state.sort_by = sort_by
+    log("Sorting by: " .. sort_by)
+    plugin.update()
+end
+
+-- Toggle bufferline visibility
+function plugin.toggle()
+    plugin.state.enabled = not plugin.state.enabled
+
+    if plugin.state.enabled then
+        log("Bufferline enabled")
+        plugin.update()
+    else
+        log("Bufferline disabled")
+        -- TODO: Clear bufferline display
+        -- bridge.clear_bufferline()
+    end
+end
+
+-- Move buffer left
+function plugin.move_left()
+    -- TODO: Swap buffer position with previous
+    log("Moved buffer left")
+    plugin.update()
+end
+
+-- Move buffer right
+function plugin.move_right()
+    -- TODO: Swap buffer position with next
+    log("Moved buffer right")
+    plugin.update()
+end
+
+-- Pick buffer with letter
+function plugin.pick()
+    -- TODO: Show letter picker overlay on tabs
+    -- User presses letter to jump to buffer
+    log("Buffer pick mode (not implemented)")
+end
+
+-- Setup function
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.options = opts or {}
+
+    -- Override defaults with options
+    if opts.sort_by then
+        plugin.state.sort_by = opts.sort_by
+    end
+
+    if opts.show_close_icon ~= nil then
+        plugin.state.show_close_icon = opts.show_close_icon
+    end
+
+    if opts.show_buffer_close_icons ~= nil then
+        plugin.state.show_buffer_close_icons = opts.show_buffer_close_icons
+    end
+
+    if opts.show_modified_icon ~= nil then
+        plugin.state.show_modified_icon = opts.show_modified_icon
+    end
+
+    if opts.show_buffer_icons ~= nil then
+        plugin.state.show_buffer_icons = opts.show_buffer_icons
+    end
+
+    if opts.separator_style then
+        plugin.state.separator_style = opts.separator_style
+    end
+
+    if opts.max_name_length then
+        plugin.state.max_name_length = opts.max_name_length
+    end
+
+    if opts.tab_size then
+        plugin.state.tab_size = opts.tab_size
+    end
+
+    -- Auto-update on buffer events
+    -- TODO: Register autocommands
+    -- autocmd BufEnter,BufAdd,BufDelete * :lua require("bufferline").update()
+
+    -- Initial render
+    plugin.update()
+
+    log("Bufferline initialized")
+    return plugin
+end
+
+-- Get current state (for debugging)
+function plugin.status()
+    return {
+        enabled = plugin.state.enabled,
+        sort_by = plugin.state.sort_by,
+        buffer_count = #get_buffers(),
+    }
+end
+
+return plugin.setup()

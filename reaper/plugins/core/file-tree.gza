@@ -1,0 +1,1198 @@
+-- plugins/core/file-tree.gza
+-- Rich file tree plugin powering the Phantom.grim sidebar.
+
+local bridge = require("grim.bridge")
+local core = require("core")
+
+local plugin = {
+    name = "file-tree",
+    state = {
+        initialized = false,
+        options = {},
+        root = ".",
+        root_label = nil,
+        open = false,
+        nodes = {},
+        order = {},
+        selected = 1,
+        git = {
+            branch = "main",
+            summary = { staged = 0, unstaged = 0, untracked = 0 },
+            map = {},
+        },
+        kind_cache = {},
+        commands_registered = false,
+        title = "Files",
+    },
+}
+
+local default_icons = {
+    folder_closed = "▸",
+    folder_open = "▾",
+    file = "•",
+    symlink = "⤷",
+}
+
+local default_git_symbols = {
+    staged = "",
+    modified = "",
+    deleted = "",
+    renamed = "",
+    untracked = "",
+    ignored = "",
+    clean = "",
+}
+
+local default_keymaps = {
+    toggle = "<leader>e",
+    focus = "<leader>E",
+    refresh = "gr",
+    expand = "l",
+    collapse = "h",
+    open = { "o", "<CR>" },
+    up = "k",
+    down = "j",
+    create_file = "a",
+    create_directory = "A",
+    delete = "d",
+    rename = "r",
+}
+
+local default_config = {
+    root = ".",
+    root_label = nil,
+    title = "Files",
+    width = 36,
+    side = "left",
+    indent = "  ",
+    auto_open = true,
+    auto_expand_root = true,
+    sort = {
+        directories_first = true,
+        case_sensitive = false,
+    },
+    icons = default_icons,
+    git_symbols = default_git_symbols,
+    keymaps = default_keymaps,
+    on_open = nil,
+}
+
+local function log(message)
+    print("[file-tree] " .. message)
+end
+
+local function clone_table(value)
+    if type(value) ~= "table" then
+        return value
+    end
+    local copy = {}
+    for key, val in pairs(value) do
+        copy[key] = clone_table(val)
+    end
+    return copy
+end
+
+local function merge_tables(base, override)
+    local result = clone_table(base)
+    for key, value in pairs(override or {}) do
+        if type(value) == "table" and type(result[key]) == "table" then
+            result[key] = merge_tables(result[key], value)
+        else
+            result[key] = clone_table(value)
+        end
+    end
+    return result
+end
+
+local function shell_escape(value)
+    if type(value) ~= "string" then
+        value = tostring(value)
+    end
+    return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+local function canonicalize(path)
+    if type(path) ~= "string" then
+        return path
+    end
+
+    local drive = path:match("^%a:[/\\]")
+    local prefix = ""
+    if drive then
+        prefix = drive
+        path = path:sub(#drive + 1)
+    elseif path:sub(1, 1) == "/" then
+        prefix = "/"
+        path = path:sub(2)
+    end
+
+    path = path:gsub("\\", "/")
+
+    local parts = {}
+    for segment in path:gmatch("[^/]+") do
+        if segment == ".." then
+            if #parts > 0 then
+                table.remove(parts)
+            end
+        elseif segment ~= "." and segment ~= "" then
+            table.insert(parts, segment)
+        end
+    end
+
+    local rebuilt = table.concat(parts, "/")
+    if prefix ~= "" then
+        if rebuilt ~= "" then
+            return prefix .. rebuilt
+        end
+        if prefix == "/" then
+            return "/"
+        end
+        return prefix
+    end
+    if rebuilt == "" then
+        return "."
+    end
+    return rebuilt
+end
+
+local function join_path(base, segment)
+    if not segment or segment == "" then
+        return canonicalize(base)
+    end
+    if segment:match("^%a:[/\\]") or segment:sub(1, 1) == "/" then
+        return canonicalize(segment)
+    end
+    if not base or base == "" or base == "." then
+        return canonicalize(segment)
+    end
+    return canonicalize(base .. "/" .. segment)
+end
+
+local function basename(path)
+    if type(path) ~= "string" then
+        return nil
+    end
+    local trimmed = path
+    trimmed = trimmed:gsub("[/\\]+$", "")
+    local name = trimmed:match("([^/\\]+)$")
+    return name or trimmed
+end
+
+local function dirname(path)
+    if type(path) ~= "string" then
+        return "."
+    end
+    local trimmed = path:gsub("[/\\]+$", "")
+    local parent = trimmed:match("^(.*)[/\\][^/\\]+$")
+    if not parent or parent == "" then
+        if trimmed:sub(1, 1) == "/" then
+            return "/"
+        end
+        return "."
+    end
+    return parent
+end
+
+local function normalize_root(path)
+    if type(path) ~= "string" or path == "" then
+        return canonicalize(".")
+    end
+    if path == "~" and os and os.getenv then
+        local home = os.getenv("HOME")
+        if home and #home > 0 then
+            return canonicalize(home)
+        end
+    end
+    return canonicalize(path)
+end
+
+local function relative_path(root, path)
+    if not path then
+        return nil
+    end
+    if not root or root == "." then
+        return canonicalize(path)
+    end
+
+    local normalized_root = canonicalize(root)
+    local normalized_path = canonicalize(path)
+    if normalized_path:sub(1, #normalized_root) == normalized_root then
+        local remainder = normalized_path:sub(#normalized_root + 1)
+        remainder = remainder:gsub("^[/\\]+", "")
+        if remainder == "" then
+            return "."
+        end
+        return remainder
+    end
+    return normalized_path
+end
+
+local function extract_items(response)
+    if type(response) ~= "table" then
+        return {}
+    end
+    if type(response.items) == "table" then
+        return response.items
+    end
+    return response
+end
+
+local function ensure_directory(path)
+    if not path or path == "" then
+        return true
+    end
+    if os and os.execute then
+        local result = os.execute("mkdir -p " .. shell_escape(path))
+        return result == true or result == 0
+    end
+    return false
+end
+
+local function create_file(path)
+    local parent = dirname(path)
+    if parent and parent ~= path then
+        ensure_directory(parent)
+    end
+
+    local ok, handle = pcall(io.open, path, "w")
+    if not ok or not handle then
+        return false, handle or "io-open-failed"
+    end
+    handle:close()
+    return true
+end
+
+local function create_directory(path)
+    if ensure_directory(path) then
+        return true
+    end
+    return false, "mkdir-failed"
+end
+
+local function remove_path(path, force)
+    if not path or path == "" then
+        return false, "path-required"
+    end
+
+    if os and os.remove then
+        local ok, err = os.remove(path)
+        if ok then
+            return true
+        end
+        if force and os and os.execute then
+            local result = os.execute("rm -rf " .. shell_escape(path))
+            if result == true or result == 0 then
+                return true
+            end
+            return false, err or "rm-failed"
+        end
+        return false, err or "remove-failed"
+    end
+
+    return false, "os-remove-unavailable"
+end
+
+local function rename_path(old_path, new_path)
+    if os and os.rename then
+        local ok, err = os.rename(old_path, new_path)
+        if not ok then
+            return false, err
+        end
+        return true
+    end
+    return false, "os-rename-unavailable"
+end
+
+local function ensure_selection(state, index)
+    local count = #(state.order or {})
+    if count == 0 then
+        state.selected = 0
+        return 0
+    end
+    if not index or index < 1 then
+        index = 1
+    elseif index > count then
+        index = count
+    end
+    state.selected = index
+    return index
+end
+
+local function current_node(state)
+    local order = state.order or {}
+    if not order or #order == 0 then
+        return nil
+    end
+    local idx = state.selected or 1
+    if idx < 1 or idx > #order then
+        idx = ensure_selection(state, idx)
+    end
+    local id = order[idx]
+    if not id then
+        return nil
+    end
+    return state.nodes[id]
+end
+
+local function to_node_id(state, value)
+    if value == nil then
+        return nil
+    end
+    if type(value) == "table" then
+        if value.id then
+            return value.id
+        end
+        if value.path then
+            return to_node_id(state, value.path)
+        end
+    end
+    if type(value) == "number" then
+        return state.order and state.order[value]
+    end
+    if type(value) ~= "string" then
+        return nil
+    end
+
+    local trimmed = value:gsub("[/\\]+$", "")
+    if trimmed == "" then
+        return "."
+    end
+
+    if state.nodes[trimmed] then
+        return trimmed
+    end
+
+    local absolute = trimmed
+    if trimmed ~= "." and trimmed:sub(1, 1) ~= "/" and not trimmed:match("^%a:[/\\]") then
+        absolute = join_path(state.root, trimmed)
+    end
+
+    absolute = canonicalize(absolute)
+    local relative = relative_path(state.root, absolute)
+    if not relative or relative == "" then
+        relative = "."
+    end
+    return relative
+end
+
+local function guess_directory(state, path, metadata)
+    if metadata and metadata.is_dir ~= nil then
+        return metadata.is_dir and true or false
+    end
+
+    if state.kind_cache[path] ~= nil then
+        return state.kind_cache[path]
+    end
+
+    if metadata then
+        local kind = metadata.kind or metadata.type or metadata.mode
+        if kind == "directory" or kind == "dir" then
+            state.kind_cache[path] = true
+            return true
+        elseif kind == "file" then
+            state.kind_cache[path] = false
+            return false
+        end
+
+        if metadata.directory == true or metadata.children ~= nil then
+            state.kind_cache[path] = true
+            return true
+        end
+
+        if metadata.trailing_slash then
+            state.kind_cache[path] = true
+            return true
+        end
+    end
+
+    local ok, response = pcall(bridge.fuzzy_find, path)
+    if ok and type(response) == "table" then
+        if response.directory == path or response.is_dir == true or response.kind == "directory" then
+            state.kind_cache[path] = true
+            return true
+        end
+        local items = extract_items(response)
+        if type(items) == "table" and #items > 0 then
+            state.kind_cache[path] = true
+            return true
+        end
+    end
+
+    if os and os.execute then
+        local result = os.execute("test -d " .. shell_escape(path))
+        local is_dir = (result == true or result == 0)
+        state.kind_cache[path] = is_dir
+        return is_dir
+    end
+
+    state.kind_cache[path] = false
+    return false
+end
+
+local function metadata_from_entry(state, entry, parent)
+    local info = {}
+    if type(entry) == "table" then
+        for key, value in pairs(entry) do
+            info[key] = value
+        end
+    end
+
+    local raw_path = nil
+    if type(entry) == "string" then
+        raw_path = entry
+    else
+        raw_path = info.path or info.file or info.value or info[1]
+    end
+
+    if type(raw_path) ~= "string" or raw_path == "" then
+        return nil
+    end
+
+    local trimmed = raw_path:gsub("[/\\]+$", function()
+        info.trailing_slash = true
+        return ""
+    end)
+
+    local parent_path = parent and parent.path or state.root
+    if trimmed:sub(1, 1) ~= "/" and not trimmed:match("^%a:[/\\]") then
+        trimmed = join_path(parent_path, trimmed)
+    end
+
+    local full_path = canonicalize(trimmed)
+    local rel = relative_path(state.root, full_path)
+    if not rel or rel == "" then
+        rel = "."
+    end
+
+    local node = state.nodes[rel] or {}
+    node.id = rel
+    node.path = full_path
+    node.name = info.name or info.label or basename(full_path)
+    node.parent = parent and parent.id or nil
+    node.relative = rel
+    node.depth = parent and (parent.depth + 1) or 0
+    node.children = node.children or {}
+    node.expanded = node.expanded or false
+    node.loaded = node.loaded or false
+    node.git = node.git or "clean"
+
+    node.is_dir = guess_directory(state, full_path, info)
+
+    return node
+end
+
+local function ensure_node(state, node)
+    if not node or not node.id then
+        return nil
+    end
+    local existing = state.nodes[node.id]
+    if existing then
+        for key, value in pairs(node) do
+            if key ~= "children" then
+                existing[key] = value
+            end
+        end
+        return existing
+    end
+    state.nodes[node.id] = node
+    return node
+end
+
+local function decorate_node(state, node)
+    if not node then
+        return
+    end
+
+    local icons = state.options.icons or default_icons
+    local git_symbols = state.options.git_symbols or default_git_symbols
+
+    local git_status = "clean"
+    if state.git.map and node.relative then
+        git_status = state.git.map[node.relative] or "clean"
+    end
+    node.git = git_status
+
+    if node.is_dir then
+        node.icon = node.expanded and icons.folder_open or icons.folder_closed
+    else
+        node.icon = icons.file
+    end
+
+    local badge = git_symbols[git_status]
+    if badge and badge ~= "" then
+        badge = " " .. badge
+    else
+        badge = ""
+    end
+
+    local indent = ""
+    if node.depth and node.depth > 0 then
+        indent = string.rep(state.options.indent or "  ", node.depth)
+    end
+
+    node.display = string.format("%s%s %s%s", indent, node.icon or "", node.name or node.relative or node.path, badge)
+end
+
+local function compare_nodes(state, a_id, b_id)
+    local a = state.nodes[a_id]
+    local b = state.nodes[b_id]
+    if not a or not b then
+        return (a_id or "") < (b_id or "")
+    end
+
+    if state.options.sort.directories_first then
+        if a.is_dir ~= b.is_dir then
+            return a.is_dir and not b.is_dir
+        end
+    end
+
+    local name_a = a.name or a.relative or a.path or ""
+    local name_b = b.name or b.relative or b.path or ""
+    if not state.options.sort.case_sensitive then
+        name_a = name_a:lower()
+        name_b = name_b:lower()
+    end
+    return name_a < name_b
+end
+
+local function rebuild_order(state)
+    local order = {}
+
+    local function walk(node)
+        if not node then
+            return
+        end
+        table.insert(order, node.id)
+        if node.is_dir and node.expanded then
+            local children = node.children or {}
+            table.sort(children, function(a, b)
+                return compare_nodes(state, a, b)
+            end)
+            node.children = children
+            for _, child_id in ipairs(children) do
+                walk(state.nodes[child_id])
+            end
+        end
+    end
+
+    walk(state.nodes["."])
+    state.order = order
+    ensure_selection(state, state.selected)
+end
+
+local function load_children(state, node)
+    if not node or not node.is_dir then
+        node.children = {}
+        node.loaded = true
+        return
+    end
+
+    local ok, response = pcall(bridge.fuzzy_find, node.path)
+    local items = {}
+    if ok then
+        items = extract_items(response) or {}
+    end
+
+    local children = {}
+    for _, entry in ipairs(items) do
+        local child_meta = metadata_from_entry(state, entry, node)
+        if child_meta then
+            local child = ensure_node(state, child_meta)
+            children[#children + 1] = child.id
+        end
+    end
+
+    table.sort(children, function(a, b)
+        return compare_nodes(state, a, b)
+    end)
+
+    node.children = children
+    node.loaded = true
+
+    for _, child_id in ipairs(children) do
+        decorate_node(state, state.nodes[child_id])
+    end
+end
+
+local function build_git_map(state)
+    local ok, status = pcall(bridge.git_status, state.root)
+    if not ok or type(status) ~= "table" then
+        status = {}
+    end
+
+    state.git.branch = type(status.branch) == "string" and status.branch or "main"
+
+    local summary = {
+        staged = #(status.staged or {}),
+        unstaged = #(status.unstaged or {}),
+        untracked = #(status.untracked or {}),
+    }
+    state.git.summary = summary
+
+    local map = {}
+
+    local function ingest(list, badge)
+        if type(list) ~= "table" then
+            return
+        end
+        for _, entry in ipairs(list) do
+            local path = nil
+            local status_label = badge
+            if type(entry) == "table" then
+                path = entry.path or entry.file or entry.name or entry[1]
+                status_label = entry.status or entry.flag or status_label
+            elseif type(entry) == "string" then
+                path = entry
+            end
+
+            if type(path) == "string" and #path > 0 then
+                local combined = join_path(state.root, path)
+                local rel = relative_path(state.root, combined)
+                if rel == "" then
+                    rel = "."
+                end
+                map[rel] = status_label or badge
+            end
+        end
+    end
+
+    ingest(status.staged, "staged")
+    ingest(status.unstaged, "modified")
+    ingest(status.untracked, "untracked")
+    ingest(status.renamed, "renamed")
+    ingest(status.deleted, "deleted")
+    ingest(status.ignored, "ignored")
+
+    state.git.map = map
+end
+
+local function rebuild(state)
+    build_git_map(state)
+    for _, node in pairs(state.nodes or {}) do
+        decorate_node(state, node)
+    end
+    rebuild_order(state)
+end
+
+local function initialize_root(state, root_path)
+    state.root = normalize_root(root_path)
+    state.root_label = state.options.root_label or basename(state.root)
+    state.nodes = {}
+    state.order = {}
+    state.selected = 1
+    state.kind_cache = {}
+
+    local root_node = {
+        id = ".",
+        path = state.root,
+        name = state.root_label or state.root,
+        parent = nil,
+        relative = ".",
+        depth = 0,
+        is_dir = true,
+        expanded = state.options.auto_expand_root and true or false,
+        loaded = false,
+        children = {},
+        git = "clean",
+    }
+
+    state.nodes["."] = root_node
+end
+
+local function parse_args(ctx)
+    if type(ctx) == "string" then
+        local list = {}
+        for token in ctx:gmatch("%S+") do
+            list[#list + 1] = token
+        end
+        return list
+    end
+    if type(ctx) == "table" then
+        if type(ctx.args) == "string" then
+            return parse_args(ctx.args)
+        end
+        local result = {}
+        local idx = 1
+        while ctx[idx] do
+            if type(ctx[idx]) == "string" and #ctx[idx] > 0 then
+                result[#result + 1] = ctx[idx]
+            end
+            idx = idx + 1
+        end
+        return result
+    end
+    return {}
+end
+
+local function register_command(name, fn, opts)
+    if type(command) ~= "function" then
+        return
+    end
+    local ok, err = pcall(command, name, fn, opts)
+    if not ok then
+        log("failed to register command " .. name .. ": " .. tostring(err))
+    end
+end
+
+local function register_keymap(mode, lhs, rhs, desc)
+    if type(map) ~= "function" then
+        return
+    end
+    local ok, err = pcall(map, mode, lhs, rhs, desc)
+    if not ok then
+        log("failed to register keymap " .. tostring(lhs) .. ": " .. tostring(err))
+    end
+end
+
+local function dispatch_open(path, node)
+    local runtime_bridge = core.bridge and core.bridge()
+    local candidates = { "open_file", "open_path", "open" }
+    if runtime_bridge then
+        for _, method in ipairs(candidates) do
+            if type(runtime_bridge[method]) == "function" then
+                local ok, err = pcall(runtime_bridge[method], path, node)
+                if ok then
+                    return true
+                end
+                log("bridge." .. method .. " failed: " .. tostring(err))
+            end
+        end
+    end
+    return false
+end
+
+local function register_surfaces(state)
+    if state.commands_registered then
+        return
+    end
+
+    register_command("PhantomTreeToggle", function()
+        plugin.toggle()
+    end, { desc = "Toggle Phantom.grim file tree" })
+
+    register_command("PhantomTreeFocus", function()
+        plugin.focus()
+    end, { desc = "Focus Phantom.grim file tree" })
+
+    register_command("PhantomTreeRefresh", function(ctx)
+        local args = parse_args(ctx)
+        plugin.refresh(args[1])
+    end, { desc = "Refresh Phantom.grim file tree" })
+
+    register_command("PhantomTreeEnter", function()
+        plugin.enter()
+    end, { desc = "Open or expand current tree node" })
+
+    register_command("PhantomTreeCollapse", function()
+        plugin.collapse()
+    end, { desc = "Collapse current directory" })
+
+    register_command("PhantomTreeExpand", function()
+        plugin.expand()
+    end, { desc = "Expand current directory" })
+
+    register_command("PhantomTreeCreateFile", function(ctx)
+        local args = parse_args(ctx)
+        plugin.create_file(args[1])
+    end, { desc = "Create file in tree" })
+
+    register_command("PhantomTreeCreateDir", function(ctx)
+        local args = parse_args(ctx)
+        plugin.create_directory(args[1])
+    end, { desc = "Create directory in tree" })
+
+    register_command("PhantomTreeDelete", function(ctx)
+        local args = parse_args(ctx)
+        plugin.delete({ path = args[1], force = true })
+    end, { desc = "Remove entry from tree" })
+
+    register_command("PhantomTreeRename", function(ctx)
+        local args = parse_args(ctx)
+        plugin.rename(args[1])
+    end, { desc = "Rename entry in tree" })
+
+    local keymaps = state.options.keymaps or {}
+
+    if keymaps.toggle then
+        register_keymap("n", keymaps.toggle, ":PhantomTreeToggle<CR>", "Toggle file tree")
+    end
+    if keymaps.focus then
+        register_keymap("n", keymaps.focus, ":PhantomTreeFocus<CR>", "Focus file tree")
+    end
+    if keymaps.refresh then
+        register_keymap("n", keymaps.refresh, ":PhantomTreeRefresh<CR>", "Refresh file tree")
+    end
+    if keymaps.open then
+        local opens = keymaps.open
+        if type(opens) == "string" then
+            opens = { opens }
+        end
+        for _, lhs in ipairs(opens or {}) do
+            register_keymap("n", lhs, ":PhantomTreeEnter<CR>", "Enter tree node")
+        end
+    end
+
+    state.commands_registered = true
+end
+
+local function refresh_root(state)
+    local root = state.nodes["."]
+    if not root then
+        return
+    end
+    if root.expanded then
+        load_children(state, root)
+    else
+        root.children = root.children or {}
+    end
+    decorate_node(state, root)
+    rebuild(state)
+end
+
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.options = merge_tables(default_config, opts or {})
+    plugin.state.title = plugin.state.options.title or "Files"
+
+    initialize_root(plugin.state, plugin.state.options.root)
+    refresh_root(plugin.state)
+
+    plugin.state.open = plugin.state.options.auto_open and true or false
+
+    register_surfaces(plugin.state)
+
+    log(string.format("initialized root=%s", plugin.state.root))
+    return plugin
+end
+
+function plugin.toggle()
+    plugin.state.open = not plugin.state.open
+    if plugin.state.open then
+        refresh_root(plugin.state)
+    end
+    log("file tree " .. (plugin.state.open and "opened" or "closed"))
+    return plugin.state.open
+end
+
+function plugin.focus()
+    if not plugin.state.open then
+        plugin.state.open = true
+        refresh_root(plugin.state)
+    end
+    ensure_selection(plugin.state, plugin.state.selected)
+    return plugin.layout()
+end
+
+function plugin.set_root(path)
+    initialize_root(plugin.state, path or plugin.state.root)
+    refresh_root(plugin.state)
+    log("root set to " .. plugin.state.root)
+    return plugin.state.root
+end
+
+function plugin.refresh(path)
+    if type(path) == "string" and #path > 0 then
+        plugin.set_root(path)
+    else
+        refresh_root(plugin.state)
+    end
+    log("tree refreshed")
+    return plugin.nodes()
+end
+
+function plugin.open(path)
+    if type(path) == "string" and #path > 0 then
+        plugin.set_root(path)
+    end
+    plugin.state.open = true
+    refresh_root(plugin.state)
+    return plugin.nodes()
+end
+
+function plugin.nodes()
+    local result = {}
+    for index, id in ipairs(plugin.state.order or {}) do
+        local node = plugin.state.nodes[id]
+        if node then
+            decorate_node(plugin.state, node)
+            result[#result + 1] = {
+                index = index,
+                path = node.path,
+                relative = node.relative,
+                name = node.name,
+                display = node.display,
+                depth = node.depth,
+                is_dir = node.is_dir,
+                expanded = node.expanded,
+                git = node.git,
+                icon = node.icon,
+                selected = (index == plugin.state.selected),
+            }
+        end
+    end
+    return result
+end
+
+function plugin.layout()
+    return {
+        title = plugin.state.title,
+        open = plugin.state.open,
+        width = plugin.state.options.width,
+        side = plugin.state.options.side,
+        branch = plugin.state.git.branch,
+        git = clone_table(plugin.state.git.summary),
+        nodes = plugin.nodes(),
+        selected = plugin.state.selected,
+    }
+end
+
+function plugin.git_status()
+    return clone_table(plugin.state.git)
+end
+
+function plugin.move(delta)
+    delta = tonumber(delta) or 0
+    local target = (plugin.state.selected or 1) + delta
+    ensure_selection(plugin.state, target)
+    return plugin.state.selected
+end
+
+function plugin.select(index)
+    ensure_selection(plugin.state, tonumber(index) or 1)
+    return plugin.current()
+end
+
+function plugin.current()
+    local node = current_node(plugin.state)
+    if not node then
+        return nil
+    end
+    decorate_node(plugin.state, node)
+    return node
+end
+
+function plugin.resolve(identifier)
+    local id = to_node_id(plugin.state, identifier)
+    if not id then
+        return nil
+    end
+    return plugin.state.nodes[id]
+end
+
+function plugin.expand(identifier)
+    local node = plugin.resolve(identifier) or current_node(plugin.state)
+    if not node or not node.is_dir then
+        return false
+    end
+    if not node.loaded then
+        load_children(plugin.state, node)
+    end
+    node.expanded = true
+    decorate_node(plugin.state, node)
+    rebuild_order(plugin.state)
+    return true
+end
+
+function plugin.collapse(identifier)
+    local node = plugin.resolve(identifier) or current_node(plugin.state)
+    if not node or not node.is_dir then
+        return false
+    end
+    if node.id == "." then
+        node.expanded = plugin.state.options.auto_expand_root and true or false
+    else
+        node.expanded = false
+    end
+    decorate_node(plugin.state, node)
+    rebuild_order(plugin.state)
+    ensure_selection(plugin.state, plugin.state.selected)
+    return true
+end
+
+function plugin.toggle_node(identifier)
+    local node = plugin.resolve(identifier) or current_node(plugin.state)
+    if not node or not node.is_dir then
+        return false
+    end
+    if node.expanded then
+        return plugin.collapse(node)
+    end
+    return plugin.expand(node)
+end
+
+function plugin.reveal(path)
+    local id = to_node_id(plugin.state, path)
+    if not id then
+        return false
+    end
+
+    local parts = {}
+    for segment in id:gmatch("[^/]+") do
+        parts[#parts + 1] = segment
+    end
+
+    local prefix = ""
+    for index = 1, #parts - 1 do
+        prefix = prefix == "" and parts[index] or (prefix .. "/" .. parts[index])
+        local node = plugin.state.nodes[prefix] or plugin.state.nodes["."]
+        if node then
+            plugin.expand(node)
+        end
+    end
+
+    rebuild_order(plugin.state)
+    for idx, entry in ipairs(plugin.state.order or {}) do
+        if entry == id then
+            plugin.state.selected = idx
+            return true
+        end
+    end
+    return false
+end
+
+function plugin.select_by_path(path)
+    local id = to_node_id(plugin.state, path)
+    if not id then
+        return false
+    end
+    for idx, entry in ipairs(plugin.state.order or {}) do
+        if entry == id then
+            plugin.state.selected = idx
+            return true
+        end
+    end
+    return false
+end
+
+function plugin.enter()
+    local node = current_node(plugin.state)
+    if not node then
+        return nil
+    end
+    if node.is_dir then
+        plugin.toggle_node(node)
+        return plugin.layout()
+    end
+
+    if plugin.state.options.on_open and type(plugin.state.options.on_open) == "function" then
+        local ok, err = pcall(plugin.state.options.on_open, node.path, node)
+        if not ok then
+            log("on_open handler failed: " .. tostring(err))
+        end
+    else
+        if not dispatch_open(node.path, node) then
+            log("open handler unavailable for " .. tostring(node.path))
+        end
+    end
+
+    return node.path
+end
+
+function plugin.create_file(name, opts)
+    if type(name) ~= "string" or #name == 0 then
+        log("create_file requires <name>")
+        return false
+    end
+
+    local parent = plugin.resolve(opts and opts.parent) or current_node(plugin.state) or plugin.state.nodes["."]
+    if parent and not parent.is_dir then
+        parent = plugin.resolve(parent.parent) or plugin.state.nodes["."]
+    end
+
+    local target = canonicalize(join_path(parent and parent.path or plugin.state.root, name))
+    local ok, err = create_file(target)
+    if not ok then
+        log("create_file failed: " .. tostring(err))
+        return false
+    end
+
+    plugin.refresh()
+    plugin.reveal(target)
+    log("created file " .. target)
+    return true
+end
+
+function plugin.create_directory(name, opts)
+    if type(name) ~= "string" or #name == 0 then
+        log("create_directory requires <name>")
+        return false
+    end
+
+    local parent = plugin.resolve(opts and opts.parent) or current_node(plugin.state) or plugin.state.nodes["."]
+    if parent and not parent.is_dir then
+        parent = plugin.resolve(parent.parent) or plugin.state.nodes["."]
+    end
+
+    local target = canonicalize(join_path(parent and parent.path or plugin.state.root, name))
+    local ok, err = create_directory(target)
+    if not ok then
+        log("create_directory failed: " .. tostring(err))
+        return false
+    end
+
+    plugin.refresh()
+    plugin.reveal(target)
+    log("created directory " .. target)
+    return true
+end
+
+function plugin.delete(opts)
+    opts = opts or {}
+    local target_node = plugin.resolve(opts.path) or current_node(plugin.state)
+    if not target_node or target_node.id == "." then
+        log("delete requires a non-root selection")
+        return false
+    end
+
+    local ok, err = remove_path(target_node.path, opts.force)
+    if not ok then
+        log("delete failed: " .. tostring(err))
+        return false
+    end
+
+    plugin.refresh()
+    log("deleted " .. target_node.path)
+    return true
+end
+
+function plugin.rename(new_name)
+    if type(new_name) ~= "string" or #new_name == 0 then
+        log("rename requires <new_name>")
+        return false
+    end
+
+    local node = current_node(plugin.state)
+    if not node or node.id == "." then
+        log("rename requires a non-root selection")
+        return false
+    end
+
+    local parent = plugin.resolve(node.parent) or plugin.state.nodes["."]
+    local target = canonicalize(join_path(parent and parent.path or plugin.state.root, new_name))
+    local ok, err = rename_path(node.path, target)
+    if not ok then
+        log("rename failed: " .. tostring(err))
+        return false
+    end
+
+    plugin.refresh()
+    plugin.reveal(target)
+    log(string.format("renamed %s -> %s", node.path, target))
+    return true
+end
+
+function plugin.summary()
+    return {
+        root = plugin.state.root,
+        branch = plugin.state.git.branch,
+        counts = clone_table(plugin.state.git.summary),
+        open = plugin.state.open,
+        total = #(plugin.state.order or {}),
+    }
+end
+
+return plugin.setup()

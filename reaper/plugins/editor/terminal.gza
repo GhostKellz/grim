@@ -1,0 +1,362 @@
+-- plugins/editor/terminal.gza
+-- Built-in terminal for Phantom.grim
+-- Toggle terminal, split terminals, send commands
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "terminal",
+    state = {
+        initialized = false,
+        options = {},
+        terminals = {}, -- Map of terminal ID -> terminal info
+        next_id = 1,
+        active_terminal = nil,
+        default_shell = nil,
+    },
+}
+
+local function log(message)
+    print("[terminal] " .. message)
+end
+
+-- Detect default shell
+local function detect_shell()
+    local shell = os.getenv("SHELL") or "/bin/bash"
+    plugin.state.default_shell = shell
+    return shell
+end
+
+-- Create new terminal
+function plugin.create(opts)
+    opts = opts or {}
+
+    local term_id = plugin.state.next_id
+    plugin.state.next_id = plugin.state.next_id + 1
+
+    local terminal = {
+        id = term_id,
+        buffer_id = nil,
+        window_id = nil,
+        shell = opts.shell or plugin.state.default_shell,
+        cwd = opts.cwd or vim.fn.getcwd(),
+        direction = opts.direction or "horizontal", -- horizontal, vertical, float
+        size = opts.size or 15, -- lines/columns
+        visible = false,
+        job_id = nil,
+    }
+
+    -- TODO: Create terminal buffer using grim's terminal API
+    -- For now, store metadata
+    plugin.state.terminals[term_id] = terminal
+    plugin.state.active_terminal = term_id
+
+    log(string.format("Created terminal %d (%s in %s)",
+        term_id, terminal.shell, terminal.cwd))
+
+    return term_id
+end
+
+-- Toggle terminal visibility
+function plugin.toggle(term_id)
+    term_id = term_id or plugin.state.active_terminal
+
+    if not term_id then
+        -- No terminal exists, create one
+        term_id = plugin.create()
+        plugin.show(term_id)
+        return term_id
+    end
+
+    local terminal = plugin.state.terminals[term_id]
+    if not terminal then
+        log("Terminal not found: " .. term_id)
+        return nil
+    end
+
+    if terminal.visible then
+        plugin.hide(term_id)
+    else
+        plugin.show(term_id)
+    end
+
+    return term_id
+end
+
+-- Show terminal
+function plugin.show(term_id)
+    term_id = term_id or plugin.state.active_terminal
+
+    local terminal = plugin.state.terminals[term_id]
+    if not terminal then
+        log("Terminal not found: " .. term_id)
+        return false
+    end
+
+    if terminal.visible then
+        -- Already visible, just focus
+        -- TODO: Focus terminal window
+        return true
+    end
+
+    -- Create window based on direction
+    if terminal.direction == "horizontal" then
+        -- TODO: Create horizontal split for terminal
+        -- bridge.split_horizontal(terminal.size)
+        log(string.format("Showing terminal %d (horizontal split)", term_id))
+    elseif terminal.direction == "vertical" then
+        -- TODO: Create vertical split for terminal
+        -- bridge.split_vertical(terminal.size)
+        log(string.format("Showing terminal %d (vertical split)", term_id))
+    elseif terminal.direction == "float" then
+        -- TODO: Create floating window for terminal
+        -- bridge.create_float_window(terminal.size)
+        log(string.format("Showing terminal %d (floating)", term_id))
+    end
+
+    terminal.visible = true
+    plugin.state.active_terminal = term_id
+
+    return true
+end
+
+-- Hide terminal
+function plugin.hide(term_id)
+    term_id = term_id or plugin.state.active_terminal
+
+    local terminal = plugin.state.terminals[term_id]
+    if not terminal then
+        return false
+    end
+
+    if not terminal.visible then
+        return true
+    end
+
+    -- TODO: Hide/close terminal window
+    -- bridge.close_window(terminal.window_id)
+    terminal.visible = false
+
+    log(string.format("Hidden terminal %d", term_id))
+    return true
+end
+
+-- Close terminal (permanently)
+function plugin.close(term_id)
+    term_id = term_id or plugin.state.active_terminal
+
+    local terminal = plugin.state.terminals[term_id]
+    if not terminal then
+        return false
+    end
+
+    -- Hide first
+    plugin.hide(term_id)
+
+    -- TODO: Kill terminal job
+    -- bridge.kill_job(terminal.job_id)
+
+    -- Remove from terminals map
+    plugin.state.terminals[term_id] = nil
+
+    -- Update active terminal
+    if plugin.state.active_terminal == term_id then
+        -- Find another active terminal
+        for id, _ in pairs(plugin.state.terminals) do
+            plugin.state.active_terminal = id
+            break
+        end
+    end
+
+    log(string.format("Closed terminal %d", term_id))
+    return true
+end
+
+-- Send keys to terminal
+function plugin.send_keys(keys, term_id)
+    term_id = term_id or plugin.state.active_terminal
+
+    local terminal = plugin.state.terminals[term_id]
+    if not terminal then
+        log("Terminal not found")
+        return false
+    end
+
+    -- TODO: Send keys to terminal job
+    -- bridge.send_to_job(terminal.job_id, keys)
+
+    log(string.format("Sent keys to terminal %d: %s", term_id, keys))
+    return true
+end
+
+-- Send command to terminal (with Enter)
+function plugin.send_command(command, term_id)
+    term_id = term_id or plugin.state.active_terminal
+
+    local terminal = plugin.state.terminals[term_id]
+    if not terminal then
+        log("Terminal not found")
+        return false
+    end
+
+    -- Send command + newline
+    -- TODO: Use grim's terminal API
+    -- bridge.send_to_job(terminal.job_id, command .. "\n")
+
+    log(string.format("Sent command to terminal %d: %s", term_id, command))
+    return true
+end
+
+-- Send selection to terminal
+function plugin.send_selection(term_id)
+    term_id = term_id or plugin.state.active_terminal
+
+    local terminal = plugin.state.terminals[term_id]
+    if not terminal then
+        log("Terminal not found")
+        return false
+    end
+
+    -- Get visual selection
+    -- TODO: Get selection from grim buffer
+    local selection = "" -- bridge.get_visual_selection()
+
+    if selection == "" then
+        log("No selection")
+        return false
+    end
+
+    -- Send to terminal
+    plugin.send_command(selection, term_id)
+    return true
+end
+
+-- List all terminals
+function plugin.list()
+    local terminals = {}
+    for id, terminal in pairs(plugin.state.terminals) do
+        table.insert(terminals, {
+            id = id,
+            shell = terminal.shell,
+            cwd = terminal.cwd,
+            direction = terminal.direction,
+            visible = terminal.visible,
+            active = id == plugin.state.active_terminal,
+        })
+    end
+
+    -- Sort by ID
+    table.sort(terminals, function(a, b)
+        return a.id < b.id
+    end)
+
+    return terminals
+end
+
+-- Switch to terminal by ID
+function plugin.switch(term_id)
+    local terminal = plugin.state.terminals[term_id]
+    if not terminal then
+        log("Terminal not found: " .. term_id)
+        return false
+    end
+
+    -- Hide current active terminal
+    if plugin.state.active_terminal then
+        plugin.hide(plugin.state.active_terminal)
+    end
+
+    -- Show target terminal
+    plugin.show(term_id)
+    plugin.state.active_terminal = term_id
+
+    return true
+end
+
+-- Get current terminal info
+function plugin.current()
+    local term_id = plugin.state.active_terminal
+    if not term_id then
+        return nil
+    end
+
+    return plugin.state.terminals[term_id]
+end
+
+-- Quick toggle with Ctrl+` (default binding)
+function plugin.quick_toggle()
+    return plugin.toggle()
+end
+
+-- Create horizontal split terminal
+function plugin.horizontal(size)
+    return plugin.create({
+        direction = "horizontal",
+        size = size or 15,
+    })
+end
+
+-- Create vertical split terminal
+function plugin.vertical(size)
+    return plugin.create({
+        direction = "vertical",
+        size = size or 80,
+    })
+end
+
+-- Create floating terminal
+function plugin.floating(size)
+    return plugin.create({
+        direction = "float",
+        size = size or { width = 120, height = 30 },
+    })
+end
+
+-- Run command in new terminal
+function plugin.run(command, opts)
+    opts = opts or {}
+
+    local term_id = plugin.create(opts)
+    plugin.show(term_id)
+
+    -- Wait a bit for terminal to be ready
+    -- TODO: Proper async handling
+    plugin.send_command(command, term_id)
+
+    return term_id
+end
+
+-- Setup function
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.options = opts or {}
+
+    -- Detect shell
+    detect_shell()
+    log("Default shell: " .. plugin.state.default_shell)
+
+    -- Set default options
+    if opts.default_direction then
+        plugin.state.default_direction = opts.default_direction
+    end
+
+    if opts.default_size then
+        plugin.state.default_size = opts.default_size
+    end
+
+    -- Register keymaps
+    -- TODO: Register with grim's keymap system
+    -- <C-`> for quick toggle
+    -- <leader>th for horizontal split
+    -- <leader>tv for vertical split
+    -- <leader>tf for floating terminal
+
+    log("Terminal plugin initialized")
+    return plugin
+end
+
+return plugin.setup()

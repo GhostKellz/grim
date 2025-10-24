@@ -498,6 +498,8 @@ pub const SimpleTUI = struct {
         const width = self.terminal_width;
         const height = self.terminal_height;
 
+        std.log.info("render: Called (terminal={}x{}, highlight_dirty={})", .{ width, height, self.highlight_dirty });
+
         self.applyPendingDefinition();
 
         // Ensure cursor is in viewport
@@ -506,7 +508,9 @@ pub const SimpleTUI = struct {
         try self.clearScreen();
         try self.setCursor(1, 1);
 
+        std.log.info("render: About to call refreshHighlights()", .{});
         self.refreshHighlights();
+        std.log.info("render: refreshHighlights() returned", .{});
         self.updatePluginCursorFromEditor();
 
         if (self.highlight_error_flash) {

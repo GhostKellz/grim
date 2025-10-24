@@ -1,0 +1,275 @@
+-- plugins/ai/omen.gza
+-- Omen AI integration plugin for Phantom.grim
+-- Provides AI completions via Omen gateway with multi-provider support
+-- Uses Ghostlang (Lua-like syntax) for plugin scripting
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "omen",
+    state = {
+        initialized = false,
+        options = {},
+        available = false,
+        base_url = "http://localhost:8080",
+        api_key = nil,
+    },
+}
+
+local function log(message)
+    print("[omen] " .. message)
+end
+
+local function log_error(message)
+    print("[omen] ERROR: " .. message)
+end
+
+local function ensure_omen()
+    -- Check if Omen gateway is reachable
+    if not bridge.omen then
+        log_error("Omen bridge not available - grim needs to be rebuilt with AI support")
+        return false
+    end
+
+    -- Initialize client if needed
+    if not bridge.omen.init then
+        log_error("Omen init function not available")
+        return false
+    end
+
+    -- Try to initialize (safe to call multiple times)
+    local ok = pcall(bridge.omen.init, plugin.state.base_url)
+    if not ok then
+        return false
+    end
+
+    -- Health check
+    if not bridge.omen.health_check then
+        log_error("Omen health_check function not available")
+        return false
+    end
+
+    local check_ok, available = pcall(bridge.omen.health_check)
+    if not check_ok or not available then
+        return false
+    end
+
+    return true
+end
+
+local function refresh_availability()
+    plugin.state.available = ensure_omen()
+    return plugin.state.available
+end
+
+local function ensure_initialized()
+    if plugin.state.initialized then
+        return true
+    end
+    plugin.state.initialized = true
+    refresh_availability()
+    if plugin.state.available then
+        log("Omen AI ready (gateway reachable at " .. plugin.state.base_url .. ")")
+    else
+        log("Omen AI unavailable (is Omen running on " .. plugin.state.base_url .. "?)")
+        log("Start Omen: cd /data/projects/omen && cargo run --release")
+    end
+    return plugin.state.available
+end
+
+function plugin.setup(opts)
+    opts = opts or {}
+    plugin.state.options = opts
+
+    -- Allow custom base URL (e.g., remote Omen instance)
+    if opts.base_url then
+        plugin.state.base_url = opts.base_url
+    end
+
+    -- Allow API key for authentication
+    if opts.api_key then
+        plugin.state.api_key = opts.api_key
+    end
+
+    ensure_initialized()
+    return plugin
+end
+
+function plugin.available()
+    ensure_initialized()
+    return refresh_availability()
+end
+
+-- Send a simple completion request to Omen
+function plugin.complete_simple(prompt)
+    ensure_initialized()
+    if not refresh_availability() then
+        log_error("Omen unavailable - cannot complete")
+        return ""
+    end
+
+    if not prompt or #prompt == 0 then
+        log_error("complete_simple() requires a prompt")
+        return ""
+    end
+
+    -- Call bridge function
+    if not bridge.omen.complete_simple then
+        log_error("bridge.omen.complete_simple() not available")
+        return ""
+    end
+
+    local ok, response = pcall(bridge.omen.complete_simple, prompt)
+    if not ok then
+        log_error("Completion failed: " .. tostring(response))
+        return ""
+    end
+
+    return response or ""
+end
+
+-- High-level helper: Generate commit message from staged changes
+function plugin.commit_message(diff)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+
+    diff = diff or (bridge.git_diff_staged and bridge.git_diff_staged() or "")
+    if not diff or #diff == 0 then
+        log("No staged changes to summarize")
+        return ""
+    end
+
+    local prompt = "Generate a concise git commit message for these changes. Follow format: <type>: <description>. Types: feat, fix, docs, style, refactor, perf, test, chore.\n\nChanges:\n" .. diff
+
+    return plugin.complete_simple(prompt)
+end
+
+-- High-level helper: Explain code changes
+function plugin.explain_changes(diff)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+
+    diff = diff or (bridge.git_diff_head and bridge.git_diff_head() or "")
+    if not diff or #diff == 0 then
+        log("No changes to explain")
+        return ""
+    end
+
+    local prompt = "Explain these code changes clearly and concisely:\n\n" .. diff
+
+    return plugin.complete_simple(prompt)
+end
+
+-- High-level helper: Review code
+function plugin.review_code(source)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+
+    if not source or #source == 0 then
+        log("No code to review")
+        return ""
+    end
+
+    local prompt = "Review this code for quality, potential bugs, and improvements:\n\n```\n" .. source .. "\n```"
+
+    return plugin.complete_simple(prompt)
+end
+
+-- High-level helper: Generate documentation
+function plugin.generate_docs(source)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+
+    if not source or #source == 0 then
+        log("No code to document")
+        return ""
+    end
+
+    local prompt = "Generate clear, comprehensive documentation for this code:\n\n```\n" .. source .. "\n```"
+
+    return plugin.complete_simple(prompt)
+end
+
+-- High-level helper: Suggest better variable/function names
+function plugin.suggest_names(source)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+
+    if not source or #source == 0 then
+        log("No code to analyze for naming suggestions")
+        return ""
+    end
+
+    local prompt = "Suggest clear, descriptive names for the variables/functions in this code:\n\n```\n" .. source .. "\n```"
+
+    return plugin.complete_simple(prompt)
+end
+
+-- High-level helper: Detect potential issues
+function plugin.detect_issues(source)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+
+    if not source or #source == 0 then
+        log("No code to analyze for issues")
+        return ""
+    end
+
+    local prompt = "Analyze this code for potential bugs, security issues, performance problems, and code smells:\n\n```\n" .. source .. "\n```"
+
+    return plugin.complete_simple(prompt)
+end
+
+-- High-level helper: Resolve merge conflicts
+function plugin.resolve_conflict(conflict)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+
+    if not conflict or #conflict == 0 then
+        log("No conflict to resolve")
+        return ""
+    end
+
+    local prompt = "Resolve this merge conflict by analyzing both sides and suggesting the best resolution:\n\n" .. conflict
+
+    return plugin.complete_simple(prompt)
+end
+
+-- Advanced: Chat with context from current buffer
+function plugin.chat_with_buffer(prompt, buffer_content, cursor_line)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+
+    if not prompt or #prompt == 0 then
+        log("No prompt provided")
+        return ""
+    end
+
+    local full_prompt = prompt
+    if buffer_content and #buffer_content > 0 then
+        full_prompt = full_prompt .. "\n\nCurrent buffer:\n```\n" .. buffer_content .. "\n```\n"
+        if cursor_line then
+            full_prompt = full_prompt .. "Cursor at line " .. tostring(cursor_line) .. "\n"
+        end
+    end
+
+    return plugin.complete_simple(full_prompt)
+end
+
+return plugin.setup()

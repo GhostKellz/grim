@@ -1,0 +1,63 @@
+-- plugins/editor/theme-commands.gza
+-- Command helpers wrapping the core theme manager.
+
+local theme = require("plugins.core.theme")
+
+local commands = {
+    name = "theme-commands",
+}
+
+local function log(message)
+    print("[theme-commands] " .. message)
+end
+
+function commands.set(name)
+    if theme.set(name) then
+        log("theme set to " .. tostring(name))
+        return theme.summary()
+    end
+    log("failed to set theme " .. tostring(name))
+    return nil
+end
+
+function commands.reload()
+    local ok = theme.reload()
+    if ok then
+        log("reloaded theme")
+    end
+    return ok
+end
+
+function commands.current()
+    return theme.current()
+end
+
+function commands.list(opts)
+    return theme.browser(opts)
+end
+
+function commands.history()
+    return theme.history()
+end
+
+function commands.random(opts)
+    local entry = theme.random(opts)
+    if entry and (not opts or not opts.preview) then
+        log("random theme applied: " .. tostring(entry.name))
+    end
+    return entry
+end
+
+function commands.info(name)
+    return theme.info(name)
+end
+
+function commands.summary()
+    return theme.summary()
+end
+
+function commands.ensure_default()
+    return theme.ensure_default()
+end
+
+return commands

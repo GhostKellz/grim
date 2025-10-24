@@ -1,0 +1,876 @@
+-- plugins/core/fuzzy-finder.gza
+-- Picker-based fuzzy finder with live grep and preview support.
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "fuzzy-finder",
+    state = {
+        initialized = false,
+        options = {},
+        pickers = {},
+        active = nil,
+        history = {},
+        capabilities = {
+            rg = nil,
+        },
+    },
+}
+
+local default_keymaps = {
+    files = "<leader>ff",
+    grep = "<leader>fg",
+    buffers = "<leader>fb",
+}
+
+local default_commands = {
+    files = "PhantomFiles",
+    grep = "PhantomGrep",
+    buffers = "PhantomBuffers",
+    ai_search = "PhantomAI",  -- AI-powered semantic search
+}
+
+local default_config = {
+    cwd = ".",
+    max_results = 2000,
+    preview = {
+        lines = 200,
+        context = 10,
+    },
+    keymaps = default_keymaps,
+    commands = default_commands,
+    history = 20,
+    grep = {
+        prefer_ripgrep = true,
+        extra_args = {},
+    },
+}
+
+local function log(message)
+    print("[fuzzy-finder] " .. message)
+end
+
+local function clone_table(value)
+    if type(value) ~= "table" then
+        return value
+    end
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = clone_table(entry)
+    end
+    return copy
+end
+
+local function merge_tables(base, override)
+    local result = clone_table(base)
+    for key, value in pairs(override or {}) do
+        if type(value) == "table" and type(result[key]) == "table" then
+            result[key] = merge_tables(result[key], value)
+        else
+            result[key] = clone_table(value)
+        end
+    end
+    return result
+end
+
+local function shell_escape(value)
+    if type(value) ~= "string" then
+        value = tostring(value)
+    end
+    return "'" .. value:gsub("'", "'\\''") .. "'"
+end
+
+local function canonicalize(path)
+    if type(path) ~= "string" then
+        return path
+    end
+
+    local drive = path:match("^%a:[/\\]")
+    local prefix = ""
+    if drive then
+        prefix = drive
+        path = path:sub(#drive + 1)
+    elseif path:sub(1, 1) == "/" then
+        prefix = "/"
+        path = path:sub(2)
+    end
+
+    path = path:gsub("\\", "/")
+
+    local segments = {}
+    for segment in path:gmatch("[^/]+") do
+        if segment == ".." then
+            if #segments > 0 then
+                table.remove(segments)
+            end
+        elseif segment ~= "." and segment ~= "" then
+            segments[#segments + 1] = segment
+        end
+    end
+
+    local rebuilt = table.concat(segments, "/")
+
+    if prefix ~= "" then
+        if rebuilt ~= "" then
+            return prefix .. rebuilt
+        end
+        if prefix == "/" then
+            return "/"
+        end
+        return prefix
+    end
+
+    if rebuilt == "" then
+        return "."
+    end
+
+    return rebuilt
+end
+
+local function join_path(base, child)
+    if not child or child == "" then
+        return canonicalize(base)
+    end
+    if child:sub(1, 1) == "/" or child:match("^%a:[/\\]") then
+        return canonicalize(child)
+    end
+    if not base or base == "" or base == "." then
+        return canonicalize(child)
+    end
+    return canonicalize(base .. "/" .. child)
+end
+
+local function absolute_path(cwd, path)
+    if not path or path == "" then
+        return path
+    end
+    if path:sub(1, 1) == "/" or path:match("^%a:[/\\]") then
+        return canonicalize(path)
+    end
+    return join_path(cwd or ".", path)
+end
+
+local function extract_items(response)
+    if type(response) ~= "table" then
+        return {}
+    end
+    if type(response.items) == "table" then
+        return response.items
+    end
+    return response
+end
+
+local function normalize_entry(entry)
+    if type(entry) == "table" and entry.path then
+        return entry
+    elseif type(entry) == "string" then
+        return { path = entry }
+    end
+    return nil
+end
+
+local function highlight_basename(path, highlights)
+    local capture_start = path:match("().[^/\\]*$") or 1
+    local basename = path:sub(capture_start)
+    if #basename == 0 then
+        return capture_start
+    end
+    table.insert(highlights, {
+        start = capture_start - 1,
+        stop = capture_start + #basename - 1,
+        token = "filename",
+    })
+    return capture_start
+end
+
+local function highlight_query(path, query, highlights)
+    if type(query) ~= "string" or #query == 0 then
+        return {
+            matched = false,
+            first = math.huge,
+            match_count = 0,
+            total_span = 0,
+        }
+    end
+
+    local lower_path = path:lower()
+    local lower_query = query:lower()
+    local start_index = 1
+    local first_match = nil
+    local match_count = 0
+    local total_span = 0
+
+    while true do
+        local s, e = lower_path:find(lower_query, start_index, true)
+        if not s then
+            break
+        end
+        table.insert(highlights, {
+            start = s - 1,
+            stop = e,
+            token = "match",
+        })
+        if not first_match or s < first_match then
+            first_match = s
+        end
+        match_count = match_count + 1
+        total_span = total_span + (e - s + 1)
+        start_index = s + 1
+    end
+
+    if not first_match then
+        return {
+            matched = false,
+            first = math.huge,
+            match_count = 0,
+            total_span = 0,
+        }
+    end
+
+    return {
+        matched = true,
+        first = first_match,
+        match_count = match_count,
+        total_span = total_span,
+    }
+end
+
+local function compute_score(path, query_meta, basename_start)
+    local match_start = query_meta.first or math.huge
+    local basename_hit = false
+    if query_meta.matched and basename_start then
+        basename_hit = match_start >= basename_start
+    end
+
+    return {
+        matched = query_meta.matched,
+        match_start = match_start,
+        match_count = query_meta.match_count or 0,
+        total_span = query_meta.total_span or 0,
+        basename_hit = basename_hit,
+        path_length = #path,
+    }
+end
+
+local function sort_highlights(highlights)
+    table.sort(highlights, function(a, b)
+        if a.start == b.start then
+            return (a.stop or 0) < (b.stop or 0)
+        end
+        return (a.start or 0) < (b.start or 0)
+    end)
+end
+
+local function compare_decorated(a, b)
+    local sa = a.score or {}
+    local sb = b.score or {}
+
+    if sa.matched ~= sb.matched then
+        return sa.matched and not sb.matched
+    end
+
+    if sa.basename_hit ~= sb.basename_hit then
+        return sa.basename_hit and not sb.basename_hit
+    end
+
+    if (sa.match_start or math.huge) ~= (sb.match_start or math.huge) then
+        return (sa.match_start or math.huge) < (sb.match_start or math.huge)
+    end
+
+    if (sa.total_span or 0) ~= (sb.total_span or 0) then
+        return (sa.total_span or 0) > (sb.total_span or 0)
+    end
+
+    if (sa.match_count or 0) ~= (sb.match_count or 0) then
+        return (sa.match_count or 0) > (sb.match_count or 0)
+    end
+
+    if (sa.path_length or math.huge) ~= (sb.path_length or math.huge) then
+        return (sa.path_length or math.huge) < (sb.path_length or math.huge)
+    end
+
+    return (a.path or "") < (b.path or "")
+end
+
+local function decorate_items(items, query, cwd)
+    local results = {}
+    for _, entry in ipairs(items) do
+        local normalized = normalize_entry(entry)
+        if normalized and normalized.path then
+            local highlights = {}
+            local basename_start = highlight_basename(normalized.path, highlights)
+            local query_meta = highlight_query(normalized.path, query or "", highlights)
+            sort_highlights(highlights)
+            table.insert(results, {
+                path = normalized.path,
+                absolute = absolute_path(cwd, normalized.path),
+                highlights = highlights,
+                score = compute_score(normalized.path, query_meta, basename_start),
+            })
+        end
+    end
+    table.sort(results, compare_decorated)
+    return results
+end
+
+local function filter_items(items, query)
+    if type(query) ~= "string" or #query == 0 then
+        return items
+    end
+
+    local filtered = {}
+    local lowered = query:lower()
+    for _, entry in ipairs(items) do
+        local candidate = entry
+        if type(entry) == "table" and entry.path then
+            candidate = entry.path
+        end
+
+        if type(candidate) == "string" and candidate:lower():find(lowered, 1, true) then
+            table.insert(filtered, entry)
+        end
+    end
+    return filtered
+end
+
+local function serialize_decorated(entries)
+    local lines = {}
+    for _, entry in ipairs(entries) do
+        local segments = {}
+        for _, hl in ipairs(entry.highlights or {}) do
+            local start_byte = tonumber(hl.start) or 0
+            local stop_byte = tonumber(hl.stop) or start_byte
+            local token = hl.token or "match"
+            table.insert(segments, string.format("%d:%d:%s", start_byte, stop_byte, token))
+        end
+        table.insert(lines, string.format("%s\t%s", entry.path, table.concat(segments, ";")))
+    end
+    return table.concat(lines, "\n")
+end
+
+local function ensure_selection(picker, index)
+    local total = #(picker.entries or {})
+    if total == 0 then
+        picker.selection = 0
+        return 0
+    end
+    if not index or index < 1 then
+        index = 1
+    elseif index > total then
+        index = total
+    end
+    picker.selection = index
+    return index
+end
+
+local function has_ripgrep(state)
+    if state.capabilities.rg ~= nil then
+        return state.capabilities.rg
+    end
+    if not io or not io.popen then
+        state.capabilities.rg = false
+        return false
+    end
+    local handle = io.popen("command -v rg 2>/dev/null")
+    if not handle then
+        state.capabilities.rg = false
+        return false
+    end
+    local output = handle:read("*a")
+    handle:close()
+    state.capabilities.rg = output and #output > 0
+    return state.capabilities.rg
+end
+
+local function run_ripgrep(state, cwd, query)
+    if not has_ripgrep(state) then
+        return {}
+    end
+    if type(query) ~= "string" or #query == 0 then
+        return {}
+    end
+    local command = { "rg", "--with-filename", "--column", "--line-number", "--no-heading", "--color", "never" }
+    for _, arg in ipairs(state.options.grep.extra_args or {}) do
+        command[#command + 1] = arg
+    end
+    command[#command + 1] = query
+    local cmd = table.concat(command, " ")
+    if cwd and cwd ~= "." then
+        cmd = string.format("cd %s && %s", shell_escape(cwd), cmd)
+    end
+    local handle = io.popen(cmd)
+    if not handle then
+        return {}
+    end
+    local results = {}
+    for line in handle:lines() do
+        if line and #line > 0 then
+            local path, lnum, col, text = line:match("^(.-):(%d+):(%d+):(.*)$")
+            if path then
+                results[#results + 1] = {
+                    path = canonicalize(path),
+                    line = tonumber(lnum) or 0,
+                    column = tonumber(col) or 0,
+                    text = text,
+                }
+                if #results >= (state.options.max_results or default_config.max_results) then
+                    break
+                end
+            end
+        end
+    end
+    handle:close()
+    return results
+end
+
+local function read_preview(path, center_line, options)
+    if not path or type(path) ~= "string" then
+        return nil
+    end
+    local ok, handle = pcall(io.open, path, "r")
+    if not ok or not handle then
+        return nil
+    end
+    local lines = {}
+    local line_number = 0
+    local max_lines = options.lines or 200
+    local context = options.context or 10
+    local start_line = 1
+    local end_line = max_lines
+    if center_line and center_line > 0 then
+        start_line = math.max(1, center_line - context)
+        end_line = start_line + max_lines - 1
+    end
+    for line in handle:lines() do
+        line_number = line_number + 1
+        if line_number >= start_line and line_number <= end_line then
+            lines[#lines + 1] = { number = line_number, text = line }
+        end
+        if line_number > end_line then
+            break
+        end
+    end
+    handle:close()
+    return {
+        path = path,
+        lines = lines,
+        center = center_line,
+    }
+end
+
+local function register_command(name, fn, opts)
+    if type(command) ~= "function" then
+        return
+    end
+    local ok, err = pcall(command, name, fn, opts)
+    if not ok then
+        log("failed to register command " .. name .. ": " .. tostring(err))
+    end
+end
+
+local function register_keymap(mode, lhs, rhs, desc)
+    if type(map) ~= "function" then
+        return
+    end
+    local ok, err = pcall(map, mode, lhs, rhs, desc)
+    if not ok then
+        log("failed to register keymap " .. tostring(lhs) .. ": " .. tostring(err))
+    end
+end
+
+local function summarize_picker(picker)
+    if not picker then
+        return
+    end
+    local entries = picker.decorated or picker.entries or {}
+    print(string.format("[fuzzy-finder] %s results (%d total)", picker.mode or "", #entries))
+    local limit = math.min(10, #entries)
+    for index = 1, limit do
+        local entry = entries[index]
+        if picker.mode == "grep" then
+            print(string.format("  %2d %s:%d:%s", index, entry.path or "", entry.line or 0, entry.text or ""))
+        else
+            print(string.format("  %2d %s", index, entry.path or ""))
+        end
+    end
+    if #entries > limit then
+        print(string.format("  ... %d more", #entries - limit))
+    end
+end
+
+local function load_files_picker(state, picker, opts)
+    local cwd = canonicalize(opts.cwd or picker.cwd or state.options.cwd or ".")
+    if not picker.entries or picker.cwd ~= cwd or opts.force then
+        local response = bridge.fuzzy_find(cwd)
+        local items = extract_items(response)
+        picker.cwd = cwd
+        picker.raw = items
+    end
+    local query = opts.query or picker.query or ""
+    picker.query = query
+    local filtered = filter_items(picker.raw or {}, query)
+    picker.entries = filtered
+    picker.decorated = decorate_items(filtered, query, picker.cwd)
+    picker.selection = ensure_selection(picker, picker.selection)
+    return picker
+end
+
+local function load_buffers_picker(state, picker, opts)
+    local list = bridge.harpoon_list()
+    if type(list) ~= "table" then
+        list = {}
+    end
+    picker.raw = list
+    picker.cwd = canonicalize(opts.cwd or picker.cwd or state.options.cwd or ".")
+    picker.query = opts.query or picker.query or ""
+    local filtered = filter_items(list, picker.query)
+    local decorated = {}
+    for _, entry in ipairs(filtered) do
+        if type(entry) == "string" then
+            decorated[#decorated + 1] = { path = entry, absolute = absolute_path(picker.cwd, entry) }
+        elseif type(entry) == "table" then
+            local path = entry.path or entry[1]
+            decorated[#decorated + 1] = {
+                path = path,
+                absolute = absolute_path(picker.cwd, path),
+                data = entry,
+            }
+        end
+    end
+    picker.entries = decorated
+    picker.decorated = decorated
+    picker.selection = ensure_selection(picker, picker.selection)
+    return picker
+end
+
+local function load_grep_picker(state, picker, opts)
+    picker.cwd = canonicalize(opts.cwd or picker.cwd or state.options.cwd or ".")
+    local query = opts.query or picker.query or ""
+    picker.query = query
+    if query == "" then
+        picker.entries = {}
+    else
+        picker.entries = run_ripgrep(state, picker.cwd, query)
+    end
+    picker.selection = ensure_selection(picker, picker.selection)
+    return picker
+end
+
+-- AI-powered semantic search loader
+local function load_ai_search_picker(state, picker, opts)
+    picker.cwd = canonicalize(opts.cwd or picker.cwd or state.options.cwd or ".")
+    local query = opts.query or picker.query or ""
+    picker.query = query
+
+    if query == "" then
+        picker.entries = {}
+        picker.selection = 0
+        return picker
+    end
+
+    -- Get Thanos plugin for AI search
+    local thanos = nil
+    if bridge.get_plugin then
+        thanos = bridge.get_plugin("thanos")
+    end
+
+    if not thanos or not thanos.is_available or not thanos.is_available() then
+        log("AI search unavailable - Thanos plugin not loaded")
+        -- Fallback to regular file search
+        return load_files_picker(state, picker, opts)
+    end
+
+    -- Get all files first
+    local response = bridge.fuzzy_find(picker.cwd)
+    local all_files = extract_items(response)
+
+    -- Build prompt for AI to suggest relevant files
+    local file_list = {}
+    for i, entry in ipairs(all_files) do
+        if i <= 100 then  -- Limit context size
+            local path = type(entry) == "string" and entry or (entry.path or "")
+            if #path > 0 then
+                table.insert(file_list, path)
+            end
+        end
+    end
+
+    local prompt = string.format(
+        "Given this search query: '%s'\\n\\n" ..
+        "Which of these files are most relevant? " ..
+        "List up to 10 file paths, one per line. Only output file paths, no explanations.\\n\\n" ..
+        "Files:\\n%s",
+        query,
+        table.concat(file_list, "\\n")
+    )
+
+    -- Query AI
+    local ai_response = ""
+    if bridge.thanos and bridge.thanos.complete then
+        ai_response = bridge.thanos.complete(prompt)
+    end
+
+    -- Parse AI suggestions
+    local ai_suggested = {}
+    if #ai_response > 0 then
+        for line in ai_response:gmatch("[^\\n]+") do
+            local trimmed = line:match("^%s*(.-)%s*$")
+            if trimmed and #trimmed > 0 and not trimmed:match("^[#%*%-]") then
+                -- Filter out markdown formatting
+                local path = trimmed:match("^%d+%.%s*(.+)$") or trimmed  -- Remove "1. " prefix if exists
+                path = path:match("^%`*(.-)%`*$")  -- Remove backticks
+                table.insert(ai_suggested, path)
+            end
+        end
+    end
+
+    -- Combine AI suggestions with text matching
+    local ai_score_map = {}
+    for rank, path in ipairs(ai_suggested) do
+        ai_score_map[path] = 11 - rank  -- Higher rank = higher score
+    end
+
+    -- Filter and score all files
+    local scored_files = {}
+    for _, entry in ipairs(all_files) do
+        local path = type(entry) == "string" and entry or (entry.path or "")
+        local ai_score = ai_score_map[path] or 0
+        local text_match = path:lower():find(query:lower(), 1, true)
+
+        if ai_score > 0 or text_match then
+            table.insert(scored_files, {
+                path = path,
+                ai_score = ai_score,
+                has_text_match = text_match ~= nil,
+            })
+        end
+    end
+
+    -- Sort by AI score first, then text match
+    table.sort(scored_files, function(a, b)
+        if a.ai_score ~= b.ai_score then
+            return a.ai_score > b.ai_score
+        end
+        if a.has_text_match ~= b.has_text_match then
+            return a.has_text_match and not b.has_text_match
+        end
+        return a.path < b.path
+    end)
+
+    -- Convert to decorated entries
+    local decorated = {}
+    for _, item in ipairs(scored_files) do
+        local highlights = {}
+        highlight_basename(item.path, highlights)
+        if item.has_text_match then
+            highlight_query(item.path, query, highlights)
+        end
+        sort_highlights(highlights)
+        table.insert(decorated, {
+            path = item.path,
+            absolute = absolute_path(picker.cwd, item.path),
+            highlights = highlights,
+            ai_score = item.ai_score,
+        })
+    end
+
+    picker.entries = scored_files
+    picker.decorated = decorated
+    picker.selection = ensure_selection(picker, picker.selection)
+    return picker
+end
+
+local picker_loaders = {
+    files = load_files_picker,
+    grep = load_grep_picker,
+    buffers = load_buffers_picker,
+    ai_search = load_ai_search_picker,  -- AI-powered semantic search
+}
+
+local function ensure_picker(mode, opts)
+    opts = opts or {}
+    local state = plugin.state
+    local picker = state.pickers[mode]
+    if not picker then
+        picker = {
+            mode = mode,
+            cwd = canonicalize(opts.cwd or state.options.cwd or "."),
+            entries = {},
+            selection = 1,
+            query = opts.query or "",
+        }
+        state.pickers[mode] = picker
+    end
+    local loader = picker_loaders[mode]
+    if loader then
+        loader(state, picker, opts)
+    end
+    state.active = mode
+    return picker
+end
+
+local function register_surfaces()
+    local options = plugin.state.options
+    local commands = options.commands or {}
+    register_command(commands.files or default_commands.files, function(ctx)
+        local args = {}
+        if type(ctx) == "table" and type(ctx.args) == "string" then
+            args.query = ctx.args
+        elseif type(ctx) == "string" then
+            args.query = ctx
+        end
+        local picker = ensure_picker("files", args)
+        summarize_picker(picker)
+    end, { desc = "Open Phantom file picker" })
+
+    register_command(commands.grep or default_commands.grep, function(ctx)
+        local query = nil
+        if type(ctx) == "table" and type(ctx.args) == "string" then
+            query = ctx.args
+        elseif type(ctx) == "string" then
+            query = ctx
+        end
+        local picker = ensure_picker("grep", { query = query })
+        summarize_picker(picker)
+    end, { desc = "Search project with ripgrep" })
+
+    register_command(commands.buffers or default_commands.buffers, function(ctx)
+        local query = nil
+        if type(ctx) == "table" and type(ctx.args) == "string" then
+            query = ctx.args
+        elseif type(ctx) == "string" then
+            query = ctx
+        end
+        local picker = ensure_picker("buffers", { query = query })
+        summarize_picker(picker)
+    end, { desc = "List Phantom buffer/bookmark picker" })
+
+    register_command(commands.ai_search or default_commands.ai_search, function(ctx)
+        local query = nil
+        if type(ctx) == "table" and type(ctx.args) == "string" then
+            query = ctx.args
+        elseif type(ctx) == "string" then
+            query = ctx
+        end
+        if not query or #query == 0 then
+            log("AI search requires a query. Usage: :PhantomAI <semantic query>")
+            return
+        end
+        log("AI-powered semantic search: " .. query)
+        local picker = ensure_picker("ai_search", { query = query })
+        summarize_picker(picker)
+    end, { desc = "AI-powered semantic file search" })
+
+    local keymaps = options.keymaps or {}
+    if keymaps.files then
+        register_keymap("n", keymaps.files, string.format(":%s<CR>", commands.files or default_commands.files), "Find files")
+    end
+    if keymaps.grep then
+        register_keymap("n", keymaps.grep, string.format(":%s<CR>", commands.grep or default_commands.grep), "Live grep")
+    end
+    if keymaps.buffers then
+        register_keymap("n", keymaps.buffers, string.format(":%s<CR>", commands.buffers or default_commands.buffers), "List buffers")
+    end
+end
+
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.options = merge_tables(default_config, opts or {})
+    register_surfaces()
+    log("initialized")
+    return plugin
+end
+
+function plugin.find_files(opts)
+    local picker = ensure_picker("files", opts)
+    return picker.decorated or {}
+end
+
+function plugin.render_listing(opts)
+    local picker = ensure_picker("files", opts)
+    return serialize_decorated(picker.decorated or {})
+end
+
+function plugin.live_grep(query)
+    local picker = ensure_picker("grep", { query = query })
+    return picker.entries or {}
+end
+
+function plugin.buffers(opts)
+    local picker = ensure_picker("buffers", opts)
+    return picker.decorated or {}
+end
+
+function plugin.pick(mode, opts)
+    local picker = ensure_picker(mode or plugin.state.active or "files", opts)
+    local selection = picker.selection or 0
+    local selected = nil
+    if selection > 0 then
+        selected = (picker.decorated or picker.entries or {})[selection]
+    end
+    local preview = nil
+    if selected then
+        if mode == "grep" then
+            preview = read_preview(absolute_path(picker.cwd, selected.path), selected.line, plugin.state.options.preview)
+        else
+            preview = read_preview(absolute_path(picker.cwd, selected.path), nil, plugin.state.options.preview)
+        end
+    end
+    return {
+        mode = picker.mode,
+        cwd = picker.cwd,
+        query = picker.query,
+        entries = picker.decorated or picker.entries or {},
+        selection = selection,
+        preview = preview,
+    }
+end
+
+function plugin.move(delta, mode)
+    local picker = ensure_picker(mode or plugin.state.active or "files", {})
+    if #(picker.entries or {}) == 0 then
+        picker.selection = 0
+        return 0
+    end
+    delta = tonumber(delta) or 0
+    local index = ensure_selection(picker, (picker.selection or 1) + delta)
+    return index
+end
+
+function plugin.select(index, mode)
+    local picker = ensure_picker(mode or plugin.state.active or "files", {})
+    ensure_selection(picker, tonumber(index) or 1)
+    return plugin.pick(mode)
+end
+
+function plugin.preview(entry, mode)
+    local picker = ensure_picker(mode or plugin.state.active or "files", {})
+    local path = nil
+    local center = nil
+    if type(entry) == "table" then
+        path = entry.path or entry.absolute
+        center = entry.line
+    elseif type(entry) == "string" then
+        path = entry
+    end
+    return read_preview(absolute_path(picker.cwd, path), center, plugin.state.options.preview)
+end
+
+function plugin.open(mode)
+    local picker = ensure_picker(mode or plugin.state.active or "files", {})
+    local selection = picker.selection or 0
+    if selection == 0 then
+        return nil
+    end
+    local entry = (picker.decorated or picker.entries or {})[selection]
+    if not entry then
+        return nil
+    end
+    return absolute_path(picker.cwd, entry.path)
+end
+
+return plugin.setup()

@@ -1,0 +1,22 @@
+local plugin = {
+    name = "integration-test",
+    version = "0.1.0",
+}
+
+function plugin.setup()
+    print("[integration-test] Testing all callbacks...")
+
+    register_command("TestCommand", function()
+        print("[integration-test] ✅ Command callback works!")
+    end)
+
+    register_keymap("n", "<leader>t", function()
+        print("[integration-test] ✅ Keymap callback works!")
+    end)
+
+    show_message("✅ Message callback works!")
+
+    print("[integration-test] All callbacks tested")
+end
+
+return plugin

@@ -1,7 +1,7 @@
 # Grim
 
 <div align="center">
-  <img src="assets/icons/grim.png" alt="grim logo" width="128" height="128">
+  <img src="assets/icons/grim-reaper-distro.png" alt="grim logo" width="128" height="128">
 
 **Lightweight, Zig-powered IDE/editor with Vim soul and modern brains.**
 

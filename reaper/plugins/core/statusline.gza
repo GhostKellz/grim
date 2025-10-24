@@ -1,0 +1,477 @@
+-- plugins/core/statusline.gza
+-- Modular statusline renderer with theme, git, diagnostics, and LSP awareness.
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "statusline",
+    state = {
+        initialized = false,
+        options = {},
+        palette = {},
+        components = {},
+        snapshot = nil,
+        line = nil,
+        history = {},
+        symbols = {},
+    },
+}
+
+local default_symbols = {
+    branch = "",
+    added = "+",
+    changed = "~",
+    removed = "-",
+    separator = "│",
+    lsp = "",
+    error = "E",
+    warn = "W",
+    info = "I",
+    hint = "H",
+}
+
+local default_layout = {
+    left = { "mode", "file", "git" },
+    middle = { "diagnostics" },
+    right = { "lsp", "position", "clock" },
+}
+
+local default_separators = {
+    component = "  ",
+    section = " | ",
+}
+
+local default_theme = {
+    enable = true,
+    groups = {
+        mode = "status_bar_fg",
+        file = "filename",
+        git = "function",
+        diagnostics = "number",
+        lsp = "type",
+        position = "variable",
+        clock = "keyword",
+    },
+}
+
+local mode_names = {
+    n = "NORMAL",
+    no = "O-PENDING",
+    v = "VISUAL",
+    V = "V-LINE",
+    ['\22'] = "V-BLOCK",
+    i = "INSERT",
+    ic = "INS-COMP",
+    R = "REPLACE",
+    Rt = "REPLACE",
+    c = "COMMAND",
+    s = "SELECT",
+    S = "S-LINE",
+    ['\19'] = "S-BLOCK",
+    t = "TERMINAL",
+}
+
+local function log(message)
+    print("[statusline] " .. message)
+end
+
+local function clone_table(value)
+    if type(value) ~= "table" then
+        return value
+    end
+    local copy = {}
+    for key, entry in pairs(value) do
+        copy[key] = clone_table(entry)
+    end
+    return copy
+end
+
+local function merge_tables(base, override)
+    local result = clone_table(base)
+    for key, value in pairs(override or {}) do
+        if type(value) == "table" and type(result[key]) == "table" then
+            result[key] = merge_tables(result[key], value)
+        else
+            result[key] = clone_table(value)
+        end
+    end
+    return result
+end
+
+local function basename(path)
+    if type(path) ~= "string" then
+        return nil
+    end
+    local clean = path:gsub("[/\\]+$", "")
+    local name = clean:match("([^/\\]+)$")
+    return name or clean
+end
+
+local function relative_path(root, path)
+    if not path or not root then
+        return path
+    end
+    if root == "." then
+        return path
+    end
+    if path:sub(1, #root) == root then
+        local remainder = path:sub(#root + 1)
+        remainder = remainder:gsub("^[/\\]+", "")
+        if remainder == "" then
+            return basename(path)
+        end
+        return remainder
+    end
+    return path
+end
+
+local function ensure_palette()
+    if not plugin.state.options.theme.enable then
+        plugin.state.palette = {}
+        return
+    end
+
+    local theme = bridge.theme
+    if type(theme) ~= "table" or type(theme.get_color) ~= "function" then
+        return
+    end
+
+    for name, group in pairs(plugin.state.options.theme.groups or {}) do
+        local ok, color = pcall(theme.get_color, group)
+        if ok and type(color) == "string" and #color > 0 then
+            plugin.state.palette[name] = color
+        end
+    end
+end
+
+local function wrap_component(name, text)
+    if not text or text == "" then
+        return nil
+    end
+    if not plugin.state.options.theme.enable then
+        return text
+    end
+    local color = plugin.state.palette[name]
+    if not color then
+        return text
+    end
+    return string.format("%s", text)
+end
+
+local function fetch_git(snapshot, ctx)
+    local cwd = ctx.git_root or ctx.cwd or snapshot.cwd or "."
+    local ok, status = pcall(bridge.git_status, cwd)
+    if not ok or type(status) ~= "table" then
+        status = {}
+    end
+    local branch = status.branch or bridge.git_branch(cwd) or "main"
+    local staged = type(status.staged) == "table" and #status.staged or 0
+    local unstaged = type(status.unstaged) == "table" and #status.unstaged or 0
+    local untracked = type(status.untracked) == "table" and #status.untracked or 0
+
+    local text = string.format("%s %s %s%d %s%d %s%d",
+        plugin.state.symbols.branch,
+        branch,
+        plugin.state.symbols.added,
+        staged,
+        plugin.state.symbols.changed,
+        unstaged,
+        plugin.state.symbols.removed,
+        untracked
+    )
+
+    return {
+        branch = branch,
+        staged = staged,
+        unstaged = unstaged,
+        untracked = untracked,
+        cwd = cwd,
+        text = text,
+    }
+end
+
+local function fetch_diagnostics(snapshot, ctx)
+    local provider = plugin.state.options.providers.diagnostics
+    local counts = {}
+    if type(provider) == "function" then
+        local ok, result = pcall(provider, snapshot, ctx)
+        if ok and type(result) == "table" then
+            counts = result
+        end
+    end
+    counts.errors = counts.errors or 0
+    counts.warnings = counts.warnings or 0
+    counts.info = counts.info or 0
+    counts.hints = counts.hints or 0
+
+    local text = string.format("%s%d %s%d %s%d %s%d",
+        plugin.state.symbols.error, counts.errors,
+        plugin.state.symbols.warn, counts.warnings,
+        plugin.state.symbols.info, counts.info,
+        plugin.state.symbols.hint, counts.hints
+    )
+
+    return {
+        counts = counts,
+        text = text,
+    }
+end
+
+local function fetch_lsp(snapshot, ctx)
+    local provider = plugin.state.options.providers.lsp
+    local result = nil
+    if type(provider) == "function" then
+        local ok, data = pcall(provider, snapshot, ctx)
+        if ok then
+            result = data
+        end
+    end
+
+    local clients = {}
+    if type(result) == "table" then
+        for _, value in ipairs(result) do
+            clients[#clients + 1] = tostring(value)
+        end
+    elseif type(result) == "string" then
+        clients = { result }
+    end
+
+    local text = plugin.state.symbols.lsp
+    if #clients > 0 then
+        text = text .. " " .. table.concat(clients, ",")
+    else
+        text = text .. " —"
+    end
+
+    return {
+        clients = clients,
+        text = text,
+    }
+end
+
+local function fetch_position(snapshot, ctx)
+    if type(ctx.position) == "string" then
+        return { text = ctx.position }
+    end
+    local row = ctx.row or (ctx.position and ctx.position.row) or 1
+    local col = ctx.col or (ctx.position and ctx.position.col) or 1
+    local percent = ctx.percent or (ctx.position and ctx.position.percent)
+    local text = string.format("Ln %d, Col %d", row, col)
+    if percent then
+        text = text .. string.format(" (%d%%)", percent)
+    end
+    return {
+        row = row,
+        col = col,
+        percent = percent,
+        text = text,
+    }
+end
+
+local function fetch_mode(snapshot, ctx)
+    local mode = ctx.mode or ctx.statusline_mode or "n"
+    mode = mode_names[mode] or mode:upper()
+    return { text = mode }
+end
+
+local function fetch_file(snapshot, ctx)
+    local path = ctx.path or ctx.filename or ctx.file
+    if not path then
+        return { text = "[No Name]" }
+    end
+    local cwd = snapshot.cwd or "."
+    local relative = relative_path(cwd, path)
+    local name = basename(path)
+    local modified = ctx.modified and " [+]" or ""
+    local text = string.format("%s%s", relative or name, modified)
+    return {
+        path = path,
+        relative = relative,
+        name = name,
+        modified = ctx.modified or false,
+        text = text,
+    }
+end
+
+local function fetch_clock()
+    return {
+        text = os.date("%H:%M"),
+        timestamp = os.time(),
+    }
+end
+
+local function assign_component(snapshot, name, payload)
+    if not payload or payload.text == nil or payload.text == "" then
+        snapshot.components[name] = nil
+        return
+    end
+    payload.color = plugin.state.palette[name]
+    payload.name = name
+    payload.text = wrap_component(name, payload.text)
+    snapshot.components[name] = payload
+end
+
+local component_collectors = {
+    mode = fetch_mode,
+    file = fetch_file,
+    git = fetch_git,
+    diagnostics = fetch_diagnostics,
+    lsp = fetch_lsp,
+    position = fetch_position,
+    clock = fetch_clock,
+}
+
+local function build_section(section, snapshot)
+    local items = {}
+    for _, name in ipairs(section or {}) do
+        local component = snapshot.components[name]
+        if component and component.text and component.text ~= "" then
+            table.insert(items, component.text)
+        end
+    end
+    return items
+end
+
+local function join_parts(parts, glue)
+    local filtered = {}
+    for _, item in ipairs(parts or {}) do
+        if item and item ~= "" then
+            table.insert(filtered, item)
+        end
+    end
+    return table.concat(filtered, glue or " ")
+end
+
+local function render(snapshot)
+    local separators = plugin.state.options.separators or {}
+    local layout = plugin.state.options.layout or default_layout
+
+    local left = join_parts(build_section(layout.left, snapshot), separators.component)
+    local middle = join_parts(build_section(layout.middle, snapshot), separators.component)
+    local right = join_parts(build_section(layout.right, snapshot), separators.component)
+
+    local segments = {}
+    if left ~= "" then
+        table.insert(segments, left)
+    end
+    if middle ~= "" then
+        if #segments > 0 then
+            table.insert(segments, separators.section)
+        end
+        table.insert(segments, middle)
+    end
+    if right ~= "" then
+        if #segments > 0 then
+            table.insert(segments, separators.section)
+        end
+        table.insert(segments, right)
+    end
+
+    local line = table.concat(segments, "")
+    if line == "" then
+        line = "phantom.grim"
+    end
+
+    plugin.state.line = line
+    plugin.state.history[#plugin.state.history + 1] = line
+    if #plugin.state.history > 20 then
+        table.remove(plugin.state.history, 1)
+    end
+
+    return line
+end
+
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.options = merge_tables({
+        separators = default_separators,
+        layout = default_layout,
+        providers = {},
+        theme = default_theme,
+    }, opts or {})
+    plugin.state.options.theme = merge_tables(default_theme, plugin.state.options.theme or {})
+    plugin.state.symbols = merge_tables(default_symbols, plugin.state.options.symbols or {})
+
+    ensure_palette()
+    plugin.refresh({})
+
+    log("initialized")
+    return plugin
+end
+
+function plugin.refresh(ctx)
+    ctx = ctx or {}
+
+    ensure_palette()
+
+    local snapshot = {
+        timestamp = os.time(),
+        cwd = ctx.cwd or plugin.state.options.cwd or ".",
+        components = {},
+        context = ctx,
+    }
+
+    for name, collector in pairs(component_collectors) do
+        local payload = collector(snapshot, ctx)
+        assign_component(snapshot, name, payload)
+        if name == "git" then
+            snapshot.git = payload
+        elseif name == "diagnostics" then
+            snapshot.diagnostics = payload
+        elseif name == "lsp" then
+            snapshot.lsp = payload
+        elseif name == "file" then
+            snapshot.file = payload
+        elseif name == "mode" then
+            snapshot.mode = payload
+        elseif name == "position" then
+            snapshot.position = payload
+        elseif name == "clock" then
+            snapshot.clock = payload
+        end
+    end
+
+    plugin.state.snapshot = snapshot
+    return render(snapshot)
+end
+
+function plugin.current()
+    if not plugin.state.line then
+        return plugin.refresh({})
+    end
+    return plugin.state.line
+end
+
+function plugin.summary()
+    local snapshot = plugin.state.snapshot or {}
+    return {
+        line = plugin.state.line,
+        git = snapshot.git,
+        diagnostics = snapshot.diagnostics,
+        lsp = snapshot.lsp,
+        mode = snapshot.mode,
+        file = snapshot.file,
+        palette = clone_table(plugin.state.palette),
+    }
+end
+
+function plugin.palette()
+    ensure_palette()
+    return clone_table(plugin.state.palette)
+end
+
+function plugin.set_layout(layout)
+    plugin.state.options.layout = merge_tables(plugin.state.options.layout or default_layout, layout or {})
+    plugin.refresh(plugin.state.snapshot and plugin.state.snapshot.context or {})
+end
+
+function plugin.attach(name, provider)
+    plugin.state.options.providers = plugin.state.options.providers or {}
+    plugin.state.options.providers[name] = provider
+end
+
+return plugin.setup()

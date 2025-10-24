@@ -1,0 +1,135 @@
+-- plugins/lsp/lsp-config.gza
+-- Auto-start LSP servers by filetype
+
+local autocmd = autocmd or function(event, pattern, callback)
+    print(string.format("[lsp-config] Register autocmd: %s %s", tostring(event), tostring(pattern)))
+    return true
+end
+
+local command = command or function(name, callback, opts)
+    print(string.format("[lsp-config] Register command: %s", tostring(name)))
+    return true
+end
+
+local function get_cursor()
+    return { line = 0, col = 0 }
+end
+
+local function current_file()
+    return ""
+end
+
+local function open_file(uri, line, col)
+    print(string.format("[lsp-config] Jump to: %s (%s:%s)", tostring(uri), tostring(line), tostring(col)))
+end
+
+local function show_completion(items)
+    local count = type(items) == "table" and #items or 0
+    print(string.format("[lsp-config] Completions: %s", tostring(count)))
+end
+
+local function show_diagnostics(diagnostics)
+    local count = type(diagnostics) == "table" and #diagnostics or 0
+    print(string.format("[lsp-config] Diagnostics: %s", tostring(count)))
+end
+
+local vim = vim or {}
+if type(vim.tbl_keys) ~= "function" then
+    function vim.tbl_keys(tbl)
+        local keys = {}
+        if type(tbl) == "table" then
+            for key in pairs(tbl) do
+                table.insert(keys, key)
+            end
+        end
+        table.sort(keys)
+        return keys
+    end
+end
+
+local plugin = {
+    name = "lsp.config",
+    version = "0.1.0",
+}
+
+-- Server configurations
+local servers = {
+    zig = {
+        cmd = "zls",
+        root_markers = [ "build.zig", ".git" ],
+    },
+    rust = {
+        cmd = "rust-analyzer",
+        root_markers = [ "Cargo.toml", ".git" ],
+    },
+    ghostlang = {
+        cmd = "ghostls",
+        root_markers = [ ".git" ],
+    },
+}
+
+-- Initialize function called when plugin loads
+function plugin.setup(opts)
+    opts = opts or {}
+
+    -- Merge user config with defaults
+    if opts.servers then
+        for ft, config in pairs(opts.servers) do
+            servers[ft] = config
+        end
+    end
+
+    -- Register FileType autocmds for each server
+    for ft, config in pairs(servers) do
+        autocmd("FileType", ft, function(event)
+            local path = event.file or ""
+            if path ~= "" then
+                -- Start LSP server for this filetype
+                local bridge = require("grim.bridge")
+                bridge.lsp_start(ft, config.cmd)
+                bridge.lsp_open(path, ft, "")
+            end
+        end)
+    end
+
+    -- Register LSP commands
+    command("LspHover", function()
+        local bridge = require("grim.bridge")
+        local cursor = get_cursor()
+        local path = current_file()
+        local result = bridge.lsp_hover(path, cursor.line, cursor.col)
+        print(result)
+    end, { desc = "Show hover information" })
+
+    command("LspDefinition", function()
+        local bridge = require("grim.bridge")
+        local cursor = get_cursor()
+        local path = current_file()
+        local result = bridge.lsp_definition(path, cursor.line, cursor.col)
+        -- Jump to definition location
+        if result and result.uri then
+            open_file(result.uri, result.line, result.col)
+        end
+    end, { desc = "Go to definition" })
+
+    command("LspCompletion", function()
+        local bridge = require("grim.bridge")
+        local cursor = get_cursor()
+        local path = current_file()
+        local items = bridge.lsp_completion(path, cursor.line, cursor.col)
+        -- Show completion menu
+        show_completion(items)
+    end, { desc = "Request completions" })
+
+    command("LspDiagnostics", function()
+        local bridge = require("grim.bridge")
+        local path = current_file()
+        local diagnostics = bridge.lsp_diagnostics(path)
+        -- Display diagnostics
+        show_diagnostics(diagnostics)
+    end, { desc = "Show diagnostics" })
+
+    print("[lsp-config] LSP servers configured for: " .. table.concat(vim.tbl_keys(servers), ", "))
+end
+
+return plugin

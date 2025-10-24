@@ -1,0 +1,364 @@
+-- plugins/ui/which-key.gza
+-- Keybinding discovery and hints for Phantom.grim
+-- Shows popup with available keybindings after leader key or partial sequence
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "which-key",
+    state = {
+        initialized = false,
+        options = {},
+        keymaps = {},
+        groups = {},
+        popup_visible = false,
+        current_prefix = "",
+        timeout_ms = 500, -- Show popup after 500ms
+    },
+}
+
+local function log(message)
+    print("[which-key] " .. message)
+end
+
+-- Default key groups/categories
+local DEFAULT_GROUPS = {
+    ["<leader>f"] = { name = "Find/Files", icon = "🔍" },
+    ["<leader>g"] = { name = "Git", icon = "🔀" },
+    ["<leader>b"] = { name = "Buffers", icon = "📄" },
+    ["<leader>l"] = { name = "LSP", icon = "🔧" },
+    ["<leader>t"] = { name = "Terminal/Tmux", icon = "💻" },
+    ["<leader>d"] = { name = "Debug/DAP", icon = "🐛" },
+    ["<leader>s"] = { name = "Search", icon = "🔎" },
+    ["<leader>w"] = { name = "Window", icon = "🪟" },
+    ["<leader>q"] = { name = "Quit/Session", icon = "🚪" },
+    ["<leader>c"] = { name = "Code", icon = "📝" },
+    ["<leader>r"] = { name = "Refactor/Rename", icon = "♻️" },
+    ["<leader>p"] = { name = "Project", icon = "📁" },
+    ["<leader>h"] = { name = "Help", icon = "❓" },
+    ["<leader>x"] = { name = "Diagnostics/Quickfix", icon = "⚠️" },
+    ["g"] = { name = "Goto", icon = "➡️" },
+    ["z"] = { name = "Folds", icon = "📖" },
+    ["["] = { name = "Previous", icon = "⬅️" },
+    ["]"] = { name = "Next", icon = "➡️" },
+}
+
+-- Register a keymap with description
+function plugin.register(mode, lhs, rhs, opts)
+    opts = opts or {}
+    mode = mode or "n"
+
+    if not plugin.state.keymaps[mode] then
+        plugin.state.keymaps[mode] = {}
+    end
+
+    plugin.state.keymaps[mode][lhs] = {
+        rhs = rhs,
+        desc = opts.desc or "",
+        silent = opts.silent or false,
+        noremap = opts.noremap or true,
+    }
+end
+
+-- Register a key group (category)
+function plugin.register_group(prefix, opts)
+    opts = opts or {}
+    plugin.state.groups[prefix] = {
+        name = opts.name or prefix,
+        icon = opts.icon or "",
+    }
+end
+
+-- Get keymaps matching a prefix
+local function get_matching_keymaps(mode, prefix)
+    if not plugin.state.keymaps[mode] then
+        return {}
+    end
+
+    local matches = {}
+    for lhs, binding in pairs(plugin.state.keymaps[mode]) do
+        -- Check if lhs starts with prefix
+        if lhs:sub(1, #prefix) == prefix and lhs ~= prefix then
+            local suffix = lhs:sub(#prefix + 1)
+            -- Only show next key in sequence
+            local next_key = suffix:match("^(<[^>]+>|.)")
+            if next_key then
+                table.insert(matches, {
+                    key = next_key,
+                    full_key = lhs,
+                    desc = binding.desc,
+                })
+            end
+        end
+    end
+
+    -- Sort by key
+    table.sort(matches, function(a, b)
+        return a.key < b.key
+    end)
+
+    return matches
+end
+
+-- Format popup content
+local function format_popup(mode, prefix, matches)
+    local lines = {}
+
+    -- Header
+    local header = "Which Key"
+    if prefix ~= "" then
+        -- Check if prefix is a known group
+        local group = plugin.state.groups[prefix]
+        if group then
+            header = group.icon .. " " .. group.name
+        else
+            header = "Keys: " .. prefix
+        end
+    end
+
+    table.insert(lines, "╭─ " .. header .. " " .. string.rep("─", 50 - #header) .. "╮")
+
+    -- Empty state
+    if #matches == 0 then
+        table.insert(lines, "│ No keybindings found                              │")
+        table.insert(lines, "╰────────────────────────────────────────────────────╯")
+        return lines
+    end
+
+    -- Find max key length for alignment
+    local max_key_len = 0
+    for _, match in ipairs(matches) do
+        if #match.key > max_key_len then
+            max_key_len = #match.key
+        end
+    end
+
+    -- List keybindings
+    for _, match in ipairs(matches) do
+        local key_display = match.key
+        local desc_display = match.desc ~= "" and match.desc or match.full_key
+
+        -- Pad key to align descriptions
+        local padding = string.rep(" ", max_key_len - #key_display + 2)
+
+        local line = string.format("│ %s%s→ %s", key_display, padding, desc_display)
+        -- Truncate if too long
+        if #line > 54 then
+            line = line:sub(1, 51) .. "..."
+        end
+        -- Pad to box width
+        line = line .. string.rep(" ", 54 - #line) .. "│"
+
+        table.insert(lines, line)
+    end
+
+    -- Footer
+    table.insert(lines, "╰────────────────────────────────────────────────────╯")
+
+    return lines
+end
+
+-- Show popup with keybindings
+function plugin.show_popup(mode, prefix)
+    mode = mode or "n"
+    prefix = prefix or ""
+
+    local matches = get_matching_keymaps(mode, prefix)
+    local lines = format_popup(mode, prefix, matches)
+
+    -- TODO: Integrate with grim's popup/window system
+    -- For now, log to console
+    log("Popup for prefix: '" .. prefix .. "'")
+    for _, line in ipairs(lines) do
+        print(line)
+    end
+
+    plugin.state.popup_visible = true
+    plugin.state.current_prefix = prefix
+
+    return lines
+end
+
+-- Hide popup
+function plugin.hide_popup()
+    if not plugin.state.popup_visible then
+        return
+    end
+
+    -- TODO: Close grim popup window
+    plugin.state.popup_visible = false
+    plugin.state.current_prefix = ""
+end
+
+-- Handle key press in which-key mode
+function plugin.on_key_press(key)
+    local new_prefix = plugin.state.current_prefix .. key
+
+    -- Check if there are any matches for new prefix
+    local matches = get_matching_keymaps("n", new_prefix)
+
+    if #matches == 0 then
+        -- No more matches, hide popup
+        plugin.hide_popup()
+    else
+        -- Update popup with new matches
+        plugin.show_popup("n", new_prefix)
+    end
+end
+
+-- Auto-register common vim keybindings
+local function register_builtin_keymaps()
+    -- Motion commands
+    plugin.register("n", "gg", "goto first line", { desc = "Go to first line" })
+    plugin.register("n", "G", "goto last line", { desc = "Go to last line" })
+    plugin.register("n", "w", "next word", { desc = "Next word" })
+    plugin.register("n", "b", "previous word", { desc = "Previous word" })
+    plugin.register("n", "e", "end of word", { desc = "End of word" })
+
+    -- Goto commands
+    plugin.register("n", "gd", "goto definition", { desc = "Go to definition" })
+    plugin.register("n", "gD", "goto declaration", { desc = "Go to declaration" })
+    plugin.register("n", "gr", "goto references", { desc = "Find references" })
+    plugin.register("n", "gi", "goto implementation", { desc = "Go to implementation" })
+    plugin.register("n", "gt", "next tab", { desc = "Next tab" })
+    plugin.register("n", "gT", "previous tab", { desc = "Previous tab" })
+
+    -- Folding
+    plugin.register("n", "za", "toggle fold", { desc = "Toggle fold" })
+    plugin.register("n", "zo", "open fold", { desc = "Open fold" })
+    plugin.register("n", "zc", "close fold", { desc = "Close fold" })
+    plugin.register("n", "zR", "open all folds", { desc = "Open all folds" })
+    plugin.register("n", "zM", "close all folds", { desc = "Close all folds" })
+
+    -- Navigation
+    plugin.register("n", "[d", "previous diagnostic", { desc = "Previous diagnostic" })
+    plugin.register("n", "]d", "next diagnostic", { desc = "Next diagnostic" })
+    plugin.register("n", "[c", "previous git hunk", { desc = "Previous git hunk" })
+    plugin.register("n", "]c", "next git hunk", { desc = "Next git hunk" })
+    plugin.register("n", "[b", "previous buffer", { desc = "Previous buffer" })
+    plugin.register("n", "]b", "next buffer", { desc = "Next buffer" })
+end
+
+-- Auto-register phantom.grim default keymaps
+local function register_phantom_keymaps()
+    -- File operations (leader+f)
+    plugin.register("n", "<leader>ff", ":FuzzyFiles", { desc = "Find files" })
+    plugin.register("n", "<leader>fg", ":LiveGrep", { desc = "Live grep" })
+    plugin.register("n", "<leader>fb", ":FindBuffers", { desc = "Find buffers" })
+    plugin.register("n", "<leader>fr", ":FindRecent", { desc = "Recent files" })
+    plugin.register("n", "<leader>fh", ":FindHelp", { desc = "Find help" })
+
+    -- Git operations (leader+g)
+    plugin.register("n", "<leader>gs", ":GitStatus", { desc = "Git status" })
+    plugin.register("n", "<leader>gc", ":GitCommit", { desc = "Git commit" })
+    plugin.register("n", "<leader>gp", ":GitPush", { desc = "Git push" })
+    plugin.register("n", "<leader>gb", ":GitBlame", { desc = "Git blame" })
+    plugin.register("n", "<leader>gd", ":GitDiff", { desc = "Git diff" })
+    plugin.register("n", "<leader>gh", ":GitHunks", { desc = "Git hunks" })
+
+    -- Buffer operations (leader+b)
+    plugin.register("n", "<leader>bn", ":BufferNext", { desc = "Next buffer" })
+    plugin.register("n", "<leader>bp", ":BufferPrev", { desc = "Previous buffer" })
+    plugin.register("n", "<leader>bd", ":BufferDelete", { desc = "Delete buffer" })
+    plugin.register("n", "<leader>ba", ":BufferAll", { desc = "All buffers" })
+
+    -- LSP operations (leader+l)
+    plugin.register("n", "<leader>lh", ":LspHover", { desc = "LSP hover" })
+    plugin.register("n", "<leader>ld", ":LspDefinition", { desc = "Go to definition" })
+    plugin.register("n", "<leader>lr", ":LspReferences", { desc = "Find references" })
+    plugin.register("n", "<leader>la", ":LspCodeAction", { desc = "Code actions" })
+    plugin.register("n", "<leader>lf", ":LspFormat", { desc = "Format code" })
+    plugin.register("n", "<leader>ln", ":LspRename", { desc = "Rename symbol" })
+
+    -- Code operations (leader+c)
+    plugin.register("n", "<leader>ca", ":CodeAction", { desc = "Code action" })
+    plugin.register("n", "<leader>cf", ":FormatCode", { desc = "Format" })
+    plugin.register("n", "<leader>cr", ":RefactorCode", { desc = "Refactor" })
+
+    -- Window operations (leader+w)
+    plugin.register("n", "<leader>wv", ":SplitVertical", { desc = "Split vertical" })
+    plugin.register("n", "<leader>wh", ":SplitHorizontal", { desc = "Split horizontal" })
+    plugin.register("n", "<leader>wc", ":CloseWindow", { desc = "Close window" })
+    plugin.register("n", "<leader>wo", ":OnlyWindow", { desc = "Close other windows" })
+
+    -- Quit operations (leader+q)
+    plugin.register("n", "<leader>qq", ":Quit", { desc = "Quit" })
+    plugin.register("n", "<leader>qa", ":QuitAll", { desc = "Quit all" })
+    plugin.register("n", "<leader>qw", ":SaveQuit", { desc = "Save & quit" })
+
+    -- Terminal/tmux (leader+t)
+    plugin.register("n", "<leader>tt", ":ToggleTerminal", { desc = "Toggle terminal" })
+    plugin.register("n", "<leader>ts", ":TerminalSplit", { desc = "Terminal split" })
+    plugin.register("n", "<leader>tv", ":TerminalVsplit", { desc = "Terminal vsplit" })
+    plugin.register("n", "<leader>tz", ":TmuxZoom", { desc = "Tmux zoom toggle" })
+
+    -- Diagnostics (leader+x)
+    plugin.register("n", "<leader>xx", ":Diagnostics", { desc = "Show diagnostics" })
+    plugin.register("n", "<leader>xq", ":Quickfix", { desc = "Show quickfix" })
+    plugin.register("n", "<leader>xl", ":LocationList", { desc = "Location list" })
+
+    -- General
+    plugin.register("n", "<leader>w", ":write", { desc = "Save file" })
+    plugin.register("n", "<leader>q", ":quit", { desc = "Quit" })
+    plugin.register("n", "<leader>e", ":FileTree", { desc = "File tree" })
+end
+
+-- Setup function
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.options = opts or {}
+
+    -- Set timeout from options
+    if opts.timeout_ms then
+        plugin.state.timeout_ms = opts.timeout_ms
+    end
+
+    -- Register default groups
+    for prefix, group in pairs(DEFAULT_GROUPS) do
+        plugin.register_group(prefix, group)
+    end
+
+    -- Register built-in keymaps
+    register_builtin_keymaps()
+
+    -- Register phantom.grim keymaps
+    register_phantom_keymaps()
+
+    -- Register user-provided groups
+    if opts.groups then
+        for prefix, group in pairs(opts.groups) do
+            plugin.register_group(prefix, group)
+        end
+    end
+
+    -- Register user-provided keymaps
+    if opts.keymaps then
+        for mode, bindings in pairs(opts.keymaps) do
+            for lhs, binding in pairs(bindings) do
+                plugin.register(mode, lhs, binding.rhs or binding, binding)
+            end
+        end
+    end
+
+    log(string.format("Registered %d keymaps in normal mode",
+        plugin.state.keymaps.n and #plugin.state.keymaps.n or 0))
+
+    return plugin
+end
+
+-- Get all registered keymaps (for inspection)
+function plugin.get_keymaps(mode)
+    mode = mode or "n"
+    return plugin.state.keymaps[mode] or {}
+end
+
+-- Get all registered groups
+function plugin.get_groups()
+    return plugin.state.groups
+end
+
+return plugin.setup()

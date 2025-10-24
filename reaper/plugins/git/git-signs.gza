@@ -1,0 +1,497 @@
+-- plugins/git/git-signs.gza
+-- Git integration: gutter signs, blame, hunk staging
+-- Leverages grim's core/git.zig module
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "git-signs",
+    state = {
+        initialized = false,
+        options = {},
+        git_available = false,
+        repo_root = nil,
+        current_branch = nil,
+        file_hunks = {}, -- cache of hunks per file
+        file_blame = {}, -- cache of blame info per file
+        signs_enabled = true,
+    },
+}
+
+local function log(message)
+    print("[git-signs] " .. message)
+end
+
+-- Check if git is available
+local function check_git()
+    -- Use grim's git module to detect repository
+    local in_repo = bridge.git.detect_repository(".")
+    plugin.state.git_available = in_repo
+
+    if in_repo then
+        plugin.state.repo_root = bridge.git.get_repo_root()
+        plugin.state.current_branch = bridge.git.get_current_branch()
+        return true
+    end
+
+    return false
+end
+
+-- Get git status for current buffer
+local function get_buffer_status(bufnr)
+    bufnr = bufnr or bridge.get_current_buffer()
+    local filepath = bridge.get_buffer_path(bufnr)
+
+    if not filepath or not plugin.state.git_available then
+        return nil
+    end
+
+    local status = bridge.git.get_file_status(filepath)
+    return status
+end
+
+-- Get hunks for current buffer
+local function get_buffer_hunks(bufnr)
+    bufnr = bufnr or bridge.get_current_buffer()
+    local filepath = bridge.get_buffer_path(bufnr)
+
+    if not filepath or not plugin.state.git_available then
+        return {}
+    end
+
+    -- Check cache
+    if plugin.state.file_hunks[filepath] then
+        return plugin.state.file_hunks[filepath]
+    end
+
+    -- Get hunks from grim's git module
+    local hunks = bridge.git.get_hunks(filepath)
+    plugin.state.file_hunks[filepath] = hunks
+
+    return hunks
+end
+
+-- Get blame info for current buffer
+local function get_buffer_blame(bufnr)
+    bufnr = bufnr or bridge.get_current_buffer()
+    local filepath = bridge.get_buffer_path(bufnr)
+
+    if not filepath or not plugin.state.git_available then
+        return {}
+    end
+
+    -- Check cache
+    if plugin.state.file_blame[filepath] then
+        return plugin.state.file_blame[filepath]
+    end
+
+    -- Get blame from grim's git module
+    local blame_info = bridge.git.get_blame(filepath)
+    plugin.state.file_blame[filepath] = blame_info
+
+    return blame_info
+end
+
+-- Render gutter signs for hunks
+local function render_gutter_signs(bufnr)
+    if not plugin.state.signs_enabled then
+        return
+    end
+
+    bufnr = bufnr or bridge.get_current_buffer()
+    local hunks = get_buffer_hunks(bufnr)
+
+    if not hunks or #hunks == 0 then
+        return
+    end
+
+    -- Clear existing signs
+    bridge.clear_buffer_signs(bufnr)
+
+    -- Add signs for each hunk
+    for _, hunk in ipairs(hunks) do
+        local sign_type = "GitSignUnchanged"
+
+        if hunk.hunk_type == "added" then
+            sign_type = "GitSignAdded"
+        elseif hunk.hunk_type == "modified" then
+            sign_type = "GitSignModified"
+        elseif hunk.hunk_type == "deleted" then
+            sign_type = "GitSignDeleted"
+        end
+
+        -- Place sign in gutter
+        for line = hunk.start_line, hunk.end_line do
+            bridge.place_sign(bufnr, line, sign_type)
+        end
+    end
+end
+
+-- Show blame for current line
+function plugin.show_blame(line)
+    local bufnr = bridge.get_current_buffer()
+    local filepath = bridge.get_buffer_path(bufnr)
+
+    if not filepath or not plugin.state.git_available then
+        log("Not in git repository")
+        return
+    end
+
+    line = line or bridge.get_cursor_line()
+    local blame_info = get_buffer_blame(bufnr)
+
+    if not blame_info or #blame_info == 0 then
+        log("No blame info available")
+        return
+    end
+
+    -- Get blame for specific line
+    if line <= #blame_info then
+        local info = blame_info[line]
+        local message = string.format(
+            "%s | %s | %s",
+            info.commit_hash:sub(1, 8),
+            info.author,
+            os.date("%Y-%m-%d", tonumber(info.date))
+        )
+        bridge.show_message(message)
+        return message
+    end
+
+    return nil
+end
+
+-- Toggle blame virtual text
+function plugin.toggle_blame_virt_text()
+    -- TODO: Implement virtual text showing blame info inline
+    -- This requires grim's virtual text API
+    log("Blame virtual text toggle (not yet implemented)")
+end
+
+-- Stage current hunk
+function plugin.stage_hunk()
+    local bufnr = bridge.get_current_buffer()
+    local filepath = bridge.get_buffer_path(bufnr)
+    local line = bridge.get_cursor_line()
+
+    if not filepath or not plugin.state.git_available then
+        log("Not in git repository")
+        return false
+    end
+
+    -- Use grim's git module to stage hunk
+    local success = bridge.git.stage_hunk(filepath, line)
+
+    if success then
+        log("Staged hunk at line " .. line)
+        -- Clear cache and re-render
+        plugin.state.file_hunks[filepath] = nil
+        render_gutter_signs(bufnr)
+        return true
+    else
+        log("Failed to stage hunk")
+        return false
+    end
+end
+
+-- Unstage current hunk
+function plugin.unstage_hunk()
+    local bufnr = bridge.get_current_buffer()
+    local filepath = bridge.get_buffer_path(bufnr)
+    local line = bridge.get_cursor_line()
+
+    if not filepath or not plugin.state.git_available then
+        log("Not in git repository")
+        return false
+    end
+
+    -- Use grim's git module to unstage hunk
+    local success = bridge.git.unstage_hunk(filepath, line)
+
+    if success then
+        log("Unstaged hunk at line " .. line)
+        -- Clear cache and re-render
+        plugin.state.file_hunks[filepath] = nil
+        render_gutter_signs(bufnr)
+        return true
+    else
+        log("Failed to unstage hunk")
+        return false
+    end
+end
+
+-- Stage entire file
+function plugin.stage_file()
+    local bufnr = bridge.get_current_buffer()
+    local filepath = bridge.get_buffer_path(bufnr)
+
+    if not filepath or not plugin.state.git_available then
+        log("Not in git repository")
+        return false
+    end
+
+    local success = bridge.git.stage_file(filepath)
+
+    if success then
+        log("Staged file: " .. filepath)
+        -- Clear cache
+        plugin.state.file_hunks[filepath] = nil
+        plugin.state.file_blame[filepath] = nil
+        return true
+    else
+        log("Failed to stage file")
+        return false
+    end
+end
+
+-- Unstage entire file
+function plugin.unstage_file()
+    local bufnr = bridge.get_current_buffer()
+    local filepath = bridge.get_buffer_path(bufnr)
+
+    if not filepath or not plugin.state.git_available then
+        log("Not in git repository")
+        return false
+    end
+
+    local success = bridge.git.unstage_file(filepath)
+
+    if success then
+        log("Unstaged file: " .. filepath)
+        -- Clear cache
+        plugin.state.file_hunks[filepath] = nil
+        plugin.state.file_blame[filepath] = nil
+        return true
+    else
+        log("Failed to unstage file")
+        return false
+    end
+end
+
+-- Discard changes in current hunk
+function plugin.discard_hunk()
+    local bufnr = bridge.get_current_buffer()
+    local filepath = bridge.get_buffer_path(bufnr)
+    local line = bridge.get_cursor_line()
+
+    if not filepath or not plugin.state.git_available then
+        log("Not in git repository")
+        return false
+    end
+
+    -- Confirm before discarding
+    local confirm = bridge.confirm("Discard hunk at line " .. line .. "?", {"Yes", "No"})
+    if confirm ~= 1 then
+        return false
+    end
+
+    -- TODO: Implement discard hunk (requires grim API)
+    -- For now, discard whole file
+    log("Discarding changes (whole file - hunk discard not yet implemented)")
+
+    local success = bridge.git.discard_changes(filepath)
+
+    if success then
+        -- Clear cache and reload buffer
+        plugin.state.file_hunks[filepath] = nil
+        bridge.reload_buffer(bufnr)
+        return true
+    else
+        log("Failed to discard changes")
+        return false
+    end
+end
+
+-- Navigate to next hunk
+function plugin.next_hunk()
+    local bufnr = bridge.get_current_buffer()
+    local hunks = get_buffer_hunks(bufnr)
+
+    if not hunks or #hunks == 0 then
+        log("No hunks in buffer")
+        return
+    end
+
+    local current_line = bridge.get_cursor_line()
+
+    -- Find next hunk after current line
+    for _, hunk in ipairs(hunks) do
+        if hunk.start_line > current_line then
+            bridge.set_cursor_line(hunk.start_line)
+            return
+        end
+    end
+
+    -- Wrap to first hunk
+    if #hunks > 0 then
+        bridge.set_cursor_line(hunks[1].start_line)
+    end
+end
+
+-- Navigate to previous hunk
+function plugin.prev_hunk()
+    local bufnr = bridge.get_current_buffer()
+    local hunks = get_buffer_hunks(bufnr)
+
+    if not hunks or #hunks == 0 then
+        log("No hunks in buffer")
+        return
+    end
+
+    local current_line = bridge.get_cursor_line()
+
+    -- Find previous hunk before current line (iterate backwards)
+    for i = #hunks, 1, -1 do
+        local hunk = hunks[i]
+        if hunk.end_line < current_line then
+            bridge.set_cursor_line(hunk.start_line)
+            return
+        end
+    end
+
+    -- Wrap to last hunk
+    if #hunks > 0 then
+        bridge.set_cursor_line(hunks[#hunks].start_line)
+    end
+end
+
+-- Preview hunk diff
+function plugin.preview_hunk()
+    local bufnr = bridge.get_current_buffer()
+    local hunks = get_buffer_hunks(bufnr)
+    local current_line = bridge.get_cursor_line()
+
+    if not hunks or #hunks == 0 then
+        log("No hunks in buffer")
+        return
+    end
+
+    -- Find hunk at current line
+    local current_hunk = nil
+    for _, hunk in ipairs(hunks) do
+        if current_line >= hunk.start_line and current_line <= hunk.end_line then
+            current_hunk = hunk
+            break
+        end
+    end
+
+    if not current_hunk then
+        log("No hunk at current line")
+        return
+    end
+
+    -- Show hunk content in popup
+    -- TODO: Use grim's popup API
+    log("Hunk preview:")
+    log(current_hunk.content)
+
+    return current_hunk
+end
+
+-- Toggle git signs on/off
+function plugin.toggle_signs()
+    plugin.state.signs_enabled = not plugin.state.signs_enabled
+
+    if plugin.state.signs_enabled then
+        log("Git signs enabled")
+        render_gutter_signs()
+    else
+        log("Git signs disabled")
+        bridge.clear_buffer_signs()
+    end
+end
+
+-- Refresh git signs for current buffer
+function plugin.refresh()
+    local bufnr = bridge.get_current_buffer()
+    local filepath = bridge.get_buffer_path(bufnr)
+
+    if filepath then
+        -- Clear caches
+        plugin.state.file_hunks[filepath] = nil
+        plugin.state.file_blame[filepath] = nil
+    end
+
+    -- Re-render
+    if plugin.state.signs_enabled then
+        render_gutter_signs(bufnr)
+    end
+end
+
+-- Get status summary for statusline
+function plugin.get_status_summary()
+    if not plugin.state.git_available then
+        return nil
+    end
+
+    local bufnr = bridge.get_current_buffer()
+    local hunks = get_buffer_hunks(bufnr)
+
+    local added = 0
+    local modified = 0
+    local deleted = 0
+
+    for _, hunk in ipairs(hunks) do
+        if hunk.hunk_type == "added" then
+            added = added + 1
+        elseif hunk.hunk_type == "modified" then
+            modified = modified + 1
+        elseif hunk.hunk_type == "deleted" then
+            deleted = deleted + 1
+        end
+    end
+
+    return {
+        branch = plugin.state.current_branch,
+        added = added,
+        modified = modified,
+        deleted = deleted,
+        format = string.format("%s +%d ~%d -%d",
+            plugin.state.current_branch or "?",
+            added, modified, deleted
+        ),
+    }
+end
+
+-- Setup function
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.options = opts or {}
+
+    -- Check git availability
+    if check_git() then
+        log(string.format("Git repository detected: %s (branch: %s)",
+            plugin.state.repo_root,
+            plugin.state.current_branch))
+
+        -- Auto-enable signs
+        if opts.signs ~= false then
+            plugin.state.signs_enabled = true
+        end
+
+        -- Auto-refresh on buffer enter/save
+        -- TODO: Register autocommands with grim
+        -- autocmd BufEnter * :lua require("git-signs").refresh()
+        -- autocmd BufWritePost * :lua require("git-signs").refresh()
+    else
+        log("Not in git repository - git signs disabled")
+    end
+
+    return plugin
+end
+
+-- Get current git status
+function plugin.status()
+    return {
+        available = plugin.state.git_available,
+        repo_root = plugin.state.repo_root,
+        branch = plugin.state.current_branch,
+        signs_enabled = plugin.state.signs_enabled,
+    }
+end
+
+return plugin.setup()

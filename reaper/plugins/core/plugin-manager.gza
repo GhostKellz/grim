@@ -1,0 +1,964 @@
+-- plugins/core/plugin-manager.gza
+-- Structured plugin registry with lazy-loading descriptors for Phantom.grim.
+
+local core = require("core")
+
+local plugin = {
+    name = "plugin-manager",
+    state = {
+        initialized = false,
+        defaults = {
+            "core.file-tree",
+            "core.fuzzy-finder",
+            "core.statusline",
+            "core.treesitter",
+            "core.zap-ai",
+            "core.theme",
+            "editor.theme-commands",
+            "editor.plugin-commands",
+            "extras.health",
+        },
+        registry = {},
+        trigger_lookup = {},
+        trigger_index = 0,
+        metrics = {},
+        ensured = false,
+        command_api = false,
+    },
+}
+
+local function log(message)
+    print("[plugin-manager] " .. message)
+end
+
+local function normalize(name)
+    if type(name) ~= "string" then
+        return nil
+    end
+    local trimmed = name:gsub("%s+", "")
+    if #trimmed == 0 then
+        return nil
+    end
+    trimmed = trimmed:gsub("/", ".")
+    return trimmed
+end
+
+local function dedupe(list)
+    local seen = {}
+    local result = {}
+    for _, value in ipairs(list or {}) do
+        if value and not seen[value] then
+            seen[value] = true
+            table.insert(result, value)
+        end
+    end
+    return result
+end
+
+local function to_array(value)
+    if value == nil then
+        return {}
+    end
+    if type(value) == "string" then
+        return { value }
+    end
+    if type(value) ~= "table" then
+        return {}
+    end
+    local result = {}
+    for _, item in ipairs(value) do
+        result[#result + 1] = item
+    end
+    return result
+end
+
+local function safe_call(fn, ...)
+    if type(fn) ~= "function" then
+        return true, nil
+    end
+    local ok, result = pcall(fn, ...)
+    if not ok then
+        log("callback failed: " .. tostring(result))
+    end
+    return ok, result
+end
+
+local function safe_command(name, fn, opts)
+    if type(command) ~= "function" then
+        return false
+    end
+    local ok, err = pcall(command, name, fn, opts)
+    if not ok then
+        log("failed to register command " .. name .. ": " .. tostring(err))
+        return false
+    end
+    return true
+end
+
+local function safe_map(mode, lhs, rhs, desc)
+    if type(map) ~= "function" then
+        return false
+    end
+    local ok, err = pcall(map, mode, lhs, rhs, desc)
+    if not ok then
+        log("failed to register keymap " .. tostring(lhs) .. ": " .. tostring(err))
+        return false
+    end
+    return true
+end
+
+local function safe_autocmd(event, pattern, cmd)
+    if type(autocmd) ~= "function" then
+        return false
+    end
+    local ok, err = pcall(autocmd, event, pattern, cmd)
+    if not ok then
+        log("failed to register autocmd " .. tostring(event) .. ": " .. tostring(err))
+        return false
+    end
+    return true
+end
+
+local function execute_command(name, ctx)
+    if type(name) ~= "string" or #name == 0 then
+        return false
+    end
+
+    local runners = {
+        rawget(_G, "command_exec"),
+        rawget(_G, "command_execute"),
+        rawget(_G, "exec_command"),
+    }
+
+    for _, fn in ipairs(runners) do
+        if type(fn) == "function" then
+            local ok, result = pcall(fn, name, ctx)
+            if ok and result ~= false then
+                return true
+            end
+        end
+    end
+
+    local runtime_bridge = core.bridge and core.bridge()
+    if type(runtime_bridge) == "table" then
+        for _, key in ipairs({ "command_execute", "exec_command", "run_command" }) do
+            local fn = runtime_bridge[key]
+            if type(fn) == "function" then
+                local ok, result = pcall(fn, name, ctx)
+                if ok and result ~= false then
+                    return true
+                end
+            end
+        end
+    end
+
+    return false
+end
+
+local function runtime_command_api()
+    if plugin.state.command_api and plugin.state.command_api ~= false then
+        return plugin.state.command_api
+    end
+
+    local exec_fn = nil
+    local feedkeys_fn = nil
+
+    local phantom_global = rawget(_G, "phantom")
+    if type(phantom_global) == "table" then
+        if type(phantom_global.exec_command) == "function" then
+            exec_fn = phantom_global.exec_command
+        elseif type(phantom_global.command_execute) == "function" then
+            exec_fn = phantom_global.command_execute
+        end
+        if type(phantom_global.feedkeys) == "function" then
+            feedkeys_fn = phantom_global.feedkeys
+        elseif type(phantom_global.send_keys) == "function" then
+            feedkeys_fn = phantom_global.send_keys
+        end
+    end
+
+    local runtime_bridge = core.bridge and core.bridge()
+    if type(runtime_bridge) == "table" then
+        if type(runtime_bridge.command_replay) == "table" then
+            local replay = runtime_bridge.command_replay
+            exec_fn = exec_fn or replay.exec_command or replay.exec or replay.command
+            feedkeys_fn = feedkeys_fn or replay.feedkeys or replay.feed or replay.keys
+        end
+        exec_fn = exec_fn or runtime_bridge.exec_command or runtime_bridge.command_execute or runtime_bridge.command_exec or runtime_bridge.run_command
+        feedkeys_fn = feedkeys_fn or runtime_bridge.feedkeys or runtime_bridge.send_keys or runtime_bridge.replay_keys
+    end
+
+    if type(exec_fn) ~= "function" then
+        exec_fn = nil
+    end
+    if type(feedkeys_fn) ~= "function" then
+        feedkeys_fn = nil
+    end
+
+    if exec_fn or feedkeys_fn then
+        plugin.state.command_api = {
+            exec = exec_fn,
+            feedkeys = feedkeys_fn,
+        }
+    else
+        plugin.state.command_api = false
+    end
+
+    return plugin.state.command_api
+end
+
+local function replay_command(name, ctx)
+    local api = runtime_command_api()
+    if type(api) == "table" and type(api.exec) == "function" and type(name) == "string" and #name > 0 then
+        local ok, result = pcall(api.exec, name, ctx)
+        if ok and result ~= false then
+            return true
+        end
+    end
+    return false
+end
+
+local function replay_keys(lhs, mode, ctx)
+    local api = runtime_command_api()
+    if type(api) == "table" and type(api.feedkeys) == "function" and type(lhs) == "string" and #lhs > 0 then
+        local ok, result = pcall(api.feedkeys, lhs, mode, ctx)
+        if ok and result ~= false then
+            return true
+        end
+    end
+    return false
+end
+
+local function has_triggers(descriptor)
+    local triggers = descriptor.triggers or {}
+    return #(triggers.commands or {}) > 0
+        or #(triggers.keys or {}) > 0
+        or #(triggers.events or {}) > 0
+        or #(triggers.filetypes or {}) > 0
+end
+
+local function normalize_commands(list)
+    local result = {}
+    for _, value in ipairs(to_array(list)) do
+        if type(value) == "string" then
+            table.insert(result, {
+                name = value,
+                run = value,
+            })
+        elseif type(value) == "table" then
+            local name = normalize(value.name or value[1])
+            if name then
+                table.insert(result, {
+                    name = name,
+                    run = value.run or value.exec or name,
+                    desc = value.desc,
+                    callback = type(value.callback) == "function" and value.callback or nil,
+                    once = value.once and true or false,
+                })
+            end
+        end
+    end
+    return result
+end
+
+local function normalize_keys(list)
+    local result = {}
+    for _, value in ipairs(to_array(list)) do
+        if type(value) == "string" then
+            table.insert(result, {
+                mode = "n",
+                lhs = value,
+            })
+        elseif type(value) == "table" then
+            local lhs = value.lhs or value[2]
+            if lhs then
+                table.insert(result, {
+                    mode = value.mode or value[1] or "n",
+                    lhs = lhs,
+                    rhs = value.rhs or value[3],
+                    desc = value.desc or value[4],
+                    callback = type(value.callback) == "function" and value.callback or nil,
+                    once = value.once and true or false,
+                })
+            end
+        end
+    end
+    return result
+end
+
+local function normalize_events(list)
+    local result = {}
+    for _, value in ipairs(to_array(list)) do
+        if type(value) == "string" then
+            table.insert(result, {
+                event = value,
+                pattern = "*",
+            })
+        elseif type(value) == "table" then
+            local event = value.event or value[1]
+            if event then
+                table.insert(result, {
+                    event = event,
+                    pattern = value.pattern or value[2] or "*",
+                    callback = type(value.callback) == "function" and value.callback or nil,
+                    once = value.once and true or false,
+                })
+            end
+        end
+    end
+    return result
+end
+
+local function normalize_filetypes(list)
+    local result = {}
+    for _, value in ipairs(to_array(list)) do
+        if type(value) == "string" then
+            table.insert(result, {
+                ft = value,
+            })
+        elseif type(value) == "table" then
+            local ft = value.ft or value[1]
+            if ft then
+                table.insert(result, {
+                    ft = ft,
+                    callback = type(value.callback) == "function" and value.callback or nil,
+                    once = value.once and true or false,
+                })
+            end
+        end
+    end
+    return result
+end
+
+local function next_identifier(descriptor, kind, slug)
+    plugin.state.trigger_index = plugin.state.trigger_index + 1
+    local suffix = slug or tostring(plugin.state.trigger_index)
+    return string.format("%s::%s::%s::%d", descriptor.name, kind, suffix, plugin.state.trigger_index)
+end
+
+local function store_trigger(identifier, descriptor, entry, kind)
+    plugin.state.trigger_lookup[identifier] = {
+        descriptor = descriptor,
+        entry = entry,
+        kind = kind,
+    }
+end
+
+local function build_descriptor(entry)
+    if type(entry) == "string" then
+        local name = normalize(entry)
+        if not name then
+            return nil
+        end
+        return {
+            name = name,
+            module = name,
+            enabled = true,
+            lazy = false,
+            default = false,
+            priority = 0,
+            dependencies = {},
+            triggers = {
+                commands = {},
+                keys = {},
+                events = {},
+                filetypes = {},
+            },
+        }
+    end
+
+    if type(entry) ~= "table" then
+        return nil
+    end
+
+    local name = normalize(entry.name or entry[1])
+    if not name then
+        return nil
+    end
+
+    local module_name = normalize(entry.module or name)
+    local descriptor = {
+    local counts = {
+        total = 0,
+        lazy = 0,
+        eager = 0,
+        loaded = 0,
+        pending = 0,
+    }
+        name = name,
+        module = module_name,
+        enabled = entry.enabled ~= false,
+        default = entry.default or false,
+        priority = entry.priority or 0,
+            state = loaded and "loaded" or "pending",
+        init = type(entry.init) == "function" and entry.init or nil,
+        config = type(entry.config) == "function" and entry.config or nil,
+        lazy = entry.lazy,
+        triggers = {
+            commands = normalize_commands(entry.cmd or entry.commands),
+        entries[#entries + 1] = entry
+
+        counts.total = counts.total + 1
+        if entry.lazy then
+            counts.lazy = counts.lazy + 1
+        else
+            counts.eager = counts.eager + 1
+        end
+        if loaded then
+            counts.loaded = counts.loaded + 1
+        else
+            counts.pending = counts.pending + 1
+        end
+            keys = normalize_keys(entry.keys),
+            events = normalize_events(entry.event or entry.events),
+            filetypes = normalize_filetypes(entry.ft or entry.filetype or entry.filetypes),
+        },
+        opts = entry,
+    }
+
+    if descriptor.lazy == nil then
+        descriptor.lazy = has_triggers(descriptor)
+    end
+
+        counts = counts,
+    return descriptor
+end
+
+local function merge_lists(target, additions)
+    if not target then
+        return additions or {}
+    end
+    for _, value in ipairs(additions or {}) do
+        table.insert(target, value)
+    end
+    return target
+end
+
+local function merge_descriptors(existing, incoming)
+    if not existing then
+        return incoming
+    end
+
+    existing.priority = incoming.priority or existing.priority
+    existing.lazy = incoming.lazy
+    existing.enabled = incoming.enabled
+    existing.dependencies = dedupe(merge_lists(existing.dependencies, incoming.dependencies))
+
+    if incoming.init then
+        existing.init = incoming.init
+    end
+    if incoming.config then
+        existing.config = incoming.config
+    end
+
+    existing.triggers.commands = merge_lists(existing.triggers.commands, incoming.triggers.commands)
+    existing.triggers.keys = merge_lists(existing.triggers.keys, incoming.triggers.keys)
+    existing.triggers.events = merge_lists(existing.triggers.events, incoming.triggers.events)
+    existing.triggers.filetypes = merge_lists(existing.triggers.filetypes, incoming.triggers.filetypes)
+
+    return existing
+end
+
+local function ensure_descriptor(descriptor)
+    if not descriptor or not descriptor.enabled then
+        return nil
+    end
+
+    local registry = plugin.state.registry
+    local existing = registry[descriptor.name]
+
+    if existing then
+        descriptor = merge_descriptors(existing, descriptor)
+    else
+        registry[descriptor.name] = descriptor
+    end
+
+    return descriptor
+end
+
+local function descriptor_loaded(descriptor)
+    return descriptor and descriptor.loaded == true
+end
+
+local function register_command_trigger(descriptor, entry)
+    if not entry or descriptor_loaded(descriptor) then
+        return
+    end
+    if not entry.name or entry._registered then
+        return
+    end
+
+    entry.identifier = next_identifier(descriptor, "cmd", entry.name)
+    entry._registered = true
+    store_trigger(entry.identifier, descriptor, entry, "cmd")
+
+    local desc = entry.desc or ("Lazy load " .. descriptor.name .. " via :" .. entry.name)
+    safe_command(entry.name, function(ctx)
+        plugin.trigger(entry.identifier, { ctx = ctx })
+    end, { desc = desc })
+end
+
+local function register_key_trigger(descriptor, entry)
+    if not entry or descriptor_loaded(descriptor) then
+        return
+    end
+    if not entry.lhs or entry._registered then
+        return
+    end
+
+    entry.identifier = next_identifier(descriptor, "keys", entry.lhs)
+    entry._registered = true
+    store_trigger(entry.identifier, descriptor, entry, "keys")
+
+    local mode = entry.mode or "n"
+    local desc = entry.desc or ("Lazy load " .. descriptor.name .. " via keymap")
+    local rhs = string.format(":PhantomPluginTrigger %s<CR>", entry.identifier)
+    safe_map(mode, entry.lhs, rhs, desc)
+end
+
+local function register_event_trigger(descriptor, entry)
+    if not entry or descriptor_loaded(descriptor) then
+        return
+    end
+    if not entry.event or entry._registered then
+        return
+    end
+
+    entry.identifier = next_identifier(descriptor, "event", entry.event)
+    entry._registered = true
+    store_trigger(entry.identifier, descriptor, entry, "event")
+
+    local pattern = entry.pattern or "*"
+    local cmd = string.format("PhantomPluginTrigger %s", entry.identifier)
+    safe_autocmd(entry.event, pattern, cmd)
+end
+
+local function register_ft_trigger(descriptor, entry)
+    if not entry or descriptor_loaded(descriptor) then
+        return
+    end
+    if not entry.ft or entry._registered then
+        return
+    end
+
+    entry.identifier = next_identifier(descriptor, "ft", entry.ft)
+    entry._registered = true
+    store_trigger(entry.identifier, descriptor, entry, "ft")
+
+    local cmd = string.format("PhantomPluginTrigger %s", entry.identifier)
+    safe_autocmd("FileType", entry.ft, cmd)
+end
+
+local function register_triggers(descriptor)
+    if not descriptor or not descriptor.lazy then
+        return
+    end
+    local triggers = descriptor.triggers or {}
+    for _, entry in ipairs(triggers.commands or {}) do
+        register_command_trigger(descriptor, entry)
+    end
+    for _, entry in ipairs(triggers.keys or {}) do
+        register_key_trigger(descriptor, entry)
+    end
+    for _, entry in ipairs(triggers.events or {}) do
+        register_event_trigger(descriptor, entry)
+    end
+    for _, entry in ipairs(triggers.filetypes or {}) do
+        register_ft_trigger(descriptor, entry)
+    end
+end
+
+local function finalize_key_triggers(descriptor)
+    if not descriptor then
+        return
+    end
+    for _, entry in ipairs(descriptor.triggers and descriptor.triggers.keys or {}) do
+        if entry.rhs then
+            safe_map(entry.mode or "n", entry.lhs, entry.rhs, entry.desc)
+        elseif type(entry.callback) == "function" then
+            safe_map(entry.mode or "n", entry.lhs, function()
+                safe_call(entry.callback, descriptor)
+            end, entry.desc)
+        end
+    end
+end
+
+local function dispatch_command(name, ctx)
+    if replay_command(name, ctx) then
+        return true
+    end
+    return execute_command(name, ctx)
+end
+
+local function activate_descriptor(descriptor, meta)
+    if not descriptor or descriptor_loaded(descriptor) then
+        return descriptor and descriptor.module_cache or nil
+    end
+    if descriptor.loading then
+        return descriptor.module_cache
+    end
+    descriptor.loading = true
+
+    if descriptor.init and not descriptor.init_ran then
+        safe_call(descriptor.init, descriptor, meta)
+        descriptor.init_ran = true
+    end
+
+    for _, dep in ipairs(descriptor.dependencies or {}) do
+        plugin.load(dep, { kind = "dependency", parent = descriptor.name })
+    end
+
+    local start = os.clock()
+    local ok, result = pcall(core.load_plugin, descriptor.module or descriptor.name)
+    descriptor.loading = false
+
+    if not ok then
+        log("failed to load plugin " .. descriptor.name .. ": " .. tostring(result))
+        return nil
+    end
+
+    local duration = os.clock() - start
+    descriptor.loaded = true
+    descriptor.module_cache = result
+    descriptor.metrics = descriptor.metrics or {}
+    descriptor.metrics.trigger_counts = descriptor.metrics.trigger_counts or {}
+    descriptor.metrics.loads = (descriptor.metrics.loads or 0) + 1
+    descriptor.metrics.total_triggers = descriptor.metrics.total_triggers or 0
+    descriptor.metrics.trigger_kind = meta and meta.kind or "manual"
+    descriptor.metrics.trigger_source = meta and meta.identifier
+    descriptor.metrics.triggered_by = meta and meta.ctx
+    descriptor.metrics.loaded_at = os.time()
+    descriptor.metrics.duration = duration
+    descriptor.metrics.last_duration = duration
+    descriptor.metrics.total_duration = (descriptor.metrics.total_duration or 0) + duration
+    descriptor.metrics.last_trigger_kind = descriptor.metrics.trigger_kind
+    plugin.state.metrics[descriptor.name] = descriptor.metrics
+
+    if descriptor.config and not descriptor.config_ran then
+        safe_call(descriptor.config, result, meta)
+        descriptor.config_ran = true
+    end
+
+    finalize_key_triggers(descriptor)
+
+    return descriptor.module_cache
+end
+
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.registry = {}
+    plugin.state.trigger_lookup = {}
+    plugin.state.trigger_index = 0
+    plugin.state.metrics = {}
+    plugin.state.ensured = false
+    plugin.state.command_api = false
+
+    if opts and type(opts.defaults) == "table" then
+        plugin.state.defaults = dedupe(opts.defaults)
+    else
+        plugin.state.defaults = dedupe(plugin.state.defaults)
+    end
+
+    for _, name in ipairs(plugin.state.defaults or {}) do
+        local descriptor = build_descriptor(name)
+        if descriptor then
+            descriptor.default = true
+            descriptor.lazy = false
+            ensure_descriptor(descriptor)
+        end
+    end
+
+    log("initialized")
+    return plugin
+end
+
+function plugin.register(entry)
+    local descriptor = build_descriptor(entry)
+    if not descriptor then
+        return nil
+    end
+    if not descriptor.enabled then
+        return nil
+    end
+
+    descriptor = ensure_descriptor(descriptor)
+    if not descriptor then
+        return nil
+    end
+
+    if descriptor.init and descriptor.lazy == false and not descriptor.init_ran then
+        safe_call(descriptor.init, descriptor)
+        descriptor.init_ran = true
+    end
+
+    register_triggers(descriptor)
+    plugin.state.ensured = false
+    return descriptor
+end
+
+function plugin.register_many(list)
+    for _, entry in ipairs(list or {}) do
+        plugin.register(entry)
+    end
+end
+
+function plugin.load(name, meta)
+    local normalized = normalize(name)
+    if not normalized then
+        return nil
+    end
+
+    local descriptor = plugin.state.registry[normalized]
+    if not descriptor then
+        descriptor = plugin.register({ name = normalized, lazy = false })
+    end
+
+    return activate_descriptor(descriptor, meta)
+end
+
+local function after_trigger(descriptor, watcher, payload)
+    if not watcher or not descriptor then
+        return
+    end
+    local entry = watcher.entry
+    local kind = watcher.kind
+
+    if kind == "cmd" then
+        if entry.callback then
+            safe_call(entry.callback, payload and payload.ctx, descriptor)
+        else
+            local ctx = payload and payload.ctx
+            if ctx ~= nil and type(ctx) ~= "table" then
+                ctx = { value = ctx }
+            end
+            ctx = ctx or {}
+            ctx.plugin = descriptor.name
+            ctx.identifier = entry.identifier
+            ctx.trigger_kind = kind
+            local ok = dispatch_command(entry.run or entry.name, ctx)
+            if not ok then
+                log(string.format("loaded %s via :%s. Re-run command to execute.", descriptor.name, entry.name))
+            end
+        end
+    elseif kind == "keys" then
+        if entry.callback then
+            safe_call(entry.callback, payload, descriptor)
+        else
+            local replay_ctx = {
+                ctx = payload and payload.ctx or nil,
+                mode = entry.mode or "n",
+                identifier = entry.identifier,
+                plugin = descriptor.name,
+            }
+            if replay_keys(entry.lhs, entry.mode or "n", replay_ctx) then
+                return
+            end
+            if entry.rhs then
+                local command_name = entry.rhs:match("^:([^%s<]+)")
+                if command_name and dispatch_command(command_name, payload and payload.ctx) then
+                    return
+                end
+            end
+            log(string.format("loaded %s via key %s. Repeat keymap to run action.", descriptor.name, entry.lhs))
+        end
+    elseif entry and entry.callback then
+        safe_call(entry.callback, payload, descriptor)
+    end
+
+    if entry and entry.once then
+        plugin.state.trigger_lookup[entry.identifier] = nil
+    end
+end
+
+function plugin.trigger(identifier, payload)
+    if type(identifier) ~= "string" then
+        return false
+    end
+    local watcher = plugin.state.trigger_lookup[identifier]
+    if not watcher then
+        return false
+    end
+
+    local descriptor = watcher.descriptor
+    local meta = {
+        kind = watcher.kind,
+        identifier = identifier,
+        ctx = payload and payload.ctx,
+    }
+
+    local result = activate_descriptor(descriptor, meta)
+    if result then
+        descriptor.metrics = descriptor.metrics or {}
+        descriptor.metrics.trigger_counts = descriptor.metrics.trigger_counts or {}
+        descriptor.metrics.trigger_counts[watcher.kind] = (descriptor.metrics.trigger_counts[watcher.kind] or 0) + 1
+        descriptor.metrics.total_triggers = (descriptor.metrics.total_triggers or 0) + 1
+        descriptor.metrics.last_trigger_kind = watcher.kind
+        descriptor.metrics.last_trigger_at = os.time()
+        descriptor.metrics.last_trigger_identifier = identifier
+        plugin.state.metrics[descriptor.name] = descriptor.metrics
+        after_trigger(descriptor, watcher, payload)
+        return true
+    end
+    return false
+end
+
+local function eager_descriptors()
+    local list = {}
+    for _, descriptor in pairs(plugin.state.registry or {}) do
+        if descriptor.enabled and (not descriptor.lazy) then
+            table.insert(list, descriptor)
+        end
+    end
+    table.sort(list, function(a, b)
+        if a.priority == b.priority then
+            return a.name < b.name
+        end
+        return (a.priority or 0) > (b.priority or 0)
+    end)
+    return list
+end
+
+function plugin.ensure(list)
+    local requested = {}
+    for _, entry in ipairs(list or {}) do
+        local descriptor = plugin.register(entry)
+        if descriptor then
+            table.insert(requested, descriptor)
+        end
+    end
+
+    local ensured = {}
+    for _, descriptor in ipairs(eager_descriptors()) do
+        if activate_descriptor(descriptor, { kind = "ensure" }) then
+            table.insert(ensured, descriptor.name)
+        end
+    end
+
+    for _, descriptor in ipairs(requested) do
+        if activate_descriptor(descriptor, { kind = "ensure" }) then
+            table.insert(ensured, descriptor.name)
+        end
+    end
+
+    ensured = dedupe(ensured)
+    plugin.state.ensured = true
+    return ensured
+end
+
+function plugin.ensure_defaults()
+    return plugin.ensure()
+end
+
+function plugin.list()
+    local list = {}
+    for name, _ in pairs(plugin.state.registry or {}) do
+        table.insert(list, name)
+    end
+    table.sort(list)
+    return list
+end
+
+function plugin.status()
+    local entries = {}
+    local counts = {
+        total = 0,
+        lazy = 0,
+        eager = 0,
+        loaded = 0,
+        pending = 0,
+    }
+    for name, descriptor in pairs(plugin.state.registry or {}) do
+        local loaded = descriptor_loaded(descriptor)
+        local entry = {
+            name = name,
+            lazy = descriptor.lazy and true or false,
+            state = loaded and "loaded" or "pending",
+            trigger = descriptor.metrics and descriptor.metrics.trigger_kind or nil,
+            loaded_at = descriptor.metrics and descriptor.metrics.loaded_at or nil,
+            duration = descriptor.metrics and descriptor.metrics.duration or nil,
+            loads = descriptor.metrics and descriptor.metrics.loads or 0,
+            total_triggers = descriptor.metrics and descriptor.metrics.total_triggers or 0,
+            priority = descriptor.priority or 0,
+        }
+        entries[#entries + 1] = entry
+
+        counts.total = counts.total + 1
+        if entry.lazy then
+            counts.lazy = counts.lazy + 1
+        else
+            counts.eager = counts.eager + 1
+        end
+        if loaded then
+            counts.loaded = counts.loaded + 1
+        else
+            counts.pending = counts.pending + 1
+        end
+    end
+
+    table.sort(entries, function(a, b)
+        if a.priority == b.priority then
+            return a.name < b.name
+        end
+        return a.priority > b.priority
+    end)
+
+    return {
+        ensured = plugin.state.ensured,
+        counts = counts,
+        entries = entries,
+    }
+end
+
+function plugin.loaded(name)
+    local normalized = normalize(name)
+    if not normalized then
+        return false
+    end
+    local descriptor = plugin.state.registry[normalized]
+    if descriptor_loaded(descriptor) then
+        return true
+    end
+    return core.is_loaded(normalized)
+end
+
+function plugin.report()
+    local status = plugin.status()
+    local lines = {
+        "[phantom.grim] plugin status",
+        "  ensured : " .. tostring(status.ensured),
+        "  entries : " .. tostring(#(status.entries or {})),
+        string.format("  lazy/eager : %d lazy / %d eager", status.counts.lazy or 0, status.counts.eager or 0),
+        string.format("  loaded/pending : %d loaded / %d pending", status.counts.loaded or 0, status.counts.pending or 0),
+    }
+    for _, entry in ipairs(status.entries or {}) do
+        local trigger = entry.trigger and (" [" .. entry.trigger .. "]") or ""
+        local duration = entry.duration and string.format(" (%.3fs)", entry.duration) or ""
+        local loaded_at = entry.loaded_at and os.date("!%H:%M:%S", entry.loaded_at) or nil
+        local stamp = loaded_at and (" @" .. loaded_at) or ""
+        table.insert(lines, string.format("    - %-32s %s%s%s%s", entry.name, entry.state, trigger, duration, stamp))
+    end
+    local report = table.concat(lines, "\n")
+    print(report)
+    return report, status
+end
+
+function plugin.metrics()
+    return plugin.state.metrics or {}
+end
+
+function plugin.commands()
+    return {
+        ensure = plugin.ensure_defaults,
+        list = plugin.list,
+        status = plugin.status,
+        report = plugin.report,
+        trigger = plugin.trigger,
+        load = plugin.load,
+    }
+end
+
+return plugin.setup()

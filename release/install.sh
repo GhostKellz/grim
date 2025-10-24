@@ -146,16 +146,16 @@ install_grim() {
     print_success "Installation complete!"
 }
 
-# Install Phantom.grim distribution
-install_phantom() {
-    print_info "Installing Phantom.grim distribution..."
+# Install Reaper distribution (formerly Phantom.grim)
+install_reaper() {
+    print_info "Installing Reaper distribution..."
 
-    # Check if phantom.grim already installed
+    # Check if reaper already installed
     if [ -d "$HOME/.config/grim/plugins" ] && [ -f "$HOME/.config/grim/init.gza" ]; then
-        read -p "Phantom.grim config exists. Overwrite? (y/N): " -n 1 -r
+        read -p "Reaper config exists. Overwrite? (y/N): " -n 1 -r
         echo
         if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-            print_warning "Skipping Phantom.grim installation"
+            print_warning "Skipping Reaper installation"
             return
         fi
         # Backup existing config
@@ -163,16 +163,45 @@ install_phantom() {
         mv "$HOME/.config/grim" "$HOME/.config/grim.backup.$(date +%Y%m%d_%H%M%S)"
     fi
 
-    # Clone phantom.grim
-    print_info "Cloning Phantom.grim from GitHub..."
-    if ! git clone https://github.com/ghostkellz/phantom.grim "$HOME/.config/grim" 2>&1 | grep -v "Cloning into"; then
-        print_error "Failed to clone Phantom.grim"
-        print_warning "You can install it manually: git clone https://github.com/ghostkellz/phantom.grim ~/.config/grim"
-        return
+    # Change to project root (script runs from release/ directory)
+    cd "$(dirname "$0")/.." || exit 1
+
+    # Copy Reaper distribution from bundled reaper/ directory
+    print_info "Installing Reaper distribution from bundled files..."
+
+    # Create config directory
+    mkdir -p "$HOME/.config/grim"
+
+    # Copy init.gza
+    if [ -f "reaper/init.gza" ]; then
+        cp reaper/init.gza "$HOME/.config/grim/"
+    else
+        print_error "Reaper init.gza not found!"
+        return 1
     fi
 
-    print_success "Phantom.grim installed to ~/.config/grim/"
-    print_info "Phantom.grim includes: LSP, fuzzy finder, git signs, statusline, themes, and more!"
+    # Copy plugins
+    if [ -d "reaper/plugins" ]; then
+        cp -r reaper/plugins "$HOME/.config/grim/"
+    fi
+
+    # Copy runtime
+    if [ -d "reaper/runtime" ]; then
+        cp -r reaper/runtime "$HOME/.config/grim/"
+    fi
+
+    # Copy themes
+    if [ -d "reaper/themes" ]; then
+        cp -r reaper/themes "$HOME/.config/grim/"
+    fi
+
+    # Copy docs
+    if [ -d "reaper/docs" ]; then
+        cp -r reaper/docs "$HOME/.config/grim/"
+    fi
+
+    print_success "Reaper installed to ~/.config/grim/"
+    print_info "Reaper includes: LSP, fuzzy finder, git signs, statusline, AI (Thanos), themes, and more!"
 }
 
 # Setup PATH
@@ -242,12 +271,12 @@ ${GREEN}╔═══════════════════════
 ${BLUE}Installation Summary:${NC}
   • Binary:        $INSTALL_PREFIX/bin/grim
   • Runtime files: $INSTALL_PREFIX/share/grim/
-  • Config:        $HOME/.config/grim/ ${GREEN}(Phantom.grim)${NC}
+  • Config:        $HOME/.config/grim/ ${GREEN}(Reaper)${NC}
   • Plugins:       $HOME/.local/share/grim/plugins/
 
 ${BLUE}What You Got:${NC}
   ✓ Grim editor (core) - Dynamic terminal, scrolling, undo/redo
-  ✓ Phantom.grim distribution (LSP, fuzzy finder, git signs, themes)
+  ✓ Reaper distribution (LSP, fuzzy finder, git signs, AI, themes)
   ✓ Full vim motions (hjkl, dd, yy, p, visual mode, search)
   ✓ 1000-level undo/redo (u, Ctrl+R)
   ✓ Syntax highlighting (14+ languages via tree-sitter)
@@ -336,7 +365,7 @@ EOF
     check_prerequisites
     build_grim
     install_grim
-    install_phantom
+    install_reaper
     setup_path
     install_dependencies
     post_install

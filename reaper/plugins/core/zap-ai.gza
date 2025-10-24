@@ -1,0 +1,148 @@
+-- plugins/core/zap-ai.gza
+-- Zap AI helper plugin for Phantom.grim
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "zap-ai",
+    state = {
+        initialized = false,
+        options = {},
+        available = false,
+    },
+}
+
+local function log(message)
+    print("[zap-ai] " .. message)
+end
+
+local function ensure_zap()
+    if not bridge.zap.ensure() then
+        return false
+    end
+    if not bridge.zap.available() then
+        return false
+    end
+    return true
+end
+
+local function refresh_availability()
+    plugin.state.available = ensure_zap()
+    return plugin.state.available
+end
+
+local function ensure_initialized()
+    if plugin.state.initialized then
+        return true
+    end
+    plugin.state.initialized = true
+    refresh_availability()
+    if plugin.state.available then
+        log("Zap AI ready (Ollama detected)")
+    else
+        log("Zap AI unavailable (is Ollama running on http://localhost:11434?)")
+    end
+    return plugin.state.available
+end
+
+function plugin.setup(opts)
+    plugin.state.options = opts or {}
+    ensure_initialized()
+    return plugin
+end
+
+function plugin.available()
+    ensure_initialized()
+    return refresh_availability()
+end
+
+local function require_diff(value)
+    if type(value) == "string" and #value > 0 then
+        return value
+    end
+    return nil
+end
+
+function plugin.commit_message(diff)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+    return bridge.zap.commit_message(diff)
+end
+
+function plugin.commit_message_from_git()
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+    local diff = require_diff(bridge.git_diff_staged())
+    if not diff then
+        log("No staged git changes to summarize")
+        return ""
+    end
+    return bridge.zap.commit_message(diff)
+end
+
+function plugin.explain_changes(diff)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+    return bridge.zap.explain_changes(diff)
+end
+
+function plugin.explain_head()
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+    local diff = require_diff(bridge.git_diff_head())
+    if not diff then
+        log("No HEAD diff available to explain")
+        return ""
+    end
+    return bridge.zap.explain_changes(diff)
+end
+
+function plugin.resolve_conflict(conflict)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+    return bridge.zap.resolve_conflict(conflict)
+end
+
+function plugin.review_code(source)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+    return bridge.zap.review_code(source)
+end
+
+function plugin.generate_docs(source)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+    return bridge.zap.generate_docs(source)
+end
+
+function plugin.suggest_names(source)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+    return bridge.zap.suggest_names(source)
+end
+
+function plugin.detect_issues(source)
+    ensure_initialized()
+    if not refresh_availability() then
+        return ""
+    end
+    return bridge.zap.detect_issues(source)
+end
+
+return plugin.setup()

@@ -1,0 +1,267 @@
+-- plugins/editor/plugin-commands.gza
+-- User-facing helpers that expose the plugin manager through Grim commands.
+
+local plugin_manager = require("plugins.core.plugin-manager")
+local core = require("core")
+local bridge = core.bridge and core.bridge() or nil
+
+local plugin = {
+    name = "plugin-commands",
+    state = {
+        initialized = false,
+    },
+}
+
+local function log(message)
+    print("[plugin-commands] " .. message)
+end
+
+local function call_bridge(method, ...)
+    if not bridge or type(bridge[method]) ~= "function" then
+        return false, "bridge-unavailable"
+    end
+
+    local ok, result = pcall(bridge[method], ...)
+    if not ok then
+        return false, result
+    end
+
+    return result and true or false, nil
+end
+
+local function parse_args(ctx)
+    if type(ctx) == "string" then
+        local list = {}
+        for value in ctx:gmatch("%S+") do
+            list[#list + 1] = value
+        end
+        return list
+    end
+
+    if type(ctx) == "table" then
+        if type(ctx.args) == "string" then
+            return parse_args(ctx.args)
+        end
+        local list = {}
+        local index = 1
+        while ctx[index] do
+            if type(ctx[index]) == "string" and #ctx[index] > 0 then
+                list[#list + 1] = ctx[index]
+            end
+            index = index + 1
+        end
+        return list
+    end
+
+    return {}
+end
+
+local function register_command(name, fn, opts)
+    if type(command) ~= "function" then
+        return
+    end
+
+    local ok, err = pcall(command, name, fn, opts)
+    if not ok then
+        log("failed to register command " .. name .. ": " .. tostring(err))
+    end
+end
+
+local function print_list(header, list)
+    print(header)
+    for _, entry in ipairs(list or {}) do
+        print("  - " .. tostring(entry))
+    end
+end
+
+function plugin.ensure(list)
+    if type(list) == "string" then
+        list = { list }
+    end
+    local ensured = plugin_manager.ensure(list)
+    log("ensured " .. tostring(#ensured) .. " plugins")
+    return ensured
+end
+
+function plugin.ensure_defaults()
+    local ensured = plugin_manager.ensure_defaults()
+    log("ensured default plugin bundle")
+    return ensured
+end
+
+function plugin.list()
+    local list = plugin_manager.list()
+    print_list("[phantom.grim] registered plugins", list)
+    return list
+end
+
+function plugin.status()
+    local report, status = plugin_manager.report()
+    if report then
+        print(report)
+    end
+    return status
+end
+
+function plugin.summary()
+    local status = plugin_manager.status()
+    return {
+        list = plugin_manager.list(),
+        status = status,
+    }
+end
+
+function plugin.register(list)
+    if type(list) == "string" then
+        list = { list }
+    end
+    plugin_manager.register_many(list)
+    return plugin_manager.status()
+end
+
+function plugin.install_plugin(name, version)
+    if type(name) ~= "string" or #name == 0 then
+        log("install requires <name> [version]")
+        return false
+    end
+
+    local success, err = call_bridge("plugin_install", name, version or "")
+    if not success then
+        log("install failed for " .. name .. ": " .. tostring(err or "unknown"))
+        return false
+    end
+
+    plugin_manager.register(name)
+    plugin_manager.ensure({ name })
+
+    local suffix = version and #version > 0 and ("@" .. version) or ""
+    log("installed " .. name .. suffix)
+    return true
+end
+
+function plugin.update_plugin(name, version)
+    if type(name) ~= "string" or #name == 0 then
+        log("update requires <name> [version]")
+        return false
+    end
+
+    local success, err = call_bridge("plugin_update", name, version or "")
+    if not success then
+        log("update failed for " .. name .. ": " .. tostring(err or "unknown"))
+        return false
+    end
+
+    plugin_manager.ensure({ name })
+
+    local suffix = version and #version > 0 and ("@" .. version) or ""
+    log("updated " .. name .. suffix)
+    return true
+end
+
+function plugin.load_plugin(name)
+    if type(name) ~= "string" or #name == 0 then
+        log("usage: :PhantomPluginLoad <name>")
+        return false
+    end
+
+    local result = plugin_manager.load(name, { kind = "command", source = ":PhantomPluginLoad" })
+    if result then
+        log("loaded " .. name)
+        return true
+    end
+
+    log("failed to load " .. name)
+    return false
+end
+
+function plugin.trigger_descriptor(identifier, payload)
+    if type(identifier) ~= "string" or #identifier == 0 then
+        log("usage: :PhantomPluginTrigger <identifier>")
+        return false
+    end
+
+    local ok = plugin_manager.trigger(identifier, payload)
+    if not ok then
+        log("trigger failed for " .. identifier)
+    end
+    return ok
+end
+
+function plugin.setup()
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+
+    register_command("PhantomPlugins", function()
+        plugin.status()
+    end, { desc = "Show Phantom.grim plugin status" })
+
+    register_command("PhantomPluginEnsure", function(ctx)
+        local args = parse_args(ctx)
+        if #args == 0 then
+            plugin.ensure_defaults()
+        else
+            plugin.ensure(args)
+        end
+        plugin.status()
+    end, { desc = "Ensure Phantom.grim plugins are loaded" })
+
+    register_command("PhantomPluginList", function()
+        plugin.list()
+    end, { desc = "List registered Phantom.grim plugins" })
+
+    register_command("PhantomPluginRegister", function(ctx)
+        local args = parse_args(ctx)
+        if #args == 0 then
+            log("no plugin names provided")
+            return
+        end
+        plugin.register(args)
+        plugin.status()
+    end, { desc = "Register additional Phantom.grim plugins" })
+
+    register_command("PhantomPluginInstall", function(ctx)
+        local args = parse_args(ctx)
+        if #args == 0 then
+            log("usage: :PhantomPluginInstall <name> [version]")
+            return
+        end
+        plugin.install_plugin(args[1], args[2])
+        plugin.status()
+    end, { desc = "Install and ensure a Phantom.grim plugin" })
+
+    register_command("PhantomPluginUpdate", function(ctx)
+        local args = parse_args(ctx)
+        if #args == 0 then
+            log("usage: :PhantomPluginUpdate <name> [version]")
+            return
+        end
+        plugin.update_plugin(args[1], args[2])
+        plugin.status()
+    end, { desc = "Update an installed Phantom.grim plugin" })
+
+    register_command("PhantomPluginLoad", function(ctx)
+        local args = parse_args(ctx)
+        if #args == 0 then
+            log("usage: :PhantomPluginLoad <name>")
+            return
+        end
+        plugin.load_plugin(args[1])
+    end, { desc = "Force load a Phantom.grim plugin", hidden = true })
+
+    register_command("PhantomPluginTrigger", function(ctx)
+        local args = parse_args(ctx)
+        if #args == 0 then
+            log("usage: :PhantomPluginTrigger <identifier>")
+            return
+        end
+        plugin.trigger_descriptor(args[1], { ctx = ctx, args = args })
+    end, { desc = "Internal lazy-load trigger", hidden = true })
+
+    log("commands registered")
+    return plugin
+end
+
+return plugin.setup()

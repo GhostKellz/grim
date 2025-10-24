@@ -1,0 +1,329 @@
+-- plugins/integration/tmux.gza
+-- Seamless tmux integration for Phantom.grim
+-- Features: Pane navigation, session detection, statusline integration, command execution
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "tmux",
+    state = {
+        initialized = false,
+        options = {},
+        in_tmux = false,
+        session_name = nil,
+        window_index = nil,
+        pane_index = nil,
+        pane_id = nil,
+    },
+}
+
+local function log(message)
+    print("[tmux] " .. message)
+end
+
+-- Check if we're running inside tmux
+local function detect_tmux()
+    local tmux_env = os.getenv("TMUX")
+    if tmux_env and #tmux_env > 0 then
+        plugin.state.in_tmux = true
+        return true
+    end
+    plugin.state.in_tmux = false
+    return false
+end
+
+-- Get tmux session info
+local function get_session_info()
+    if not plugin.state.in_tmux then
+        return nil
+    end
+
+    -- Get session name
+    local session_cmd = "tmux display-message -p '#S'"
+    local session_handle = io.popen(session_cmd)
+    if session_handle then
+        plugin.state.session_name = session_handle:read("*l")
+        session_handle:close()
+    end
+
+    -- Get window index
+    local window_cmd = "tmux display-message -p '#I'"
+    local window_handle = io.popen(window_cmd)
+    if window_handle then
+        plugin.state.window_index = window_handle:read("*l")
+        window_handle:close()
+    end
+
+    -- Get pane index
+    local pane_cmd = "tmux display-message -p '#P'"
+    local pane_handle = io.popen(pane_cmd)
+    if pane_handle then
+        plugin.state.pane_index = pane_handle:read("*l")
+        pane_handle:close()
+    end
+
+    -- Get pane ID (for sending commands)
+    local id_cmd = "tmux display-message -p '#{pane_id}'"
+    local id_handle = io.popen(id_cmd)
+    if id_handle then
+        plugin.state.pane_id = id_handle:read("*l")
+        id_handle:close()
+    end
+
+    return {
+        session = plugin.state.session_name,
+        window = plugin.state.window_index,
+        pane = plugin.state.pane_index,
+        pane_id = plugin.state.pane_id,
+    }
+end
+
+-- Execute tmux command
+local function tmux_cmd(cmd)
+    if not plugin.state.in_tmux then
+        return nil
+    end
+
+    local handle = io.popen("tmux " .. cmd)
+    if not handle then
+        return nil
+    end
+
+    local result = handle:read("*a")
+    handle:close()
+    return result
+end
+
+-- Navigate to tmux pane
+local function navigate_pane(direction)
+    if not plugin.state.in_tmux then
+        return false
+    end
+
+    -- Try vim-tmux-navigator style first (check if at edge)
+    local at_edge = false
+
+    if direction == "h" then
+        at_edge = tmux_cmd("display-message -p '#{pane_at_left}'"):match("1")
+    elseif direction == "j" then
+        at_edge = tmux_cmd("display-message -p '#{pane_at_bottom}'"):match("1")
+    elseif direction == "k" then
+        at_edge = tmux_cmd("display-message -p '#{pane_at_top}'"):match("1")
+    elseif direction == "l" then
+        at_edge = tmux_cmd("display-message -p '#{pane_at_right}'"):match("1")
+    end
+
+    if at_edge then
+        return false -- Let grim handle it
+    end
+
+    -- Navigate tmux pane
+    local dir_map = {
+        h = "L", -- tmux uses L for left
+        j = "D", -- D for down
+        k = "U", -- U for up
+        l = "R", -- R for right
+    }
+
+    tmux_cmd("select-pane -" .. dir_map[direction])
+    return true
+end
+
+-- Send keys to tmux pane
+function plugin.send_keys(keys, target_pane)
+    if not plugin.state.in_tmux then
+        log("Not in tmux session")
+        return false
+    end
+
+    target_pane = target_pane or plugin.state.pane_id
+    if not target_pane then
+        log("No target pane specified")
+        return false
+    end
+
+    local cmd = string.format("send-keys -t %s %s", target_pane, keys)
+    tmux_cmd(cmd)
+    return true
+end
+
+-- Send command to tmux pane
+function plugin.send_command(command, target_pane)
+    if not plugin.state.in_tmux then
+        log("Not in tmux session")
+        return false
+    end
+
+    target_pane = target_pane or plugin.state.pane_id
+    if not target_pane then
+        log("No target pane specified")
+        return false
+    end
+
+    -- Send command + Enter
+    local cmd = string.format("send-keys -t %s '%s' Enter", target_pane, command)
+    tmux_cmd(cmd)
+    return true
+end
+
+-- Create new tmux pane
+function plugin.split_pane(direction, command)
+    if not plugin.state.in_tmux then
+        log("Not in tmux session")
+        return nil
+    end
+
+    local dir_flag = direction == "horizontal" and "-h" or "-v"
+    local cmd = "split-window " .. dir_flag
+
+    if command then
+        cmd = cmd .. " '" .. command .. "'"
+    end
+
+    local result = tmux_cmd(cmd)
+
+    -- Get new pane ID
+    local new_pane_id = tmux_cmd("display-message -p '#{pane_id}'")
+    return new_pane_id and new_pane_id:gsub("%s+", "") or nil
+end
+
+-- Close tmux pane
+function plugin.kill_pane(target_pane)
+    if not plugin.state.in_tmux then
+        return false
+    end
+
+    target_pane = target_pane or plugin.state.pane_id
+    if not target_pane then
+        return false
+    end
+
+    tmux_cmd("kill-pane -t " .. target_pane)
+    return true
+end
+
+-- List all panes
+function plugin.list_panes()
+    if not plugin.state.in_tmux then
+        return {}
+    end
+
+    local result = tmux_cmd("list-panes -F '#{pane_id}|#{pane_title}|#{pane_current_command}'")
+    if not result then
+        return {}
+    end
+
+    local panes = {}
+    for line in result:gmatch("[^\n]+") do
+        local id, title, command = line:match("([^|]+)|([^|]+)|([^|]+)")
+        if id then
+            table.insert(panes, {
+                id = id,
+                title = title,
+                command = command,
+            })
+        end
+    end
+
+    return panes
+end
+
+-- Toggle zoom on current pane
+function plugin.toggle_zoom()
+    if not plugin.state.in_tmux then
+        return false
+    end
+
+    tmux_cmd("resize-pane -Z")
+    return true
+end
+
+-- Enter tmux copy mode
+function plugin.enter_copy_mode()
+    if not plugin.state.in_tmux then
+        return false
+    end
+
+    tmux_cmd("copy-mode")
+    return true
+end
+
+-- Get statusline info for tmux
+function plugin.get_statusline_info()
+    if not plugin.state.in_tmux then
+        return nil
+    end
+
+    return {
+        session = plugin.state.session_name,
+        window = plugin.state.window_index,
+        pane = plugin.state.pane_index,
+        format = string.format("[%s:%s.%s]",
+            plugin.state.session_name or "?",
+            plugin.state.window_index or "?",
+            plugin.state.pane_index or "?"
+        ),
+    }
+end
+
+-- Check if currently in tmux
+function plugin.in_tmux()
+    return plugin.state.in_tmux
+end
+
+-- Register keymaps for seamless navigation
+local function register_keymaps()
+    -- Seamless pane navigation (Ctrl+hjkl)
+    -- When at edge of grim window, navigate to tmux pane
+    -- TODO: These need to be registered with grim's keymap system
+    -- For now, this is a placeholder for the integration
+
+    local keymaps = {
+        { mode = "n", key = "<C-h>", action = function() navigate_pane("h") end, desc = "Navigate left (tmux)" },
+        { mode = "n", key = "<C-j>", action = function() navigate_pane("j") end, desc = "Navigate down (tmux)" },
+        { mode = "n", key = "<C-k>", action = function() navigate_pane("k") end, desc = "Navigate up (tmux)" },
+        { mode = "n", key = "<C-l>", action = function() navigate_pane("l") end, desc = "Navigate right (tmux)" },
+    }
+
+    -- Store for later registration
+    plugin.state.keymaps = keymaps
+end
+
+-- Setup function
+function plugin.setup(opts)
+    plugin.state.options = opts or {}
+
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+
+    -- Detect tmux
+    if detect_tmux() then
+        log("Detected tmux session")
+        get_session_info()
+
+        local info = plugin.get_statusline_info()
+        if info then
+            log(string.format("Session: %s, Window: %s, Pane: %s",
+                info.session, info.window, info.pane))
+        end
+
+        -- Register keymaps
+        register_keymaps()
+    else
+        log("Not running in tmux")
+    end
+
+    return plugin
+end
+
+-- Refresh session info (for statusline updates)
+function plugin.refresh()
+    if plugin.state.in_tmux then
+        get_session_info()
+    end
+end
+
+return plugin.setup()

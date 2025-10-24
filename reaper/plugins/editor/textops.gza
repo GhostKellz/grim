@@ -1,0 +1,434 @@
+-- plugins/editor/textops.gza
+-- Shared buffer manipulation helpers with runtime-aware fallbacks.
+
+local core = require("core")
+
+local textops = {
+    state = {
+        runtime_checked = false,
+        runtime = nil,
+        buffer_api_checked = false,
+        operator_api_checked = false,
+        scratch = {
+            lines = { "" },
+            filetype = "default",
+            cursor_line = 1,
+            cursor_col = 0,
+        },
+    },
+}
+
+local function log(message)
+    print("[textops] " .. message)
+end
+
+local function ensure_scratch()
+    local scratch = textops.state.scratch
+    scratch.lines = scratch.lines or { "" }
+    scratch.filetype = scratch.filetype or "default"
+    scratch.cursor_line = scratch.cursor_line or 1
+    scratch.cursor_col = scratch.cursor_col or 0
+    if #scratch.lines == 0 then
+        scratch.lines = { "" }
+    end
+    if scratch.cursor_line < 1 then
+        scratch.cursor_line = 1
+    elseif scratch.cursor_line > #scratch.lines then
+        scratch.cursor_line = #scratch.lines
+    end
+    local current = scratch.lines[scratch.cursor_line]
+    if type(current) ~= "string" then
+        scratch.lines[scratch.cursor_line] = tostring(current or "")
+        current = scratch.lines[scratch.cursor_line]
+    end
+    local line_length = #current
+    if scratch.cursor_col < 0 then
+        scratch.cursor_col = 0
+    elseif scratch.cursor_col > line_length then
+        scratch.cursor_col = line_length
+    end
+    return scratch
+end
+
+local function locate_runtime()
+    if textops.state.runtime_checked then
+        return textops.state.runtime
+    end
+
+    textops.state.runtime_checked = true
+    local runtime = nil
+
+    local phantom_global = rawget(_G, "phantom")
+    if type(phantom_global) == "table" then
+        runtime = phantom_global.runtime or phantom_global.buffer or phantom_global
+    end
+
+    if not runtime then
+        local bridge = core.bridge and core.bridge()
+        if type(bridge) == "table" then
+            runtime = bridge.runtime or bridge.editor or bridge
+        end
+    end
+
+    if not runtime then
+        runtime = rawget(_G, "runtime")
+    end
+
+    if type(runtime) ~= "table" then
+        runtime = nil
+    end
+
+    textops.state.runtime = runtime
+    return runtime
+end
+
+local function try_method(target, names, ...)
+    if type(target) ~= "table" then
+        return nil
+    end
+    for _, name in ipairs(names) do
+        local fn = target[name]
+        if type(fn) == "function" then
+            local ok, result = pcall(fn, target, ...)
+            if ok then
+                return result
+            end
+        end
+    end
+    return nil
+end
+
+local function locate_buffer_api()
+    if textops.state.buffer_api_checked then
+        return textops.state.buffer_api
+    end
+    textops.state.buffer_api_checked = true
+
+    local runtime = locate_runtime()
+    if not runtime then
+        textops.state.buffer_api = nil
+        return nil
+    end
+
+    local candidates = {
+        runtime.BufferEditAPI,
+        runtime.buffer_edit,
+        runtime.buffer,
+        runtime.buffer_api,
+    }
+
+    for _, candidate in ipairs(candidates) do
+        if type(candidate) == "table" then
+            if type(candidate.acquire) == "function" then
+                local ok, instance = pcall(candidate.acquire, candidate)
+                if ok and type(instance) == "table" then
+                    textops.state.buffer_api = instance
+                    return textops.state.buffer_api
+                end
+            elseif type(candidate.init) == "function" then
+                local ok, instance = pcall(candidate.init, candidate)
+                if ok and type(instance) == "table" then
+                    textops.state.buffer_api = instance
+                    return textops.state.buffer_api
+                end
+            else
+                textops.state.buffer_api = candidate
+                return textops.state.buffer_api
+            end
+        end
+    end
+
+    textops.state.buffer_api = nil
+    return nil
+end
+
+local function locate_operator_api()
+    if textops.state.operator_api_checked then
+        return textops.state.operator_api
+    end
+    textops.state.operator_api_checked = true
+
+    local runtime = locate_runtime()
+    if not runtime then
+        textops.state.operator_api = nil
+        return nil
+    end
+
+    local candidates = {
+        runtime.OperatorRepeatAPI,
+        runtime.operator_repeat,
+        runtime.operator,
+    }
+
+    for _, candidate in ipairs(candidates) do
+        if type(candidate) == "table" then
+            if type(candidate.acquire) == "function" then
+                local ok, instance = pcall(candidate.acquire, candidate)
+                if ok and type(instance) == "table" then
+                    textops.state.operator_api = instance
+                    return textops.state.operator_api
+                end
+            elseif type(candidate.init) == "function" then
+                local ok, instance = pcall(candidate.init, candidate)
+                if ok and type(instance) == "table" then
+                    textops.state.operator_api = instance
+                    return textops.state.operator_api
+                end
+            else
+                textops.state.operator_api = candidate
+                return textops.state.operator_api
+            end
+        end
+    end
+
+    textops.state.operator_api = nil
+    return nil
+end
+
+function textops.reset()
+    textops.state.runtime_checked = false
+    textops.state.buffer_api_checked = false
+    textops.state.operator_api_checked = false
+    textops.state.runtime = nil
+    textops.state.buffer_api = nil
+    textops.state.operator_api = nil
+    textops.state.scratch = {
+        lines = { "" },
+        filetype = "default",
+        cursor_line = 1,
+        cursor_col = 0,
+    }
+end
+
+function textops.set_scratch(opts)
+    local scratch = ensure_scratch()
+    opts = opts or {}
+    if type(opts.lines) == "table" then
+        scratch.lines = {}
+        for idx, value in ipairs(opts.lines) do
+            scratch.lines[idx] = tostring(value)
+        end
+        if #scratch.lines == 0 then
+            scratch.lines = { "" }
+        end
+    end
+    if type(opts.filetype) == "string" and #opts.filetype > 0 then
+        scratch.filetype = opts.filetype
+    end
+    if type(opts.cursor_line) == "number" then
+        scratch.cursor_line = opts.cursor_line
+    end
+    if type(opts.cursor_col) == "number" then
+        scratch.cursor_col = opts.cursor_col
+    end
+    ensure_scratch()
+    return scratch
+end
+
+function textops.filetype()
+    local buffer_api = locate_buffer_api()
+    if buffer_api then
+        local ft = try_method(buffer_api, { "filetype", "get_filetype", "fileType" })
+        if type(ft) == "string" and #ft > 0 then
+            return ft
+        end
+    end
+    return ensure_scratch().filetype
+end
+
+function textops.set_filetype(ft)
+    ensure_scratch().filetype = ft or "default"
+end
+
+function textops.cursor()
+    local buffer_api = locate_buffer_api()
+    if buffer_api then
+        local pos = try_method(buffer_api, { "cursor", "get_cursor", "cursor_position" })
+        if type(pos) == "table" then
+            local line = tonumber(pos.line or pos[1])
+            local col = tonumber(pos.col or pos.column or pos[2])
+            if line then
+                if col then
+                    return line, col
+                end
+                return line, ensure_scratch().cursor_col
+            end
+        end
+    end
+    local scratch = ensure_scratch()
+    return scratch.cursor_line, scratch.cursor_col
+end
+
+function textops.set_cursor(line, col)
+    local buffer_api = locate_buffer_api()
+    if buffer_api then
+        local ok = try_method(buffer_api, { "set_cursor", "cursor_set", "position" }, line, col)
+        if ok then
+            return true
+        end
+    end
+    local scratch = ensure_scratch()
+    if type(line) == "number" then
+        scratch.cursor_line = math.max(1, math.min(line, #scratch.lines))
+    end
+    if type(col) == "number" then
+        local current = scratch.lines[scratch.cursor_line]
+        local limit = #current
+        scratch.cursor_col = math.max(0, math.min(col, limit))
+    end
+    return true
+end
+
+local function clamp_line_index(line)
+    line = tonumber(line) or 1
+    if line < 1 then
+        return 1
+    end
+    local scratch = ensure_scratch()
+    if line > #scratch.lines then
+        return #scratch.lines
+    end
+    return line
+end
+
+function textops.get_line(line)
+    local buffer_api = locate_buffer_api()
+    if buffer_api then
+        local result = try_method(buffer_api, { "line", "get_line", "line_at" }, line)
+        if type(result) == "string" then
+            return result
+        end
+    end
+    local scratch = ensure_scratch()
+    local index = clamp_line_index(line)
+    return scratch.lines[index] or ""
+end
+
+function textops.set_line(line, value)
+    local buffer_api = locate_buffer_api()
+    if buffer_api then
+        local ok = try_method(buffer_api, { "set_line", "replace_line", "line_replace" }, line, value)
+        if ok then
+            return true
+        end
+    end
+    local scratch = ensure_scratch()
+    local index = clamp_line_index(line)
+    scratch.lines[index] = value or ""
+    return true
+end
+
+function textops.get_lines(start_line, end_line)
+    start_line = clamp_line_index(start_line or 1)
+    end_line = clamp_line_index(end_line or start_line)
+    if start_line > end_line then
+        start_line, end_line = end_line, start_line
+    end
+
+    local buffer_api = locate_buffer_api()
+    if buffer_api then
+        local result = try_method(buffer_api, { "get_lines", "lines", "slice" }, start_line, end_line)
+        if type(result) == "table" then
+            return result
+        end
+    end
+
+    local scratch = ensure_scratch()
+    local lines = {}
+    for line = start_line, end_line do
+        lines[#lines + 1] = scratch.lines[line] or ""
+    end
+    return lines
+end
+
+function textops.replace_lines(start_line, end_line, new_lines)
+    start_line = clamp_line_index(start_line or 1)
+    end_line = clamp_line_index(end_line or start_line)
+    if start_line > end_line then
+        start_line, end_line = end_line, start_line
+    end
+    new_lines = new_lines or {}
+
+    local buffer_api = locate_buffer_api()
+    if buffer_api then
+        local ok = try_method(buffer_api, { "set_lines", "replace_lines", "lines_replace" }, start_line, end_line, new_lines)
+        if ok then
+            return true
+        end
+    end
+
+    local scratch = ensure_scratch()
+    for _ = end_line, start_line, -1 do
+        table.remove(scratch.lines, start_line)
+    end
+    for offset = 1, #new_lines do
+        table.insert(scratch.lines, start_line + offset - 1, tostring(new_lines[offset] or ""))
+    end
+    if #scratch.lines == 0 then
+        scratch.lines = { "" }
+    end
+    return true
+end
+
+function textops.insert_text(text)
+    text = tostring(text or "")
+    if text == "" then
+        return true
+    end
+
+    local buffer_api = locate_buffer_api()
+    if buffer_api then
+        local ok = try_method(buffer_api, { "insert_text", "insert", "text_insert" }, text)
+        if ok then
+            return ok
+        end
+    end
+
+    local scratch = ensure_scratch()
+    local line = scratch.lines[scratch.cursor_line] or ""
+    local before = line:sub(1, scratch.cursor_col)
+    local after = line:sub(scratch.cursor_col + 1)
+    scratch.lines[scratch.cursor_line] = before .. text .. after
+    scratch.cursor_col = scratch.cursor_col + #text
+    return true
+end
+
+function textops.delete_range(line, start_col, end_col)
+    line = clamp_line_index(line or select(1, textops.cursor()))
+    start_col = math.max(0, tonumber(start_col) or 0)
+    end_col = math.max(start_col, tonumber(end_col) or start_col)
+
+    local buffer_api = locate_buffer_api()
+    if buffer_api then
+        local ok = try_method(buffer_api, { "delete_range", "deleteRange", "remove" }, line, start_col, end_col)
+        if ok then
+            return ok
+        end
+    end
+
+    local scratch = ensure_scratch()
+    local value = scratch.lines[line] or ""
+    local before = value:sub(1, start_col)
+    local after = value:sub(end_col + 2)
+    scratch.lines[line] = before .. after
+    if scratch.cursor_line == line then
+        scratch.cursor_col = math.max(0, math.min(scratch.cursor_col, #scratch.lines[line]))
+    end
+    return true
+end
+
+function textops.state_snapshot()
+    local scratch = ensure_scratch()
+    return {
+        lines = { table.unpack(scratch.lines) },
+        filetype = scratch.filetype,
+        cursor_line = scratch.cursor_line,
+        cursor_col = scratch.cursor_col,
+    }
+end
+
+function textops.operator_api()
+    return locate_operator_api()
+end
+
+return textops

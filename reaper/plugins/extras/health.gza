@@ -1,0 +1,189 @@
+-- plugins/extras/health.gza
+-- Runtime health reporting utilities inspired by LazyVim's :Lazy health command.
+
+local core = require("core")
+local bridge = require("grim.bridge")
+local theme = require("plugins.core.theme")
+local plugin_manager = require("plugins.core.plugin-manager")
+
+local plugin = {
+    name = "health",
+    state = {
+        initialized = false,
+        last_snapshot = nil,
+    },
+}
+
+local function log(message)
+    print("[health] " .. message)
+end
+
+local function summarize_plugins()
+    local status = plugin_manager.status() or { entries = {} }
+    local entries = status.entries or {}
+
+    local metrics = plugin_manager.metrics()
+
+    local summary = {
+        total = #entries,
+        ensured = status.ensured and true or false,
+        eager = 0,
+        lazy = 0,
+        loaded = 0,
+        pending = 0,
+        total_duration = 0,
+        total_loads = 0,
+        total_triggers = 0,
+        slowest = nil,
+        recent = nil,
+        top_trigger = nil,
+        top_trigger_count = 0,
+        entries = entries,
+    }
+
+    for _, entry in ipairs(entries) do
+        local metric = metrics and metrics[entry.name] or {}
+        entry.loads = metric.loads or entry.loads or 0
+        entry.total_triggers = metric.total_triggers or entry.total_triggers or 0
+        entry.avg_duration = nil
+        if (metric.loads or 0) > 0 then
+            local total_duration = metric.total_duration or metric.duration or entry.duration or 0
+            entry.avg_duration = total_duration / metric.loads
+        end
+        entry.last_trigger_kind = metric.last_trigger_kind or entry.last_trigger_kind
+        entry.last_trigger_at = metric.last_trigger_at or entry.last_trigger_at
+
+        if entry.lazy then
+            summary.lazy = summary.lazy + 1
+        else
+            summary.eager = summary.eager + 1
+        end
+        if entry.state == "loaded" then
+            summary.loaded = summary.loaded + 1
+            if entry.duration then
+                summary.total_duration = summary.total_duration + entry.duration
+                if not summary.slowest or (entry.duration > (summary.slowest.duration or 0)) then
+                    summary.slowest = entry
+                end
+            end
+            if entry.loaded_at then
+                if not summary.recent or entry.loaded_at > (summary.recent.loaded_at or 0) then
+                    summary.recent = entry
+                end
+            end
+            summary.total_loads = summary.total_loads + (metric.loads or 0)
+            summary.total_triggers = summary.total_triggers + (metric.total_triggers or 0)
+            if (metric.total_triggers or 0) > (summary.top_trigger_count or 0) then
+                summary.top_trigger = entry
+                summary.top_trigger_count = metric.total_triggers or 0
+            end
+        else
+            summary.pending = summary.pending + 1
+        end
+    end
+
+    if summary.loaded > 0 then
+        summary.avg_duration = summary.total_duration / summary.loaded
+    else
+        summary.avg_duration = 0
+    end
+
+    summary.loaded_names = core.loaded_plugins() or {}
+    return summary
+end
+
+local function capture_snapshot()
+    local plugin_summary = summarize_plugins()
+    local snapshot = {
+        timestamp = os.time(),
+        plugins = plugin_summary.loaded_names,
+        plugin_summary = plugin_summary,
+        theme = theme.summary(),
+        zap = {
+            available = bridge.zap and bridge.zap.available and bridge.zap.available() or false,
+        },
+        git = {
+            staged = #(bridge.git_diff_staged() or ""),
+            head = #(bridge.git_diff_head() or ""),
+        },
+    }
+
+    snapshot.plugins_total = #snapshot.plugins
+    return snapshot
+end
+
+function plugin.setup()
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    plugin.state.initialized = true
+    plugin.state.last_snapshot = capture_snapshot()
+    log("initialized")
+    return plugin
+end
+
+function plugin.refresh()
+    plugin.state.last_snapshot = capture_snapshot()
+    return plugin.state.last_snapshot
+end
+
+function plugin.report()
+    local snapshot = plugin.refresh()
+    local plugin_summary = snapshot.plugin_summary or {}
+    local slowest = plugin_summary.slowest
+    local recent = plugin_summary.recent
+    local lines = {
+        "[phantom.grim] health report",
+        "  plugins loaded  : " .. tostring(snapshot.plugins_total),
+        "  lazy configured  : " .. tostring(plugin_summary.lazy or 0),
+        "  eager configured : " .. tostring(plugin_summary.eager or 0),
+        "  pending lazy     : " .. tostring(plugin_summary.pending or 0),
+        string.format("  avg lazy load   : %.3fs", plugin_summary.avg_duration or 0),
+    "  lazy loads       : " .. tostring(plugin_summary.total_loads or 0),
+    "  trigger hits     : " .. tostring(plugin_summary.total_triggers or 0),
+        "  active theme    : " .. tostring((snapshot.theme or {}).current),
+        "  theme catalog   : " .. tostring((snapshot.theme or {}).total or 0) .. " themes",
+        "  zap available   : " .. tostring(snapshot.zap.available),
+        "  git staged bytes: " .. tostring(snapshot.git.staged),
+        "  git head bytes  : " .. tostring(snapshot.git.head),
+    }
+
+    if slowest then
+        table.insert(lines, string.format(
+            "  slowest lazy    : %s (%.3fs via %s)",
+            slowest.name,
+            slowest.duration or 0,
+            slowest.trigger or "n/a"
+        ))
+    end
+
+    if recent then
+        table.insert(lines, string.format(
+            "  last loaded     : %s (%s)",
+            recent.name,
+            os.date("!%H:%M:%S", recent.loaded_at)
+        ))
+    end
+
+    if plugin_summary.top_trigger and (plugin_summary.top_trigger_count or 0) > 0 then
+        table.insert(lines, string.format(
+            "  most triggers   : %s (%d hits)",
+            plugin_summary.top_trigger.name,
+            plugin_summary.top_trigger_count or 0
+        ))
+    end
+
+    local report = table.concat(lines, "\n")
+    print(report)
+    return report, snapshot
+end
+
+function plugin.snapshot()
+    if not plugin.state.last_snapshot then
+        plugin.refresh()
+    end
+    return plugin.state.last_snapshot
+end
+
+return plugin.setup()

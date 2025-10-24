@@ -331,6 +331,27 @@ pub fn build(b: *std.Build) void {
     run_bench_cmd.step.dependOn(b.getInstallStep());
     bench_step.dependOn(&run_bench_cmd.step);
 
+    // Test Grove syntax highlighting
+    const test_grove_exe = b.addExecutable(.{
+        .name = "test_grove_highlight",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("test_grove_highlight.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{
+                .{ .name = "syntax", .module = syntax_mod },
+                .{ .name = "core", .module = core_mod },
+            },
+        }),
+    });
+    b.installArtifact(test_grove_exe);
+
+    // Top level step for testing Grove
+    const test_grove_step = b.step("test-grove", "Test Grove syntax highlighting");
+    const run_test_grove = b.addRunArtifact(test_grove_exe);
+    run_test_grove.step.dependOn(b.getInstallStep());
+    test_grove_step.dependOn(&run_test_grove.step);
+
     // Test Reaper client executable
     const test_reaper_exe = b.addExecutable(.{
         .name = "test_reaper_client",

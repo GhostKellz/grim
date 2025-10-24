@@ -1,0 +1,4 @@
+autocmd("TextYankPost", "*", "print('Text yanked')")
+autocmd("BufWritePost", "*.zig", "print('Zig file saved')")
+
+print("Default autocmds loaded")

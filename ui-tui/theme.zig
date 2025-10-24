@@ -193,25 +193,25 @@ pub const Theme = struct {
         }
     }
 
-    /// Built-in Ghost Hacker Blue theme (fallback)
+    /// Built-in Ghost Hacker Mint theme (Chris's exact nvim colors)
     fn ghostHackerBlue() Theme {
         return .{
-            // Syntax - Ghost Hacker Blue colors (matching Chris's nvim exactly!)
-            .keyword = Color.fromHex("9a0ade") catch unreachable, // purple (bold in nvim)
+            // Syntax - Mint + Blue color scheme (from cktech/nvim/init.lua)
+            .keyword = Color.fromHex("9a0ade") catch unreachable, // purple (bold)
             .string_literal = Color.fromHex("66d9ef") catch unreachable, // teal
-            .number_literal = Color.fromHex("7aa2f7") catch unreachable, // light blue
-            .comment = Color.fromHex("7aa2f7") catch unreachable, // light blue (italic in nvim)
-            .function_name = Color.fromHex("88aff0") catch unreachable, // mint green (bold in nvim)
-            .type_name = Color.fromHex("7aa2f7") catch unreachable, // light blue
-            .variable = Color.fromHex("7aa2f7") catch unreachable, // light blue
-            .operator = Color.fromHex("57c7ff") catch unreachable, // light blue operators
+            .number_literal = Color.fromHex("f3f99d") catch unreachable, // yellow
+            .comment = Color.fromHex("57c7ff") catch unreachable, // hacker blue (italic)
+            .function_name = Color.fromHex("88aff0") catch unreachable, // mint green (bold)
+            .type_name = Color.fromHex("7dcfff") catch unreachable, // cyan-blue
+            .variable = Color.fromHex("8aff80") catch unreachable, // bright mint green
+            .operator = Color.fromHex("57c7ff") catch unreachable, // light blue
             .punctuation = Color.fromHex("7aa2f7") catch unreachable, // light blue
             .error_bg = Color.fromHex("c53b53") catch unreachable, // error red
-            .error_fg = Color.fromHex("7aa2f7") catch unreachable, // light blue
+            .error_fg = Color.fromHex("ffffff") catch unreachable, // white
 
-            // UI - Ghost Hacker Blue aesthetic (matching Chris's nvim statusline!)
+            // UI - Mint + Blue aesthetic (from cktech/nvim statusline)
             .background = Color.fromHex("1a1b26") catch unreachable, // tokyonight dark bg
-            .foreground = Color.fromHex("7aa2f7") catch unreachable, // light blue
+            .foreground = Color.fromHex("8aff80") catch unreachable, // bright mint green (Normal)
             .cursor = Color.fromHex("7fffd4") catch unreachable, // aqua/cyan
             .selection = Color.fromHex("88ffcc") catch unreachable, // mint green
             .line_number = Color.fromHex("7aa2f7") catch unreachable, // light blue

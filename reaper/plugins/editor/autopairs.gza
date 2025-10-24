@@ -1,0 +1,179 @@
+-- plugins/editor/autopairs.gza
+-- Lightweight autopairs implementation leveraging textops runtime helpers.
+
+local textops = require("plugins.editor.textops")
+
+local plugin = {
+    name = "autopairs",
+    state = {
+        initialized = false,
+        pairs = {
+            ["("] = {
+                close = ")",
+                skip = true,
+            },
+            ["["] = {
+                close = "]",
+                skip = true,
+            },
+            ["{"] = {
+                close = "}",
+                skip = true,
+            },
+            ["\""] = {
+                close = "\"",
+                skip = true,
+                symmetric = true,
+            },
+            ["'"] = {
+                close = "'",
+                skip = true,
+                symmetric = true,
+            },
+            ["`"] = {
+                close = "`",
+                skip = true,
+                symmetric = true,
+            },
+        },
+        inverse = {},
+    },
+}
+
+local function log(message)
+    print("[autopairs] " .. message)
+end
+
+local function build_inverse()
+    plugin.state.inverse = {}
+    for open, meta in pairs(plugin.state.pairs) do
+        plugin.state.inverse[meta.close] = meta
+    end
+end
+
+local function current_line_snapshot()
+    local snap = textops.state_snapshot()
+    local line = snap.lines[snap.cursor_line] or ""
+    return snap.cursor_line, snap.cursor_col, line
+end
+
+local function set_cursor(line, col)
+    textops.set_cursor(line, col)
+end
+
+local function insert_pair(open_char, close_char)
+    textops.insert_text(open_char .. close_char)
+    local line, col = textops.cursor()
+    set_cursor(line, col - #close_char)
+end
+
+local function handle_open(char, meta)
+    if meta.symmetric then
+        local line, col, text = current_line_snapshot()
+        local prev = text:sub(col, col)
+        local next_char = text:sub(col + 1, col + 1)
+        if prev == "" and next_char == char then
+            set_cursor(line, col + 1)
+            return
+        end
+    end
+    insert_pair(char, meta.close)
+end
+
+local function handle_close(char)
+    local line, col, text = current_line_snapshot()
+    local next_char = text:sub(col + 1, col + 1)
+    if next_char == char then
+        set_cursor(line, col + 1)
+        return
+    end
+    textops.insert_text(char)
+end
+
+local function handle_backspace()
+    local line, col, text = current_line_snapshot()
+    if col <= 0 then
+        return
+    end
+    local prev_char = text:sub(col, col)
+    local next_char = text:sub(col + 1, col + 1)
+    local meta = plugin.state.pairs[prev_char]
+    if meta and next_char == meta.close then
+        textops.delete_range(line, col - 1, col - 1)
+        textops.delete_range(line, col, col)
+        set_cursor(line, col - 1)
+    else
+        textops.delete_range(line, col - 1, col - 1)
+        set_cursor(line, col - 1)
+    end
+end
+
+local function handle_char(char)
+    if type(char) ~= "string" or #char == 0 then
+        return
+    end
+    local meta = plugin.state.pairs[char]
+    if meta then
+        handle_open(char, meta)
+        return
+    end
+    if plugin.state.inverse[char] then
+        handle_close(char)
+        return
+    end
+    textops.insert_text(char)
+end
+
+local function register_mappings()
+    if type(map) ~= "function" then
+        return
+    end
+    for open in pairs(plugin.state.pairs) do
+        map("i", open, function()
+            handle_char(open)
+        end, "autopairs open")
+    end
+    for close in pairs(plugin.state.inverse) do
+        map("i", close, function()
+            handle_char(close)
+        end, "autopairs close")
+    end
+    map("i", "<BS>", function()
+        handle_backspace()
+    end, "autopairs backspace")
+end
+
+function plugin.setup(opts)
+    if plugin.state.initialized then
+        return plugin
+    end
+
+    opts = opts or {}
+    if type(opts.pairs) == "table" then
+        for key, meta in pairs(opts.pairs) do
+            plugin.state.pairs[key] = meta
+        end
+    end
+
+    build_inverse()
+    register_mappings()
+    plugin.state.initialized = true
+    log("initialized")
+    return plugin
+end
+
+function plugin.handle_event(payload)
+    if type(payload) == "table" and payload.char then
+        handle_char(payload.char)
+    end
+end
+
+function plugin.handle_char(char)
+    handle_char(char)
+end
+
+function plugin.handle_backspace()
+    handle_backspace()
+end
+
+return plugin.setup()

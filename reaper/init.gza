@@ -1,0 +1,58 @@
+-- phantom.grim/init.gza
+-- Main entry point for Phantom.grim configuration framework
+-- Bootstraps the entire system
+
+print("[phantom.grim] bootstrapping runtime...")
+
+local core = require("core")
+core.init({ verbose = true })
+
+-- Defaults are already loaded by the Zig runtime, but requiring them here keeps
+-- Ghostlang modules warm when users reload configuration at runtime.
+require("runtime.defaults.options")
+require("runtime.defaults.keymaps")
+require("runtime.defaults.autocmds")
+require("runtime.defaults.plugins")
+
+core.ensure_plugins({
+	-- Core plugins
+	"core.plugin-manager",
+	"core.theme",
+	"core.file-tree",
+	"core.fuzzy-finder",
+	"core.statusline",
+	"core.treesitter",
+	"core.zap-ai",
+
+	-- AI plugins
+	"ai.thanos",  -- Multi-provider AI gateway (GitHub Copilot, Claude, GPT-4, Ollama, Grok)
+	"ai.omen",
+
+	-- Editor plugins
+	"editor.autopairs",
+	"editor.comment",
+	"editor.phantom",
+	"editor.plugin-commands",
+	"editor.terminal",
+	"editor.theme-commands",
+
+	-- UI plugins (Sprint 4)
+	"ui.bufferline",
+	"ui.dashboard",
+	"ui.indent-guides",
+	"ui.which-key",
+
+	-- Git plugins (Sprint 4)
+	"git.git-signs",
+
+	-- Integration plugins (Sprint 4)
+	"integration.tmux",
+
+	-- LSP plugins
+	"lsp.lsp-config",
+
+	-- Extras
+	"extras.health",
+})
+
+print("[phantom.grim] ready")

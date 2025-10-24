@@ -44,6 +44,11 @@ const KEYWORDS = struct {
         "func",      "var", "const", "if", "else",  "for",     "range",  "return", "struct",
         "interface", "map", "chan",  "go", "defer", "package", "import",
     };
+    const bash = [_][]const u8{
+        "if",    "then",  "else",  "elif",    "fi",     "for",    "while", "do",       "done",
+        "case",  "esac",  "in",    "function", "return", "local",  "export", "readonly",
+        "declare", "trap", "exit",  "break",   "continue", "source", "shift",
+    };
     const none = [_][]const u8{};
 };
 
@@ -69,6 +74,7 @@ pub const GroveParser = struct {
         json,
         yaml,
         toml,
+        bash,
         ghostlang,
         unknown,
 
@@ -89,6 +95,7 @@ pub const GroveParser = struct {
             if (std.mem.eql(u8, ext, ".json")) return .json;
             if (std.mem.eql(u8, ext, ".yaml") or std.mem.eql(u8, ext, ".yml")) return .yaml;
             if (std.mem.eql(u8, ext, ".toml")) return .toml;
+            if (std.mem.eql(u8, ext, ".sh") or std.mem.eql(u8, ext, ".bash") or std.mem.eql(u8, ext, ".zsh")) return .bash;
             if (std.mem.eql(u8, ext, ".gza") or std.mem.eql(u8, ext, ".ghost")) return .ghostlang;
             return .unknown;
         }
@@ -110,6 +117,7 @@ pub const GroveParser = struct {
                 .json => "json",
                 .yaml => "yaml",
                 .toml => "toml",
+                .bash => "bash",
                 .ghostlang => "ghostlang",
                 .unknown => "unknown",
             };
@@ -249,10 +257,8 @@ pub const GroveParser = struct {
     }
 
     pub fn getHighlights(self: *GroveParser, allocator: std.mem.Allocator) Error![]Highlight {
-        if (self.tree == null) return &.{};
-
-        // TODO: Implement Grove highlighting when dependency is available
-        // For now, return basic lexical highlighting as fallback
+        // TODO: Implement full Grove tree-sitter highlighting when dependency is available
+        // For now, use fallback lexical highlighting which works well for most languages
         return try self.getFallbackHighlights(allocator);
     }
 
@@ -459,6 +465,7 @@ pub const GroveParser = struct {
             .c, .cpp => KEYWORDS.c[0..],
             .cmake => KEYWORDS.cmake[0..],
             .go => KEYWORDS.go[0..],
+            .bash => KEYWORDS.bash[0..],
             else => KEYWORDS.none[0..],
         };
 

@@ -1,0 +1,26 @@
+local phantom = require("plugins.editor.phantom")
+
+phantom.lazy({
+    name = "editor.comment",
+    event = { "BufReadPost" },
+    cmd = { "CommentToggle", "CommentLine", "CommentBlock" },
+    keys = {
+        { "n", "gcc", ":CommentToggle<CR>", "Toggle comment on current line" },
+        { "v", "gc", ":CommentBlock<CR>", "Toggle selection comment" },
+    },
+})
+
+phantom.lazy({
+    name = "editor.autopairs",
+    event = { "InsertEnter" },
+})
+
+phantom.lazy({
+    name = "lsp.config",
+    event = { "BufReadPost", "BufNewFile" },
+})
+
+phantom.lazy({
+    name = "core.treesitter",
+    event = { "BufReadPost", "BufNewFile" },
+})

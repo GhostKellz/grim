@@ -1,0 +1,168 @@
+-- plugins/editor/phantom.gza
+-- Declarative configuration helpers approximating LazyVim's setup ergonomics.
+
+local theme = require("plugins.core.theme")
+local plugin_manager = require("plugins.core.plugin-manager")
+
+local phantom = {
+    name = "phantom",
+    state = {
+        options = {},
+        keymaps = {},
+        autocmds = {},
+        plugins = {},
+        finalized = false,
+    },
+}
+
+local function log(message)
+    print("[phantom] " .. message)
+end
+
+local function apply_options(options)
+    if type(options) ~= "table" then
+        return
+    end
+    for key, value in pairs(options) do
+        if set then
+            set(key, value)
+        end
+        phantom.state.options[key] = value
+    end
+end
+
+local function apply_keymaps(maps)
+    if type(maps) ~= "table" then
+        return
+    end
+    for _, entry in ipairs(maps) do
+        local mode = entry.mode or entry[1] or "n"
+        local lhs = entry.lhs or entry[2]
+        local rhs = entry.rhs or entry[3]
+        local desc = entry.desc or entry[4]
+        if mode and lhs and rhs and map then
+            map(mode, lhs, rhs, desc)
+        end
+        table.insert(phantom.state.keymaps, {
+            mode = mode,
+            lhs = lhs,
+            rhs = rhs,
+            desc = desc,
+        })
+    end
+end
+
+local function apply_autocmds(items)
+    if type(items) ~= "table" then
+        return
+    end
+    for _, entry in ipairs(items) do
+        local event = entry.event or entry[1]
+        local pattern = entry.pattern or entry[2] or "*"
+        local command = entry.command or entry[3]
+        if event and command and autocmd then
+            autocmd(event, pattern, command)
+        end
+        table.insert(phantom.state.autocmds, {
+            event = event,
+            pattern = pattern,
+            command = command,
+        })
+    end
+end
+
+local function register_plugins(list)
+    if type(list) ~= "table" then
+        return
+    end
+    for _, entry in ipairs(list) do
+        local descriptor = plugin_manager.register(entry)
+        if descriptor and descriptor.name then
+            table.insert(phantom.state.plugins, descriptor.name)
+        elseif type(entry) == "string" then
+            table.insert(phantom.state.plugins, entry)
+        elseif type(entry) == "table" then
+            local name = entry.name or entry[1]
+            if type(name) == "string" then
+                table.insert(phantom.state.plugins, name)
+            end
+        end
+    end
+end
+
+function phantom.theme(opts)
+    opts = opts or {}
+    theme.configure(opts)
+    if opts.default then
+        theme.set(opts.default, { silent = true })
+    end
+    if opts.preview_random then
+        theme.random({ preview = true })
+    end
+    theme.ensure_default()
+end
+
+function phantom.setup(spec)
+    if phantom.state.finalized then
+        return phantom
+    end
+
+    spec = spec or {}
+
+    if spec.options then
+        apply_options(spec.options)
+    end
+
+    if spec.keymaps then
+        apply_keymaps(spec.keymaps)
+    end
+
+    if spec.autocmds then
+        apply_autocmds(spec.autocmds)
+    end
+
+    if spec.plugins then
+        register_plugins(spec.plugins)
+    end
+
+    if spec.theme then
+        phantom.theme(spec.theme)
+    end
+
+    plugin_manager.ensure_defaults()
+    theme.ensure_default()
+
+    phantom.state.finalized = true
+    log("setup finalized")
+    return phantom
+end
+
+function phantom.lazy(spec)
+    if spec == nil then
+        return nil
+    end
+    if type(spec) == "table" and spec[1] and not spec.name then
+        local results = {}
+        for _, entry in ipairs(spec) do
+            results[#results + 1] = phantom.lazy(entry)
+        end
+        return results
+    end
+
+    local descriptor = plugin_manager.register(spec)
+    if descriptor and descriptor.name then
+        table.insert(phantom.state.plugins, descriptor.name)
+    end
+    return descriptor
+end
+
+function phantom.summary()
+    return {
+        options = phantom.state.options,
+        keymaps = phantom.state.keymaps,
+        autocmds = phantom.state.autocmds,
+        plugins = phantom.state.plugins,
+    }
+end
+
+return phantom

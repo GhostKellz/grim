@@ -1,0 +1,163 @@
+-- runtime/lib/phantom/lsp.gza
+-- Friendly Ghostlang wrapper around Grim's native LSP manager.
+
+local bridge = require("grim.bridge")
+local ffi = rawget(_G, "ffi")
+local json_ok, json = pcall(require, "json")
+
+local lsp = {
+    state = {
+        servers = {},
+    },
+}
+
+local function read_string(payload)
+    if type(payload) == "string" then
+        return payload
+    end
+    if type(payload) == "cdata" and ffi and ffi.string then
+        local ok, value = pcall(ffi.string, payload)
+        if ok and value then
+            return value
+        end
+    end
+    return ""
+end
+
+local function decode_json(payload)
+    local text = read_string(payload)
+    if text == "" then
+        return nil
+    end
+    if json_ok and json and json.decode then
+        local ok, result = pcall(json.decode, text)
+        if ok then
+            return result
+        end
+    end
+    return text
+end
+
+local function ensure_language(language, spec)
+    if type(language) ~= "string" or #language == 0 then
+        return false
+    end
+
+    spec = spec or {}
+    local server = spec.server or spec.cmd or spec.command or spec[1] or language
+    if type(server) ~= "string" or #server == 0 then
+        return false
+    end
+
+    local ok = bridge.lsp_start(language, server)
+    if not ok then
+        return false
+    end
+
+    lsp.state.servers[language] = {
+        server = server,
+        options = spec,
+    }
+    return true
+end
+
+function lsp.ensure(config)
+    if type(config) ~= "table" then
+        return false
+    end
+    local success = true
+    for language, spec in pairs(config) do
+        if not ensure_language(language, spec) then
+            success = false
+        end
+    end
+    return success
+end
+
+function lsp.start(language, server)
+    local ok = ensure_language(language, { server = server })
+    return ok and lsp.state.servers[language] or nil
+end
+
+function lsp.open(args)
+    if type(args) ~= "table" then
+        return false
+    end
+    local path = args.path or args[1]
+    local language = args.language or args.lang or args.ft or args[2]
+    local text = args.content or args.text or args.source or args[3] or ""
+
+    if type(path) ~= "string" or #path == 0 then
+        return false
+    end
+    if type(language) ~= "string" or #language == 0 then
+        return false
+    end
+
+    ensure_language(language, lsp.state.servers[language] and lsp.state.servers[language].options or {})
+    return bridge.lsp_open(path, language, text) and true or false
+end
+
+function lsp.change(path, text)
+    if type(path) ~= "string" or #path == 0 then
+        return false
+    end
+    return bridge.lsp_change(path, text or "") and true or false
+end
+
+function lsp.close(path)
+    if type(path) ~= "string" or #path == 0 then
+        return false
+    end
+    return bridge.lsp_close(path) and true or false
+end
+
+local function normalize_position(args)
+    if type(args) ~= "table" then
+        return nil, nil, nil
+    end
+    local path = args.path or args[1]
+    local line = args.line or args.row or args[2] or 0
+    local col = args.col or args.character or args.column or args[3] or 0
+    if type(path) ~= "string" or #path == 0 then
+        return nil, nil, nil
+    end
+    return path, tonumber(line) or 0, tonumber(col) or 0
+end
+
+function lsp.completion(args)
+    local path, line, col = normalize_position(args)
+    if not path then
+        return nil
+    end
+    local result = bridge.lsp_completion(path, line, col)
+    return decode_json(result)
+end
+
+function lsp.hover(args)
+    local path, line, col = normalize_position(args)
+    if not path then
+        return nil
+    end
+    local result = bridge.lsp_hover(path, line, col)
+    return decode_json(result)
+end
+
+function lsp.definition(args)
+    local path, line, col = normalize_position(args)
+    if not path then
+        return nil
+    end
+    local result = bridge.lsp_definition(path, line, col)
+    return decode_json(result)
+end
+
+function lsp.diagnostics(path)
+    if type(path) ~= "string" or #path == 0 then
+        return nil
+    end
+    local result = bridge.lsp_diagnostics(path)
+    return decode_json(result)
+end
+
+return lsp

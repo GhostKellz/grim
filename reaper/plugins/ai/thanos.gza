@@ -1,0 +1,486 @@
+-- plugins/ai/thanos.gza
+-- Thanos AI Gateway Plugin for Phantom.grim
+-- Universal AI orchestration with multi-provider support (GitHub Copilot, Claude, GPT-4, Ollama, Grok)
+--
+-- This is a HYBRID plugin: Ghostlang (this file) handles UI/commands,
+-- while native Zig code (libthanos_grim.so) handles AI operations
+
+local bridge = require("grim.bridge")
+
+local plugin = {
+    name = "thanos",
+    version = "0.1.0",
+    state = {
+        initialized = false,
+        current_provider = "ollama",  -- Default provider
+        chat_window = nil,
+        available = false,
+    },
+}
+
+-- Helper: Log messages
+local function log(message)
+    print("[thanos] " .. message)
+end
+
+local function log_error(message)
+    print("[thanos] ERROR: " .. message)
+end
+
+-- Check if Thanos native library is available
+local function ensure_thanos()
+    if not bridge.thanos then
+        log_error("Thanos bridge not available - phantom.grim needs Thanos support")
+        log("Install: Copy thanos.grim/native/libthanos_grim.so to plugins/ai/native/")
+        return false
+    end
+
+    -- Check for required functions
+    if not bridge.thanos.complete then
+        log_error("Thanos complete() function not available")
+        return false
+    end
+
+    return true
+end
+
+-- Refresh availability status
+local function refresh_availability()
+    plugin.state.available = ensure_thanos()
+    return plugin.state.available
+end
+
+-- Initialize plugin
+local function ensure_initialized()
+    if plugin.state.initialized then
+        return true
+    end
+
+    plugin.state.initialized = true
+    refresh_availability()
+
+    if plugin.state.available then
+        log("Thanos AI ready - Multi-provider gateway active")
+        log("Providers: GitHub Copilot, Claude, GPT-4, Ollama, Grok")
+        log("Current: " .. plugin.state.current_provider)
+    else
+        log("Thanos AI unavailable - native library not loaded")
+    end
+
+    return plugin.state.available
+end
+
+-- Setup function (called by Phantom plugin loader)
+function plugin.setup(opts)
+    opts = opts or {}
+
+    -- Allow custom default provider
+    if opts.default_provider then
+        plugin.state.current_provider = opts.default_provider
+    end
+
+    -- Allow provider fallback chain
+    if opts.fallback_providers then
+        plugin.state.fallback_providers = opts.fallback_providers
+    end
+
+    ensure_initialized()
+
+    -- Register commands
+    if bridge.register_command then
+        bridge.register_command("ThanosComplete", "thanos_complete_handler", "AI code completion at cursor")
+        bridge.register_command("ThanosAsk", "thanos_ask_handler", "Ask AI a question")
+        bridge.register_command("ThanosChat", "thanos_chat_handler", "Open AI chat window")
+        bridge.register_command("ThanosSwitch", "thanos_switch_handler", "Switch AI provider")
+        bridge.register_command("ThanosProviders", "thanos_providers_handler", "List available AI providers")
+        bridge.register_command("ThanosStats", "thanos_stats_handler", "Show AI statistics")
+        bridge.register_command("ThanosCommit", "thanos_commit_handler", "Generate AI commit message")
+        bridge.register_command("ThanosExplain", "thanos_explain_handler", "Explain selected code")
+        bridge.register_command("ThanosReview", "thanos_review_handler", "Review code for issues")
+    end
+
+    -- Register keybindings
+    if bridge.register_keybind then
+        bridge.register_keybind("<leader>ac", "ThanosChat", "Open AI chat")
+        bridge.register_keybind("<leader>ak", "ThanosComplete", "AI complete code")
+        bridge.register_keybind("<leader>ap", "ThanosSwitch", "Switch AI provider")
+        bridge.register_keybind("<leader>as", "ThanosStats", "Show AI stats")
+        bridge.register_keybind("<leader>ae", "ThanosExplain", "Explain code")
+        bridge.register_keybind("<leader>ar", "ThanosReview", "Review code")
+    end
+
+    log("Thanos plugin loaded ✅")
+
+    return plugin
+end
+
+-- Check if plugin is available
+function plugin.available()
+    ensure_initialized()
+    return refresh_availability()
+end
+
+-- ============================================================================
+-- Command Handlers (called from Grim command mode)
+-- ============================================================================
+
+-- Command: Complete code at cursor
+function thanos_complete_handler()
+    if not plugin.state.available then
+        log_error("Thanos not available")
+        return
+    end
+
+    -- Get current buffer content and context
+    local buffer_text = bridge.get_buffer_text and bridge.get_buffer_text() or ""
+    local cursor_pos = bridge.get_cursor_position and bridge.get_cursor_position() or {line = 1, col = 1}
+    local language = bridge.get_buffer_filetype and bridge.get_buffer_filetype() or "text"
+
+    if #buffer_text == 0 then
+        log("No buffer content to complete")
+        return
+    end
+
+    -- Show loading indicator
+    if bridge.show_message then
+        bridge.show_message("🤖 Thanos: Generating completion...")
+    end
+
+    -- Call native Zig function via FFI bridge
+    local completion = bridge.thanos.complete(buffer_text)
+
+    if completion and #completion > 0 then
+        -- Insert completion at cursor
+        if bridge.insert_at_cursor then
+            bridge.insert_at_cursor(completion)
+        end
+
+        if bridge.show_message then
+            bridge.show_message("✅ Completion generated by " .. plugin.state.current_provider)
+        end
+    else
+        log_error("Failed to generate completion")
+    end
+end
+
+-- Command: Ask AI a question
+function thanos_ask_handler(args)
+    if not plugin.state.available then
+        log_error("Thanos not available")
+        return
+    end
+
+    local question = args or (bridge.prompt_user and bridge.prompt_user("Ask AI:") or nil)
+    if not question or #question == 0 then
+        return
+    end
+
+    if bridge.show_message then
+        bridge.show_message("🤖 Asking " .. plugin.state.current_provider .. "...")
+    end
+
+    -- Call native function
+    local answer = bridge.thanos.complete(question)
+
+    -- Show in popup
+    if bridge.show_popup and answer then
+        bridge.show_popup("Thanos AI", answer)
+    end
+end
+
+-- Command: Open chat window
+function thanos_chat_handler()
+    if not plugin.state.available then
+        log_error("Thanos not available")
+        return
+    end
+
+    if plugin.state.chat_window then
+        -- Focus existing chat window
+        if bridge.focus_window then
+            bridge.focus_window(plugin.state.chat_window)
+        end
+    else
+        -- Create new chat window
+        if bridge.create_split_window then
+            plugin.state.chat_window = bridge.create_split_window("Thanos Chat", "vertical", 50)
+
+            -- Set chat window content
+            if bridge.set_window_text then
+                bridge.set_window_text(plugin.state.chat_window,
+                    "# Thanos AI Chat\\n\\nProvider: " .. plugin.state.current_provider .. "\\n\\nType your message...")
+            end
+
+            -- Register chat keybindings
+            if bridge.register_window_keybind then
+                bridge.register_window_keybind(plugin.state.chat_window, "<CR>", "thanos_send_chat_message")
+                bridge.register_window_keybind(plugin.state.chat_window, "q", "thanos_close_chat")
+            end
+        end
+    end
+end
+
+-- Send chat message
+function thanos_send_chat_message()
+    if not bridge.get_current_line then
+        return
+    end
+
+    local message = bridge.get_current_line()
+    if not message or #message == 0 then
+        return
+    end
+
+    -- Append message to chat
+    if bridge.append_to_window then
+        bridge.append_to_window(plugin.state.chat_window, "\\n**You:** " .. message)
+        bridge.append_to_window(plugin.state.chat_window, "\\n*Thinking...*")
+    end
+
+    -- Call native function for response
+    local response = bridge.thanos.complete(message)
+
+    -- Replace "Thinking..." with response
+    if bridge.replace_last_line and response then
+        bridge.replace_last_line(plugin.state.chat_window,
+            "\\n**" .. plugin.state.current_provider .. ":** " .. response)
+    end
+end
+
+-- Close chat window
+function thanos_close_chat()
+    if plugin.state.chat_window then
+        if bridge.close_window then
+            bridge.close_window(plugin.state.chat_window)
+        end
+        plugin.state.chat_window = nil
+    end
+end
+
+-- Command: Switch provider
+function thanos_switch_handler(args)
+    if not plugin.state.available then
+        log_error("Thanos not available")
+        return
+    end
+
+    local provider = args or (bridge.prompt_user and bridge.prompt_user("Provider (ollama/claude/gpt4/copilot/grok):") or nil)
+    if not provider or #provider == 0 then
+        return
+    end
+
+    -- Validate provider
+    local valid_providers = {
+        ["ollama"] = true,
+        ["claude"] = true,
+        ["anthropic"] = true,
+        ["gpt4"] = true,
+        ["openai"] = true,
+        ["copilot"] = true,
+        ["github_copilot"] = true,
+        ["grok"] = true,
+        ["xai"] = true,
+    }
+
+    if not valid_providers[provider] then
+        log_error("Unknown provider: " .. provider)
+        if bridge.show_message then
+            bridge.show_message("Valid providers: ollama, claude, gpt4, copilot, grok")
+        end
+        return
+    end
+
+    -- Update current provider
+    plugin.state.current_provider = provider
+
+    -- Update status line
+    if bridge.update_status_line then
+        bridge.update_status_line("AI: " .. provider)
+    end
+
+    if bridge.show_message then
+        bridge.show_message("Switched to " .. provider .. " ✅")
+    end
+end
+
+-- Command: List providers
+function thanos_providers_handler()
+    if not plugin.state.available then
+        log_error("Thanos not available")
+        return
+    end
+
+    -- Call native function to get real provider list
+    local providers_info = bridge.thanos.providers("")
+
+    -- Show providers
+    local output = "# Available AI Providers\\n\\n" .. providers_info
+
+    if bridge.show_popup then
+        bridge.show_popup("Thanos Providers", output)
+    end
+end
+
+-- Command: Show statistics
+function thanos_stats_handler()
+    if not plugin.state.available then
+        log_error("Thanos not available")
+        return
+    end
+
+    -- Call native function for real stats
+    local stats_info = bridge.thanos.stats("")
+
+    local output = "# Thanos Statistics\\n\\n"
+    output = output .. "**Current Provider:** " .. plugin.state.current_provider .. "\\n\\n"
+    output = output .. stats_info
+
+    if bridge.show_popup then
+        bridge.show_popup("Thanos Stats", output)
+    end
+end
+
+-- Command: Generate AI commit message
+function thanos_commit_handler()
+    if not plugin.state.available then
+        log_error("Thanos not available")
+        return
+    end
+
+    -- Get staged changes
+    local diff = bridge.git_diff_staged and bridge.git_diff_staged() or ""
+    if #diff == 0 then
+        log("No staged changes for commit message generation")
+        if bridge.show_message then
+            bridge.show_message("No staged changes. Use 'git add' first.")
+        end
+        return
+    end
+
+    if bridge.show_message then
+        bridge.show_message("🤖 Generating commit message...")
+    end
+
+    -- Create prompt for commit message
+    local prompt = "Generate a concise git commit message for these changes. " ..
+                   "Follow conventional commits format (<type>: <description>). " ..
+                   "Types: feat, fix, docs, style, refactor, perf, test, chore.\\n\\nChanges:\\n" .. diff
+
+    local commit_msg = bridge.thanos.complete(prompt)
+
+    if commit_msg and #commit_msg > 0 then
+        -- Open commit editor with AI-generated message
+        if bridge.git_commit_with_message then
+            bridge.git_commit_with_message(commit_msg)
+        else
+            if bridge.show_popup then
+                bridge.show_popup("AI Commit Message", commit_msg .. "\\n\\n(Copy this to your commit editor)")
+            end
+        end
+    else
+        log_error("Failed to generate commit message")
+    end
+end
+
+-- Command: Explain selected code
+function thanos_explain_handler()
+    if not plugin.state.available then
+        log_error("Thanos not available")
+        return
+    end
+
+    -- Get selected text or current buffer
+    local code = bridge.get_visual_selection and bridge.get_visual_selection() or
+                 (bridge.get_buffer_text and bridge.get_buffer_text() or "")
+
+    if #code == 0 then
+        log("No code to explain")
+        return
+    end
+
+    if bridge.show_message then
+        bridge.show_message("🤖 Analyzing code...")
+    end
+
+    local prompt = "Explain what this code does clearly and concisely:\\n\\n```\\n" .. code .. "\\n```"
+    local explanation = bridge.thanos.complete(prompt)
+
+    if explanation and #explanation > 0 then
+        if bridge.show_popup then
+            bridge.show_popup("Code Explanation", explanation)
+        end
+    else
+        log_error("Failed to explain code")
+    end
+end
+
+-- Command: Review code for issues
+function thanos_review_handler()
+    if not plugin.state.available then
+        log_error("Thanos not available")
+        return
+    end
+
+    -- Get current buffer
+    local code = bridge.get_buffer_text and bridge.get_buffer_text() or ""
+    if #code == 0 then
+        log("No code to review")
+        return
+    end
+
+    if bridge.show_message then
+        bridge.show_message("🤖 Reviewing code...")
+    end
+
+    local prompt = "Review this code for potential bugs, security issues, performance problems, " ..
+                   "and code quality. Provide actionable suggestions:\\n\\n```\\n" .. code .. "\\n```"
+    local review = bridge.thanos.complete(prompt)
+
+    if review and #review > 0 then
+        if bridge.show_popup then
+            bridge.show_popup("Code Review", review)
+        end
+    else
+        log_error("Failed to review code")
+    end
+end
+
+-- Cleanup
+function plugin.teardown()
+    if plugin.state.chat_window then
+        if bridge.close_window then
+            bridge.close_window(plugin.state.chat_window)
+        end
+        plugin.state.chat_window = nil
+    end
+
+    log("Thanos AI plugin unloaded")
+    plugin.state.initialized = false
+    return true
+end
+
+-- Public API for other plugins
+plugin.get_current_provider = function()
+    return plugin.state.current_provider
+end
+
+plugin.is_available = function()
+    return plugin.state.available
+end
+
+plugin.get_stats = function()
+    if not plugin.state.available then
+        return nil
+    end
+    return bridge.thanos.stats and bridge.thanos.stats("") or "Stats unavailable"
+end
+
+plugin.get_providers = function()
+    if not plugin.state.available then
+        return nil
+    end
+    return bridge.thanos.providers and bridge.thanos.providers("") or "Providers unavailable"
+end
+
+-- Initialize and return plugin
+return plugin.setup()

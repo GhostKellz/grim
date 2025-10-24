@@ -1,0 +1,19 @@
+set("editor.theme", "ghost-hacker-blue")
+set("editor.line_numbers", true)
+set("editor.relative_line_numbers", true)
+set("editor.tab_width", 2)
+set("editor.shift_width", 2)
+set("editor.wrap", false)
+set("editor.clipboard", "unnamedplus")
+
+set("ui.statusline.enabled", true)
+set("ui.statusline.style", "phantom")
+set("ui.notifications.enabled", true)
+
+set("lsp.auto_install", true)
+set("lsp.format_on_save", true)
+
+set("plugins.dashboard.enabled", true)
+set("plugins.which_key.enabled", true)
+
+print("Default options loaded")
