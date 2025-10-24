@@ -613,6 +613,8 @@ pub const SimpleTUI = struct {
         try self.renderCodeActionsMenu(width, height);
         try self.renderBufferPicker(width, height);
         try self.renderFileTree(width, height);
+        try self.renderHarpoonMenu(width, height);
+        try self.renderGitStatus(width, height);
 
         // Status line
         try self.setCursor(height, 1);
@@ -893,19 +895,19 @@ pub const SimpleTUI = struct {
 
             // Harpoon menu mode takes precedence
             if (self.harpoon_menu_active) {
-                // TODO: Implement harpoon menu// try self.handleHarpoonMenuInput(key);
+                try self.handleHarpoonMenuInput(key);
                 return;
             }
 
             // Git status mode takes precedence
             if (self.git_status_active) {
-                // TODO: Implement git status// try self.handleGitStatusInput(key);
+                try self.handleGitStatusInput(key);
                 return;
             }
 
             // Leader key sequence handling (normal mode only)
             if (self.editor.mode == .normal and self.leader_key_pending) {
-                // TODO: Implement leader key sequence// try self.handleLeaderKeySequence(key);
+                try self.handleLeaderKeySequence(key);
                 return;
             }
 
@@ -2581,6 +2583,126 @@ pub const SimpleTUI = struct {
             try self.resetColor();
             row += 1;
         }
+    }
+
+    fn renderHarpoonMenu(self: *SimpleTUI, width: usize, height: usize) !void {
+        if (!self.harpoon_menu_active) return;
+
+        const pinned = self.harpoon.getAll();
+
+        // Count non-null entries
+        var count: usize = 0;
+        for (pinned) |maybe_file| {
+            if (maybe_file != null) count += 1;
+        }
+
+        const menu_height = @min(pinned.len + 2, 10); // +2 for header and border
+        const menu_row: usize = if (height > menu_height + 2) (height - menu_height) / 2 else 2;
+        const menu_width = @min(width - 4, 60);
+
+        // Header
+        try self.setCursor(menu_row, 2);
+        try self.setColor(44, 37); // Blue background, white text
+        const harpoon_icon = "🎯";
+        var header_buf: [128]u8 = undefined;
+        const header = try std.fmt.bufPrint(&header_buf, " {s} Harpoon ({d} marks) ", .{ harpoon_icon, count });
+        try self.stdout.writeAll(header[0..@min(header.len, menu_width)]);
+        // Pad header
+        if (header.len < menu_width) {
+            var pad = menu_width - header.len;
+            while (pad > 0) : (pad -= 1) {
+                try self.stdout.writeAll(" ");
+            }
+        }
+        try self.resetColor();
+
+        // Menu items
+        var row = menu_row + 1;
+        for (pinned, 0..) |maybe_file, slot| {
+            const is_selected = slot == self.harpoon_selected_idx;
+
+            try self.setCursor(row, 2);
+
+            if (is_selected) {
+                try self.setColor(47, 30); // Selected: white bg, black text
+            } else {
+                try self.setColor(40, 37); // Normal: dark bg, white text
+            }
+
+            var item_buf: [256]u8 = undefined;
+            const item_text = if (maybe_file) |file|
+                try std.fmt.bufPrint(&item_buf, " [{d}] {s}", .{ slot + 1, file.path })
+            else
+                try std.fmt.bufPrint(&item_buf, " [{d}] <empty>", .{slot + 1});
+
+            const display = if (item_text.len > menu_width) item_text[0..menu_width] else item_text;
+            try self.stdout.writeAll(display);
+
+            // Pad the rest of the line
+            if (display.len < menu_width) {
+                var pad = menu_width - display.len;
+                while (pad > 0) : (pad -= 1) {
+                    try self.stdout.writeAll(" ");
+                }
+            }
+
+            try self.resetColor();
+            row += 1;
+        }
+    }
+
+    fn renderGitStatus(self: *SimpleTUI, width: usize, height: usize) !void {
+        if (!self.git_status_active) return;
+
+        _ = height; // Will be used when fully implemented
+        const menu_width = @min(width - 4, 80);
+        const menu_row: usize = 2;
+
+        // Header
+        try self.setCursor(menu_row, 2);
+        try self.setColor(42, 30); // Green background, black text
+        const git_icon = "🔀";
+        var header_buf: [128]u8 = undefined;
+        const header = try std.fmt.bufPrint(&header_buf, " {s} Git Status ", .{git_icon});
+        try self.stdout.writeAll(header[0..@min(header.len, menu_width)]);
+        // Pad header
+        if (header.len < menu_width) {
+            var pad = menu_width - header.len;
+            while (pad > 0) : (pad -= 1) {
+                try self.stdout.writeAll(" ");
+            }
+        }
+        try self.resetColor();
+
+        // Content area
+        var row = menu_row + 1;
+        try self.setCursor(row, 2);
+        try self.setColor(40, 37);
+        var content_buf: [256]u8 = undefined;
+        const content = try std.fmt.bufPrint(&content_buf, " Git status view (not yet implemented)", .{});
+        try self.stdout.writeAll(content[0..@min(content.len, menu_width)]);
+        // Pad
+        if (content.len < menu_width) {
+            var pad = menu_width - content.len;
+            while (pad > 0) : (pad -= 1) {
+                try self.stdout.writeAll(" ");
+            }
+        }
+        try self.resetColor();
+
+        // Instructions
+        row += 2;
+        try self.setCursor(row, 2);
+        try self.setColor(40, 37);
+        const instructions = " Press q to close ";
+        try self.stdout.writeAll(instructions[0..@min(instructions.len, menu_width)]);
+        if (instructions.len < menu_width) {
+            var pad = menu_width - instructions.len;
+            while (pad > 0) : (pad -= 1) {
+                try self.stdout.writeAll(" ");
+            }
+        }
+        try self.resetColor();
     }
 
     fn renderFileTree(self: *SimpleTUI, width: usize, height: usize) !void {
@@ -4357,6 +4479,243 @@ pub const SimpleTUI = struct {
             self.switchMode(.normal);
         } else {
             try tree.toggleExpanded();
+        }
+    }
+    // ===== LEADER KEY SYSTEM =====
+
+    fn handleLeaderKeySequence(self: *SimpleTUI, key: u8) !void {
+        // Add key to sequence
+        try self.leader_key_sequence.append(self.allocator, key);
+
+        // Check for matches based on first key
+        const seq = self.leader_key_sequence.items;
+        if (seq.len == 1) {
+            // First key after leader
+            switch (seq[0]) {
+                'h' => {
+                    self.setStatusMessage("Leader: <Space>h (Harpoon)...");
+                    return; // Wait for second key
+                },
+                'g' => {
+                    self.setStatusMessage("Leader: <Space>g (Git)...");
+                    return; // Wait for second key
+                },
+                'f' => {
+                    self.setStatusMessage("Leader: <Space>f (Find)...");
+                    return; // Wait for second key
+                },
+                'w' => { // Save file
+                    self.resetLeaderKey();
+                    self.setStatusMessage("Save: Not yet implemented");
+                },
+                'q' => { // Quit
+                    self.resetLeaderKey();
+                    self.running = false;
+                },
+                27 => { // ESC
+                    self.resetLeaderKey();
+                    self.clearStatusMessage();
+                },
+                else => {
+                    self.resetLeaderKey();
+                    self.setStatusMessage("Unknown leader key");
+                },
+            }
+        } else if (seq.len == 2) {
+            // Second key - execute command
+            defer self.resetLeaderKey();
+
+            if (seq[0] == 'h') { // Harpoon commands
+                switch (seq[1]) {
+                    'a' => try self.harpoonAdd(),
+                    'm' => try self.showHarpoonMenu(),
+                    'l' => try self.harpoonList(),
+                    '1' => try self.harpoonJump(0),
+                    '2' => try self.harpoonJump(1),
+                    '3' => try self.harpoonJump(2),
+                    '4' => try self.harpoonJump(3),
+                    else => self.setStatusMessage("Unknown Harpoon command"),
+                }
+            } else if (seq[0] == 'g') { // Git commands
+                switch (seq[1]) {
+                    's' => try self.showGitStatus(),
+                    'l' => try self.showGitLog(),
+                    'c' => try self.gitCommit(),
+                    'b' => try self.gitBlame(),
+                    'h' => try self.showGitHunks(),
+                    else => self.setStatusMessage("Unknown Git command"),
+                }
+            } else if (seq[0] == 'f') { // Find/File commands
+                switch (seq[1]) {
+                    'f' => try self.toggleFileTree(),
+                    else => self.setStatusMessage("Unknown Find command"),
+                }
+            } else {
+                self.setStatusMessage("Unknown leader sequence");
+            }
+        } else {
+            // Sequence too long, reset
+            self.resetLeaderKey();
+            self.setStatusMessage("Leader sequence too long");
+        }
+    }
+
+    fn resetLeaderKey(self: *SimpleTUI) void {
+        self.leader_key_pending = false;
+        self.leader_key_sequence.clearRetainingCapacity();
+    }
+
+    // ===== HARPOON FUNCTIONS =====
+
+    fn harpoonAdd(self: *SimpleTUI) !void {
+        const file_path = self.editor.current_filename orelse {
+            self.setStatusMessage("No file to add to Harpoon");
+            return;
+        };
+
+        // TODO: Convert editor.cursor.offset to line/column for better position restoration
+        const slot = try self.harpoon.pinNext(file_path, 0, 0);
+        const msg = try std.fmt.allocPrint(self.allocator, "Harpoon: Added to slot {d}", .{slot + 1});
+        defer self.allocator.free(msg);
+        self.setStatusMessage(msg);
+    }
+
+    fn showHarpoonMenu(self: *SimpleTUI) !void {
+        self.harpoon_menu_active = true;
+        self.harpoon_selected_idx = 0;
+        self.setStatusMessage("Harpoon Menu (j/k: navigate, Enter: select, d: delete, q: quit)");
+    }
+
+    fn harpoonList(self: *SimpleTUI) !void {
+        const pinned = self.harpoon.getAll();
+        var count: usize = 0;
+        for (pinned) |maybe_file| {
+            if (maybe_file != null) count += 1;
+        }
+
+        const msg = try std.fmt.allocPrint(self.allocator, "Harpoon: {d} marked files", .{count});
+        defer self.allocator.free(msg);
+        self.setStatusMessage(msg);
+    }
+
+    fn harpoonJump(self: *SimpleTUI, slot: usize) !void {
+        const maybe_file = self.harpoon.get(slot);
+        if (maybe_file) |file| {
+            try self.loadFile(file.path);
+            // TODO: Restore cursor position once we have line/column tracking
+            const msg = try std.fmt.allocPrint(self.allocator, "Harpoon: Jumped to slot {d}", .{slot + 1});
+            defer self.allocator.free(msg);
+            self.setStatusMessage(msg);
+        } else {
+            self.setStatusMessage("Harpoon: Slot empty");
+        }
+    }
+
+    fn handleHarpoonMenuInput(self: *SimpleTUI, key: u8) !void {
+        switch (key) {
+            'j' => {
+                // Move down
+                const pinned = self.harpoon.getAll();
+                if (self.harpoon_selected_idx + 1 < pinned.len) {
+                    // Find next non-null slot
+                    var idx = self.harpoon_selected_idx + 1;
+                    while (idx < pinned.len) : (idx += 1) {
+                        if (pinned[idx] != null) {
+                            self.harpoon_selected_idx = idx;
+                            break;
+                        }
+                    }
+                }
+            },
+            'k' => {
+                // Move up
+                if (self.harpoon_selected_idx > 0) {
+                    var idx = self.harpoon_selected_idx;
+                    while (idx > 0) {
+                        idx -= 1;
+                        const pinned = self.harpoon.getAll();
+                        if (pinned[idx] != null) {
+                            self.harpoon_selected_idx = idx;
+                            break;
+                        }
+                    }
+                }
+            },
+            13 => { // Enter - select
+                const maybe_file = self.harpoon.get(self.harpoon_selected_idx);
+                if (maybe_file) |file| {
+                    try self.loadFile(file.path);
+                }
+                self.harpoon_menu_active = false;
+                self.clearStatusMessage();
+            },
+            'd' => { // Delete
+                self.harpoon.unpin(self.harpoon_selected_idx);
+                // Move selection up if possible
+                if (self.harpoon_selected_idx > 0) {
+                    self.harpoon_selected_idx -= 1;
+                }
+                self.setStatusMessage("Harpoon: Deleted mark");
+            },
+            'q', 27 => { // Quit or ESC
+                self.harpoon_menu_active = false;
+                self.clearStatusMessage();
+            },
+            else => {},
+        }
+    }
+
+    // ===== GIT FUNCTIONS =====
+
+    fn showGitStatus(self: *SimpleTUI) !void {
+        self.git_status_active = true;
+        self.setStatusMessage("Git Status (j/k: navigate, s: stage, u: unstage, c: commit, q: quit)");
+    }
+
+    fn showGitLog(self: *SimpleTUI) !void {
+        self.git_log_active = true;
+        self.git_selected_commit = 0;
+        self.setStatusMessage("Git Log (j/k: navigate, Enter: show diff, q: quit)");
+    }
+
+    fn gitCommit(self: *SimpleTUI) !void {
+        // TODO: Implement commit message editor
+        self.setStatusMessage("Git commit: Not yet implemented");
+    }
+
+    fn gitBlame(self: *SimpleTUI) !void {
+        // TODO: Implement git blame overlay
+        self.setStatusMessage("Git blame: Not yet implemented");
+    }
+
+    fn showGitHunks(self: *SimpleTUI) !void {
+        // TODO: Implement hunk navigation
+        self.setStatusMessage("Git hunks: Not yet implemented");
+    }
+
+    fn handleGitStatusInput(self: *SimpleTUI, key: u8) !void {
+        switch (key) {
+            'j' => {
+                self.setStatusMessage("Move down (not implemented)");
+            },
+            'k' => {
+                self.setStatusMessage("Move up (not implemented)");
+            },
+            's' => {
+                self.setStatusMessage("Stage (not implemented)");
+            },
+            'u' => {
+                self.setStatusMessage("Unstage (not implemented)");
+            },
+            'c' => {
+                self.git_status_active = false;
+                try self.gitCommit();
+            },
+            'q', 27 => {
+                self.git_status_active = false;
+                self.clearStatusMessage();
+            },
+            else => {},
         }
     }
 };
