@@ -29,6 +29,10 @@ pub fn main() !void {
         try searchCommand(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "lock")) {
         try lockCommand(allocator);
+    } else if (std.mem.eql(u8, command, "build")) {
+        try buildCommand(allocator, args[2..]);
+    } else if (std.mem.eql(u8, command, "info")) {
+        try infoCommand(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "version") or std.mem.eql(u8, command, "-v")) {
         try printVersion();
     } else if (std.mem.eql(u8, command, "help") or std.mem.eql(u8, command, "-h")) {
@@ -106,6 +110,8 @@ fn printHelp() !void {
         \\    update              Update all installed plugins
         \\    list                List installed plugins
         \\    remove <PLUGIN>     Remove a plugin
+        \\    build [PATH]        Build a zig plugin (runs zig build)
+        \\    info <PLUGIN>       Show info about an installed plugin
         \\    search <QUERY>      Search for plugins (registry)
         \\    lock                Generate lockfile from current plugins
         \\    version, -v         Show version
@@ -113,10 +119,12 @@ fn printHelp() !void {
         \\
         \\EXAMPLES:
         \\    gpkg install                 # Install all from plugins.zon
-        \\    gpkg install thanos.grim     # Install specific plugin
+        \\    gpkg install thanos          # Install specific plugin
         \\    gpkg update                  # Update all plugins
         \\    gpkg list                    # List installed plugins
-        \\    gpkg remove thanos.grim      # Remove plugin
+        \\    gpkg build .                 # Build plugin in current dir
+        \\    gpkg info thanos             # Show thanos plugin info
+        \\    gpkg remove thanos           # Remove plugin
         \\    gpkg lock                    # Generate phantom.lock.zon
         \\
         \\FILES:
@@ -401,4 +409,107 @@ fn removePlugin(allocator: std.mem.Allocator, name: []const u8) !void {
 fn generateLockfile(allocator: std.mem.Allocator) !void {
     _ = allocator;
     std.debug.print("TODO: Generate phantom.lock.zon\n", .{});
+}
+
+fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const path = if (args.len > 0) args[0] else ".";
+
+    std.debug.print("Building plugin in {s}...\n", .{path});
+
+    // Run zig build in the plugin directory
+    const result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &[_][]const u8{ "zig", "build", "-Doptimize=ReleaseSafe" },
+        .cwd = path,
+    }) catch |err| {
+        std.debug.print("Error: Failed to run zig build: {}\n", .{err});
+        return err;
+    };
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    if (result.term.Exited != 0) {
+        std.debug.print("Build failed:\n{s}\n", .{result.stderr});
+        return error.BuildFailed;
+    }
+
+    std.debug.print("✓ Build successful\n", .{});
+    if (result.stdout.len > 0) {
+        std.debug.print("{s}\n", .{result.stdout});
+    }
+}
+
+fn infoCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len == 0) {
+        std.debug.print("Error: Please specify a plugin name\n", .{});
+        std.process.exit(1);
+    }
+
+    const plugin_name = args[0];
+    const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const plugin_path = try std.fmt.bufPrint(&path_buf, "{s}/.local/share/grim/plugins/{s}", .{ home, plugin_name });
+
+    // Check if plugin exists
+    var dir = std.fs.openDirAbsolute(plugin_path, .{}) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("Plugin '{s}' not found\n", .{plugin_name});
+            std.debug.print("Use 'gpkg list' to see installed plugins\n", .{});
+            return;
+        }
+        return err;
+    };
+    defer dir.close();
+
+    std.debug.print("Plugin: {s}\n", .{plugin_name});
+    std.debug.print("Location: {s}\n", .{plugin_path});
+
+    // Check for build artifacts
+    const has_lib = blk: {
+        dir.access("zig-out/lib", .{}) catch break :blk false;
+        break :blk true;
+    };
+
+    const has_bin = blk: {
+        dir.access("zig-out/bin", .{}) catch break :blk false;
+        break :blk true;
+    };
+
+    if (has_lib) {
+        std.debug.print("Type: Native library (.so)\n", .{});
+
+        // List library files
+        var lib_dir = try dir.openDir("zig-out/lib", .{ .iterate = true });
+        defer lib_dir.close();
+
+        std.debug.print("Libraries:\n", .{});
+        var iter = lib_dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind == .file) {
+                std.debug.print("  - {s}\n", .{entry.name});
+            }
+        }
+    }
+
+    if (has_bin) {
+        std.debug.print("Type: Executable\n", .{});
+
+        // List executables
+        var bin_dir = try dir.openDir("zig-out/bin", .{ .iterate = true });
+        defer bin_dir.close();
+
+        std.debug.print("Executables:\n", .{});
+        var iter = bin_dir.iterate();
+        while (try iter.next()) |entry| {
+            if (entry.kind == .file) {
+                std.debug.print("  - {s}\n", .{entry.name});
+            }
+        }
+    }
+
+    if (!has_lib and !has_bin) {
+        std.debug.print("Type: Ghostlang script\n", .{});
+    }
+
+    _ = allocator;
 }

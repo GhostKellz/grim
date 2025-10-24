@@ -247,20 +247,7 @@ pub fn build(b: *std.Build) void {
     // by passing `--prefix` or `-p`.
     b.installArtifact(exe);
 
-    const pkg_exe = b.addExecutable(.{
-        .name = "grim-pkg",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/grim_pkg/main.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "runtime", .module = runtime_mod },
-            },
-        }),
-    });
-    b.installArtifact(pkg_exe);
-
-    // gpkg - Grim Package Manager
+    // gpkg - Grim Package Manager (replaces old grim-pkg)
     const gpkg_exe = b.addExecutable(.{
         .name = "gpkg",
         .root_module = b.createModule(.{
