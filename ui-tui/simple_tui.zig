@@ -115,6 +115,10 @@ pub const SimpleTUI = struct {
     leader_key_pending: bool,
     leader_key_timestamp: i64,
     leader_key_sequence: std.ArrayList(u8),
+    // Collaboration
+    collab_server: ?*core.CollaborationServer,
+    collab_client: ?*core.WebSocketClient,
+    collab_session: ?*core.CollaborationSession,
     // Terminal state
     original_termios: std.posix.termios,
     // Terminal size (dynamic)
@@ -213,6 +217,9 @@ pub const SimpleTUI = struct {
             .leader_key_pending = false,
             .leader_key_timestamp = 0,
             .leader_key_sequence = .{},
+            .collab_server = null,
+            .collab_client = null,
+            .collab_session = null,
             .original_termios = undefined,
             .terminal_width = 80,
             .terminal_height = 24,
@@ -239,6 +246,11 @@ pub const SimpleTUI = struct {
     pub fn deinit(self: *SimpleTUI) void {
         // Restore terminal state
         self.disableRawMode() catch {};
+
+        // Clean up collaboration
+        if (self.collab_server) |server| server.deinit();
+        if (self.collab_client) |client| client.deinit();
+        if (self.collab_session) |session| session.deinit();
 
         // Clean up native integrations
         self.harpoon.deinit();
@@ -681,6 +693,7 @@ pub const SimpleTUI = struct {
             try self.stdout.writeAll("~\r\n");
         }
 
+        try self.renderCollaborationPresence(width, height);
         try self.renderCompletionBar(width, height);
         try self.renderSignatureHelpPopup(width, height);
         try self.renderCodeActionsMenu(width, height);
@@ -815,6 +828,14 @@ pub const SimpleTUI = struct {
                 const ellipsis_slice = try std.fmt.bufPrint(status_buf[status_len..], "…", .{});
                 status_len += ellipsis_slice.len;
             }
+        }
+
+        // Collaboration status
+        if (self.collab_session) |session| {
+            const collab_icon = "🤝";
+            const user_count = session.users.items.len;
+            const collab_slice = try std.fmt.bufPrint(status_buf[status_len..], " | {s} {d} users", .{ collab_icon, user_count });
+            status_len += collab_slice.len;
         }
 
         if (self.status_message) |msg| {
@@ -1923,6 +1944,164 @@ pub const SimpleTUI = struct {
                 self.setStatusMessage("Buffer closed");
             } else {
                 self.setStatusMessage("Buffer manager not available");
+            }
+            self.exitCommandMode();
+            return;
+        }
+
+        // Collaboration commands
+        if (std.mem.eql(u8, head, "collab")) {
+            const subcommand = tokenizer.next() orelse {
+                self.setStatusMessage("Usage: :collab start|join|stop|users");
+                self.exitCommandMode();
+                return;
+            };
+
+            if (std.mem.eql(u8, subcommand, "start")) {
+                const port_str = tokenizer.next() orelse "8080";
+                const port = std.fmt.parseInt(u16, port_str, 10) catch 8080;
+
+                // Create and start server
+                if (self.collab_server == null) {
+                    self.collab_server = core.CollaborationServer.init(self.allocator, port) catch |err| {
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Failed to create server: {}", .{err}) catch "Server creation failed";
+                        self.setStatusMessage(msg);
+                        self.exitCommandMode();
+                        return;
+                    };
+                }
+
+                if (self.collab_server) |server| {
+                    server.start() catch |err| {
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Failed to start server: {}", .{err}) catch "Server start failed";
+                        self.setStatusMessage(msg);
+                        self.exitCommandMode();
+                        return;
+                    };
+
+                    // Start accepting connections in background
+                    // TODO: Spawn thread for acceptConnections()
+
+                    var msg_buf: [128]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "Collaboration server started on port {d}", .{port}) catch "Collab started";
+                    self.setStatusMessage(msg);
+                }
+            } else if (std.mem.eql(u8, subcommand, "join")) {
+                const url = tokenizer.next() orelse {
+                    self.setStatusMessage("Usage: :collab join <url>");
+                    self.exitCommandMode();
+                    return;
+                };
+
+                // Create session and client
+                const session_id = url; // Use URL as session ID for now
+                const user_id = "local_user"; // TODO: Get from config/username
+
+                if (self.collab_session == null) {
+                    self.collab_session = core.CollaborationSession.init(self.allocator, session_id, user_id) catch |err| {
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Failed to create session: {}", .{err}) catch "Session creation failed";
+                        self.setStatusMessage(msg);
+                        self.exitCommandMode();
+                        return;
+                    };
+                }
+
+                if (self.collab_client == null) {
+                    self.collab_client = core.WebSocketClient.init(self.allocator, url) catch |err| {
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Failed to create client: {}", .{err}) catch "Client creation failed";
+                        self.setStatusMessage(msg);
+                        self.exitCommandMode();
+                        return;
+                    };
+                }
+
+                if (self.collab_client) |client| {
+                    client.connect() catch |err| {
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Failed to connect: {}", .{err}) catch "Connection failed";
+                        self.setStatusMessage(msg);
+                        self.exitCommandMode();
+                        return;
+                    };
+
+                    // Send join message
+                    var join_msg = core.Message.init(.join);
+                    join_msg.session_id = self.allocator.dupe(u8, session_id) catch null;
+                    join_msg.user_id = self.allocator.dupe(u8, user_id) catch null;
+                    defer join_msg.deinit(self.allocator);
+
+                    const join_json = join_msg.toJson(self.allocator) catch |err| {
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Failed to serialize join: {}", .{err}) catch "Serialization failed";
+                        self.setStatusMessage(msg);
+                        self.exitCommandMode();
+                        return;
+                    };
+                    defer self.allocator.free(join_json);
+
+                    client.sendText(join_json) catch |err| {
+                        var msg_buf: [128]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Failed to send join: {}", .{err}) catch "Send failed";
+                        self.setStatusMessage(msg);
+                        self.exitCommandMode();
+                        return;
+                    };
+
+                    var msg_buf: [256]u8 = undefined;
+                    const msg = std.fmt.bufPrint(&msg_buf, "Connected to {s}", .{url}) catch "Connected";
+                    self.setStatusMessage(msg);
+                }
+            } else if (std.mem.eql(u8, subcommand, "stop")) {
+                // Disconnect client and stop server
+                if (self.collab_client) |client| {
+                    // Send leave message
+                    if (self.collab_session) |session| {
+                        var leave_msg = core.Message.init(.leave);
+                        leave_msg.session_id = self.allocator.dupe(u8, session.session_id) catch null;
+                        leave_msg.user_id = self.allocator.dupe(u8, session.local_user_id) catch null;
+                        defer leave_msg.deinit(self.allocator);
+
+                        if (leave_msg.toJson(self.allocator)) |leave_json| {
+                            defer self.allocator.free(leave_json);
+                            _ = client.sendText(leave_json) catch {};
+                        } else |_| {}
+                    }
+
+                    client.disconnect();
+                    client.deinit();
+                    self.collab_client = null;
+                }
+
+                if (self.collab_session) |session| {
+                    session.deinit();
+                    self.collab_session = null;
+                }
+
+                if (self.collab_server) |server| {
+                    server.stop();
+                    server.deinit();
+                    self.collab_server = null;
+                }
+
+                self.setStatusMessage("Disconnected from collaboration session");
+            } else if (std.mem.eql(u8, subcommand, "users")) {
+                if (self.collab_session) |session| {
+                    if (session.users.items.len == 0) {
+                        self.setStatusMessage("No other users connected");
+                    } else {
+                        var msg_buf: [256]u8 = undefined;
+                        const msg = std.fmt.bufPrint(&msg_buf, "Users: {d} connected", .{session.users.items.len}) catch "Users: (error)";
+                        self.setStatusMessage(msg);
+                    }
+                } else {
+                    self.setStatusMessage("Not in a collaboration session");
+                }
+            } else {
+                self.setStatusMessage("Unknown collab command. Use: start|join|stop|users");
             }
             self.exitCommandMode();
             return;
@@ -3204,6 +3383,70 @@ pub const SimpleTUI = struct {
             }
         }
         try self.resetColor();
+    }
+
+    fn renderCollaborationPresence(self: *SimpleTUI, width: usize, height: usize) !void {
+        // Only render if in a collaboration session
+        const session = self.collab_session orelse return;
+        if (session.users.items.len == 0) return;
+
+        _ = width;
+
+        // Render remote user cursors as colored indicators
+        // For each user, show their cursor position on screen
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        for (session.users.items) |user| {
+            // Calculate screen position from cursor_position offset
+            const cursor_offset = user.cursor_position;
+            if (cursor_offset > content.len) continue;
+
+            // Find line and column for this offset
+            var line: usize = 0;
+            var col: usize = 0;
+            var offset: usize = 0;
+
+            for (content, 0..) |ch, i| {
+                if (i == cursor_offset) {
+                    col = i - offset;
+                    break;
+                }
+                if (ch == '\n') {
+                    line += 1;
+                    offset = i + 1;
+                }
+            }
+
+            // Check if cursor is in viewport
+            if (line < self.viewport_top_line) continue;
+            if (line >= self.viewport_top_line + height - 2) continue;
+
+            const screen_line = line - self.viewport_top_line;
+            const screen_col = if (col > self.viewport_left_col) col - self.viewport_left_col else 0;
+
+            // Gutter is 7 columns wide (line number + markers + space)
+            const gutter_width: usize = 7;
+            const actual_screen_col = gutter_width + screen_col;
+
+            // Render user cursor indicator
+            try self.setCursor(screen_line + 1, actual_screen_col + 1);
+
+            // Use different colors for different users (cycle through colors)
+            const user_color_idx = @as(u8, @truncate(user.user_id[0])) % 6;
+            const cursor_color: u8 = switch (user_color_idx) {
+                0 => 31, // Red
+                1 => 32, // Green
+                2 => 33, // Yellow
+                3 => 34, // Blue
+                4 => 35, // Magenta
+                5 => 36, // Cyan
+                else => 37, // White
+            };
+
+            try self.setColor(40, cursor_color); // Black background, colored foreground
+            try self.stdout.writeAll("█"); // Block character for cursor
+            try self.resetColor();
+        }
     }
 
     fn renderFileTree(self: *SimpleTUI, width: usize, height: usize) !void {
