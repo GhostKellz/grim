@@ -13,7 +13,8 @@ const font_manager_mod = @import("font_manager.zig");
 const file_tree_mod = @import("file_tree.zig");
 const lsp_diagnostics = @import("lsp_diagnostics.zig");
 const completion_menu_mod = @import("completion_menu.zig");
-const ai = @import("ai");
+// AI module removed - use plugins (zeke.grim, copilot.grim) for AI features
+// const ai = @import("ai");
 
 /// Feature flag: Enable PhantomBuffer with undo/redo and multi-cursor support
 /// Set to false to use legacy Editor-based buffers
@@ -94,8 +95,8 @@ pub const SimpleTUI = struct {
     diagnostics_ui: lsp_diagnostics.DiagnosticsUI,
     // LSP completion menu
     lsp_completion_menu: completion_menu_mod.CompletionMenu,
-    // AI ghost text renderer
-    ghost_text_renderer: ai.GhostTextRenderer,
+    // AI ghost text renderer (removed - use zeke.grim or copilot.grim plugins)
+    // ghost_text_renderer: ai.GhostTextRenderer,
     // Vim key sequences (dd, yy, etc.)
     pending_vim_key: ?u8,
     // Vim text objects (diw, ci{, etc.)
@@ -171,7 +172,7 @@ pub const SimpleTUI = struct {
             .completion_items = &.{},
             .diagnostics_ui = lsp_diagnostics.DiagnosticsUI.init(allocator),
             .lsp_completion_menu = completion_menu_mod.CompletionMenu.init(allocator),
-            .ghost_text_renderer = ai.GhostTextRenderer.init(allocator),
+            // .ghost_text_renderer = ai.GhostTextRenderer.init(allocator),
             .completion_items_heap = false,
             .completion_prefix = completion_prefix,
             .completion_anchor_offset = null,
@@ -270,7 +271,7 @@ pub const SimpleTUI = struct {
         self.fuzzy.deinit();
         self.diagnostics_ui.deinit();
         self.lsp_completion_menu.deinit();
-        self.ghost_text_renderer.deinit();
+        // self.ghost_text_renderer.deinit();
         self.fuzzy_query.deinit(self.allocator);
         self.leader_key_sequence.deinit(self.allocator);
 
@@ -701,14 +702,14 @@ pub const SimpleTUI = struct {
                 // Use display_slice for rendering (with horizontal scroll applied)
                 try self.renderHighlightedLine(display_slice, actual_line_num, content_width);
 
-                // Render AI ghost text inline if in insert mode and cursor is on this line
-                if (self.editor.mode == .insert) {
-                    const current_cursor_line = self.getCursorLine();
-                    if (current_cursor_line == actual_line_num) {
-                        const cursor_col = self.getCursorColumn();
-                        try self.ghost_text_renderer.render(self.stdout, @intCast(actual_line_num), @intCast(cursor_col));
-                    }
-                }
+                // AI ghost text removed - use plugins (zeke.grim, copilot.grim) for AI features
+                // if (self.editor.mode == .insert) {
+                //     const current_cursor_line = self.getCursorLine();
+                //     if (current_cursor_line == actual_line_num) {
+                //         const cursor_col = self.getCursorColumn();
+                //         try self.ghost_text_renderer.render(self.stdout, @intCast(actual_line_num), @intCast(cursor_col));
+                //     }
+                // }
             }
 
             try self.stdout.writeAll("\r\n");

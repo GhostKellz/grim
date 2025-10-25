@@ -80,22 +80,6 @@ pub fn build(b: *std.Build) void {
         },
     });
 
-    const zrpc = b.dependency("zrpc", .{
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const ai_mod = b.createModule(.{
-        .root_source_file = b.path("src/ai/mod.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{
-            .{ .name = "zhttp", .module = zhttp.module("zhttp") },
-            .{ .name = "zrpc", .module = zrpc.module("zrpc") },
-            .{ .name = "core", .module = core_mod },
-        },
-    });
-
     const host_mod = b.createModule(.{
         .root_source_file = b.path("host/mod.zig"),
         .target = target,
@@ -103,7 +87,6 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "flare", .module = flare.module("flare") },
             .{ .name = "ghostlang", .module = ghostlang_dep.module("ghostlang") },
-            .{ .name = "ai", .module = ai_mod },
         },
     });
 
@@ -150,7 +133,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "syntax", .module = syntax_mod },
             .{ .name = "runtime", .module = runtime_mod },
             .{ .name = "lsp", .module = lsp_mod },
-            .{ .name = "ai", .module = ai_mod },
         },
     });
 
@@ -177,7 +159,6 @@ pub fn build(b: *std.Build) void {
             .{ .name = "ui_tui", .module = ui_tui_mod },
             .{ .name = "host", .module = host_mod },
             .{ .name = "lsp", .module = lsp_mod },
-            .{ .name = "ai", .module = ai_mod },
             .{ .name = "runtime", .module = runtime_mod },
             .{ .name = "syntax", .module = syntax_mod },
             .{ .name = "zsync", .module = zsync.module("zsync") },
