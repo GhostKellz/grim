@@ -277,7 +277,7 @@ test "context prioritization" {
     defer manager.deinit();
 
     // Add low priority item
-    var item1 = try ContextItem.init(std.testing.allocator, .file_tree, "a".** 200); // Too big
+    var item1 = try ContextItem.init(std.testing.allocator, .file_tree, "a" * *** 200); // Too big
     try manager.addContext(item1);
 
     // Add high priority item

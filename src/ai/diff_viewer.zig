@@ -385,7 +385,7 @@ pub const DiffViewer = struct {
     }
 
     /// Render single diff line
-    fn renderDiffLine(self: *const DiffViewer, writer: anytype, line: DiffLine, width: u32) !void {
+    fn renderDiffLine(_: *const DiffViewer, writer: anytype, line: DiffLine, width: u32) !void {
         const symbol = line.change_type.toSymbol();
         const color = line.change_type.toColor();
         const reset = "\x1b[0m";

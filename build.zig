@@ -86,7 +86,7 @@ pub fn build(b: *std.Build) void {
     });
 
     const ai_mod = b.createModule(.{
-        .root_source_file = b.path("ai/mod.zig"),
+        .root_source_file = b.path("src/ai/mod.zig"),
         .target = target,
         .optimize = optimize,
         .imports = &.{
@@ -150,6 +150,7 @@ pub fn build(b: *std.Build) void {
             .{ .name = "syntax", .module = syntax_mod },
             .{ .name = "runtime", .module = runtime_mod },
             .{ .name = "lsp", .module = lsp_mod },
+            .{ .name = "ai", .module = ai_mod },
         },
     });
 
@@ -352,25 +353,8 @@ pub fn build(b: *std.Build) void {
     run_test_grove.step.dependOn(b.getInstallStep());
     test_grove_step.dependOn(&run_test_grove.step);
 
-    // Test Reaper client executable
-    const test_reaper_exe = b.addExecutable(.{
-        .name = "test_reaper_client",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("test_reaper_client.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "ai", .module = ai_mod },
-            },
-        }),
-    });
-    b.installArtifact(test_reaper_exe);
-
-    // Top level step for testing Reaper client
-    const test_reaper_step = b.step("test-reaper", "Test Reaper AI client integration");
-    const run_test_reaper = b.addRunArtifact(test_reaper_exe);
-    run_test_reaper.step.dependOn(b.getInstallStep());
-    test_reaper_step.dependOn(&run_test_reaper.step);
+    // NOTE: reaper.grim AI was replaced by thanos/thanos.grim
+    // Test removed as we're now using Reaper as distribution only, not for AI
 
     // Just like flags, top level steps are also listed in the `--help` menu.
     //

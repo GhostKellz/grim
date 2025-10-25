@@ -11,6 +11,9 @@ const window_manager_mod = @import("window_manager.zig");
 const buffer_picker_mod = @import("buffer_picker.zig");
 const font_manager_mod = @import("font_manager.zig");
 const file_tree_mod = @import("file_tree.zig");
+const lsp_diagnostics = @import("lsp_diagnostics.zig");
+const completion_menu_mod = @import("completion_menu.zig");
+const ai = @import("ai");
 
 /// Feature flag: Enable PhantomBuffer with undo/redo and multi-cursor support
 /// Set to false to use legacy Editor-based buffers
@@ -87,6 +90,12 @@ pub const SimpleTUI = struct {
     file_tree: ?*file_tree_mod.FileTree,
     file_tree_active: bool,
     file_tree_width: usize,
+    // LSP diagnostics UI
+    diagnostics_ui: lsp_diagnostics.DiagnosticsUI,
+    // LSP completion menu
+    lsp_completion_menu: completion_menu_mod.CompletionMenu,
+    // AI ghost text renderer
+    ghost_text_renderer: ai.GhostTextRenderer,
     // Vim key sequences (dd, yy, etc.)
     pending_vim_key: ?u8,
     // Vim text objects (diw, ci{, etc.)
@@ -160,6 +169,9 @@ pub const SimpleTUI = struct {
             .completion_popup_active = false,
             .completion_selected_index = 0,
             .completion_items = &.{},
+            .diagnostics_ui = lsp_diagnostics.DiagnosticsUI.init(allocator),
+            .lsp_completion_menu = completion_menu_mod.CompletionMenu.init(allocator),
+            .ghost_text_renderer = ai.GhostTextRenderer.init(allocator),
             .completion_items_heap = false,
             .completion_prefix = completion_prefix,
             .completion_anchor_offset = null,
@@ -256,6 +268,9 @@ pub const SimpleTUI = struct {
         self.harpoon.deinit();
         self.git.deinit();
         self.fuzzy.deinit();
+        self.diagnostics_ui.deinit();
+        self.lsp_completion_menu.deinit();
+        self.ghost_text_renderer.deinit();
         self.fuzzy_query.deinit(self.allocator);
         self.leader_key_sequence.deinit(self.allocator);
 
@@ -664,11 +679,16 @@ pub const SimpleTUI = struct {
             const line_str = try std.fmt.bufPrint(&line_buf, "{d:4}", .{actual_line_num + 1});
             try self.stdout.writeAll(line_str);
 
-            // Diagnostic marker
+            // Diagnostic marker - use new diagnostics UI for gutter rendering
+            try self.diagnostics_ui.renderGutter(self.stdout, actual_line_num);
+
+            // Fallback to old diagnostic system if needed
             const line_diag = selectLineDiagnostic(diagnostics_entries, actual_line_num);
-            const diag_marker = if (line_diag) |diag| severityMarker(diag.severity) else ' ';
-            var diag_marker_buf = [1]u8{diag_marker};
-            try self.stdout.writeAll(diag_marker_buf[0..]);
+            if (line_diag == null) {
+                const diag_marker = if (line_diag) |diag| severityMarker(diag.severity) else ' ';
+                var diag_marker_buf = [1]u8{diag_marker};
+                try self.stdout.writeAll(diag_marker_buf[0..]);
+            }
 
             // Git sign
             const git_sign = self.getGitSignForLine(actual_line_num);
@@ -680,6 +700,15 @@ pub const SimpleTUI = struct {
             if (content_width > 0) {
                 // Use display_slice for rendering (with horizontal scroll applied)
                 try self.renderHighlightedLine(display_slice, actual_line_num, content_width);
+
+                // Render AI ghost text inline if in insert mode and cursor is on this line
+                if (self.editor.mode == .insert) {
+                    const current_cursor_line = self.getCursorLine();
+                    if (current_cursor_line == actual_line_num) {
+                        const cursor_col = self.getCursorColumn();
+                        try self.ghost_text_renderer.render(self.stdout, actual_line_num, cursor_col);
+                    }
+                }
             }
 
             try self.stdout.writeAll("\r\n");
@@ -695,6 +724,16 @@ pub const SimpleTUI = struct {
 
         try self.renderCollaborationPresence(width, height);
         try self.renderCompletionBar(width, height);
+
+        // Render new LSP completion menu if visible
+        if (self.lsp_completion_menu.visible) {
+            const cursor_line = self.getCursorLine();
+            const cursor_col = self.getCursorColumn();
+            const menu_x = @min(cursor_col + 10, width - 20); // Position near cursor
+            const menu_y = @min(cursor_line + 2, height - 10); // Below cursor
+            try self.lsp_completion_menu.render(self.stdout, @intCast(menu_x), @intCast(menu_y), 8);
+        }
+
         try self.renderSignatureHelpPopup(width, height);
         try self.renderCodeActionsMenu(width, height);
         try self.renderBufferPicker(width, height);
@@ -1496,6 +1535,8 @@ pub const SimpleTUI = struct {
             9 => { // Tab
                 if (self.completion_popup_active and self.completion_items.len > 0) {
                     self.moveCompletionSelection(1);
+                } else if (self.lsp_completion_menu.visible) {
+                    self.lsp_completion_menu.moveDown();
                 } else {
                     try self.insertCharWithUndo('\t');
                     self.afterTextEdit();
@@ -1504,6 +1545,15 @@ pub const SimpleTUI = struct {
             13 => { // Enter
                 if (self.completion_popup_active and self.completion_items.len > 0) {
                     try self.acceptCompletionSelection();
+                } else if (self.lsp_completion_menu.visible) {
+                    // Accept selected completion from new menu
+                    if (self.lsp_completion_menu.getSelected()) |item| {
+                        // Insert the completion text
+                        for (item.insert_text) |c| {
+                            try self.insertCharWithUndo(c);
+                        }
+                        self.lsp_completion_menu.hide();
+                    }
                 } else {
                     try self.insertCharWithUndo('\n');
                     self.afterTextEdit();
@@ -1513,11 +1563,15 @@ pub const SimpleTUI = struct {
             14 => { // Ctrl+N
                 if (self.completion_popup_active and self.completion_items.len > 0) {
                     self.moveCompletionSelection(1);
+                } else if (self.lsp_completion_menu.visible) {
+                    self.lsp_completion_menu.moveDown();
                 }
             },
             16 => { // Ctrl+P
                 if (self.completion_popup_active and self.completion_items.len > 0) {
                     self.moveCompletionSelection(-1);
+                } else if (self.lsp_completion_menu.visible) {
+                    self.lsp_completion_menu.moveUp();
                 }
             },
             else => {

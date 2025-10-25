@@ -36,6 +36,9 @@ pub const Terminal = struct {
     /// Terminal title (from escape sequences)
     title: ?[]const u8,
 
+    /// Poll fd for async I/O
+    poll_fd: ?posix.pollfd = null,
+
     pub const Error = error{
         PtyCreationFailed,
         ForkFailed,
@@ -376,6 +379,47 @@ pub const Terminal = struct {
 
     fn getShell() [:0]const u8 {
         return std.posix.getenv("SHELL") orelse "/bin/sh";
+    }
+
+    /// Poll for new data (call from main event loop)
+    pub fn poll(self: *Terminal, timeout_ms: i32) !bool {
+        if (!self.running) return false;
+
+        // Initialize poll_fd if needed
+        if (self.poll_fd == null) {
+            self.poll_fd = posix.pollfd{
+                .fd = self.pty_master,
+                .events = posix.POLL.IN | posix.POLL.HUP,
+                .revents = 0,
+            };
+        }
+
+        var pfd = &self.poll_fd.?;
+        pfd.revents = 0;
+
+        const n = try posix.poll(@as([*]posix.pollfd, @ptrCast(pfd)), 1, timeout_ms);
+
+        if (n > 0) {
+            // Check for data available
+            if (pfd.revents & posix.POLL.IN != 0) {
+                var buf: [4096]u8 = undefined;
+                const bytes_read = try self.read(&buf);
+
+                if (bytes_read > 0 and self.parser != null) {
+                    // Parse ANSI and update screen buffer
+                    try self.parser.?.parse(buf[0..bytes_read]);
+                    return true;
+                }
+            }
+
+            // Check if process exited
+            if (pfd.revents & posix.POLL.HUP != 0) {
+                self.running = false;
+                return false;
+            }
+        }
+
+        return false;
     }
 };
 

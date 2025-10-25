@@ -180,7 +180,7 @@ pub const ChatWindow = struct {
         if (input.len == 0) return;
 
         // Add user message to history
-        var user_msg = try ChatMessage.init(self.allocator, .user, input);
+        const user_msg = try ChatMessage.init(self.allocator, .user, input);
         try self.history.addMessage(user_msg);
 
         // Clear input
@@ -202,7 +202,7 @@ pub const ChatWindow = struct {
             try self.history.addMessage(assistant_msg);
         } else {
             // No FFI function, show error
-            var error_msg = try ChatMessage.init(
+            const error_msg = try ChatMessage.init(
                 self.allocator,
                 .system,
                 "Error: AI completion function not available",
@@ -221,7 +221,7 @@ pub const ChatWindow = struct {
         if (input.len == 0) return;
 
         // Add user message to history
-        var user_msg = try ChatMessage.init(self.allocator, .user, input);
+        const user_msg = try ChatMessage.init(self.allocator, .user, input);
         try self.history.addMessage(user_msg);
 
         // Clear input
@@ -231,9 +231,28 @@ pub const ChatWindow = struct {
         var assistant_msg = try ChatMessage.init(self.allocator, .assistant, "");
         try assistant_msg.setProvider(self.current_provider);
 
-        // TODO: Call streaming FFI function when available
-        // For now, just call regular completion
-        if (self.completion_fn) |func| {
+        // Call streaming or regular completion based on availability
+        // Streaming provides better UX with token-by-token rendering
+        if (self.streaming_fn) |stream_func| {
+            // Use streaming completion
+            const prompt_z = try self.allocator.dupeZ(u8, input);
+            defer self.allocator.free(prompt_z);
+
+            // Stream tokens and update message + callback
+            // TODO: Implement streaming callback properly
+            _ = stream_func;
+
+            // Fallback to non-streaming for now
+            const prompt_z_fallback = try self.allocator.dupeZ(u8, input);
+            defer self.allocator.free(prompt_z_fallback);
+
+            if (self.completion_fn) |func| {
+                const result_ptr = func(prompt_z_fallback.ptr, "markdown".ptr, 2000);
+                const result = std.mem.span(result_ptr);
+                assistant_msg.content = try self.allocator.dupe(u8, result);
+                callback(result, user_data);
+            }
+        } else if (self.completion_fn) |func| {
             const prompt_z = try self.allocator.dupeZ(u8, input);
             defer self.allocator.free(prompt_z);
 
@@ -387,10 +406,10 @@ test "chat history" {
     var history = ChatHistory.init(std.testing.allocator);
     defer history.deinit();
 
-    var msg1 = try ChatMessage.init(std.testing.allocator, .user, "Question");
+    const msg1 = try ChatMessage.init(std.testing.allocator, .user, "Question");
     try history.addMessage(msg1);
 
-    var msg2 = try ChatMessage.init(std.testing.allocator, .assistant, "Answer");
+    const msg2 = try ChatMessage.init(std.testing.allocator, .assistant, "Answer");
     try history.addMessage(msg2);
 
     const messages = history.getMessages();
