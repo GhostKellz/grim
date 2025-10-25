@@ -23,7 +23,7 @@ pub const DiagnosticsUI = struct {
 
     pub fn init(allocator: std.mem.Allocator) DiagnosticsUI {
         return .{
-            .diagnostics = std.ArrayList(Diagnostic).init(allocator),
+            .diagnostics = std.ArrayList(Diagnostic){},
             .allocator = allocator,
         };
     }
@@ -71,7 +71,9 @@ pub const DiagnosticsUI = struct {
                 .info => "\x1b[34m",
                 .hint => "\x1b[36m",
             };
-            try writer.print("{s}{s}\x1b[0m", .{ color, symbol });
+            try writer.writeAll(color);
+            try writer.writeAll(symbol);
+            try writer.writeAll("\x1b[0m");
         } else {
             try writer.writeAll(" ");
         }

@@ -680,7 +680,7 @@ pub const SimpleTUI = struct {
             try self.stdout.writeAll(line_str);
 
             // Diagnostic marker - use new diagnostics UI for gutter rendering
-            try self.diagnostics_ui.renderGutter(self.stdout, actual_line_num);
+            try self.diagnostics_ui.renderGutter(self.stdout, @intCast(actual_line_num));
 
             // Fallback to old diagnostic system if needed
             const line_diag = selectLineDiagnostic(diagnostics_entries, actual_line_num);
@@ -706,7 +706,7 @@ pub const SimpleTUI = struct {
                     const current_cursor_line = self.getCursorLine();
                     if (current_cursor_line == actual_line_num) {
                         const cursor_col = self.getCursorColumn();
-                        try self.ghost_text_renderer.render(self.stdout, actual_line_num, cursor_col);
+                        try self.ghost_text_renderer.render(self.stdout, @intCast(actual_line_num), @intCast(cursor_col));
                     }
                 }
             }

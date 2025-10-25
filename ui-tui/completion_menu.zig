@@ -32,8 +32,8 @@ pub const CompletionMenu = struct {
 
     pub fn init(allocator: std.mem.Allocator) CompletionMenu {
         return .{
-            .items = std.ArrayList(CompletionItem).init(allocator),
-            .filtered = std.ArrayList(usize).init(allocator),
+            .items = std.ArrayList(CompletionItem){},
+            .filtered = std.ArrayList(usize){},
             .allocator = allocator,
         };
     }
@@ -86,7 +86,7 @@ pub const CompletionMenu = struct {
         return self.items.items[idx];
     }
 
-    pub fn render(self: *const CompletionMenu, writer: anytype, x: u32, y: u32, max_height: u32) !void {
+    pub fn render(self: *const CompletionMenu, file: anytype, x: u32, y: u32, max_height: u32) !void {
         if (!self.visible or self.filtered.items.len == 0) return;
 
         const visible_items = @min(self.filtered.items.len, max_height);
@@ -95,10 +95,12 @@ pub const CompletionMenu = struct {
             const idx = self.filtered.items[i];
             const item = self.items.items[idx];
 
-            try writer.print("\x1b[{};{}H", .{ y + i, x });
+            var buf: [256]u8 = undefined;
+            const pos_seq = try std.fmt.bufPrint(&buf, "\x1b[{};{}H", .{ y + i, x });
+            try file.writeAll(pos_seq);
 
             if (i == self.selected) {
-                try writer.writeAll("\x1b[7m"); // Reverse
+                try file.writeAll("\x1b[7m");
             }
 
             const icon = switch (item.kind) {
@@ -109,16 +111,18 @@ pub const CompletionMenu = struct {
                 else => " ",
             };
 
-            try writer.print(" {s} {s}", .{ icon, item.label });
+            const text = try std.fmt.bufPrint(&buf, " {s} {s}", .{ icon, item.label });
+            try file.writeAll(text);
 
             if (item.detail) |detail| {
                 if (detail.len < 20) {
-                    try writer.print(" \x1b[2m{s}\x1b[0m", .{detail});
+                    const detail_text = try std.fmt.bufPrint(&buf, " \x1b[2m{s}\x1b[0m", .{detail});
+                    try file.writeAll(detail_text);
                 }
             }
 
             if (i == self.selected) {
-                try writer.writeAll("\x1b[0m");
+                try file.writeAll("\x1b[0m");
             }
         }
     }

@@ -99,7 +99,7 @@ pub const ContextManager = struct {
     /// Get formatted context string within token limit
     pub fn getFormattedContext(self: *const ContextManager) ![]const u8 {
         // Sort by priority (highest first)
-        var sorted = try self.allocator.alloc(ContextItem, self.context_items.items.len);
+        const sorted = try self.allocator.alloc(ContextItem, self.context_items.items.len);
         defer self.allocator.free(sorted);
 
         @memcpy(sorted, self.context_items.items);
@@ -146,7 +146,7 @@ pub const ContextManager = struct {
     /// Truncate context to fit within token limit
     pub fn truncateToLimit(self: *ContextManager) !void {
         // Sort by priority
-        var sorted_indices = try self.allocator.alloc(usize, self.context_items.items.len);
+        const sorted_indices = try self.allocator.alloc(usize, self.context_items.items.len);
         defer self.allocator.free(sorted_indices);
 
         for (sorted_indices, 0..) |*idx, i| {
@@ -262,8 +262,8 @@ test "context manager" {
     var manager = ContextManager.init(std.testing.allocator, 1000);
     defer manager.deinit();
 
-    var item1 = try ContextItem.init(std.testing.allocator, .cursor_line, "line 1");
-    var item2 = try ContextItem.init(std.testing.allocator, .selection, "selected code");
+    const item1 = try ContextItem.init(std.testing.allocator, .cursor_line, "line 1");
+    const item2 = try ContextItem.init(std.testing.allocator, .selection, "selected code");
 
     try manager.addContext(item1);
     try manager.addContext(item2);
@@ -277,11 +277,11 @@ test "context prioritization" {
     defer manager.deinit();
 
     // Add low priority item
-    var item1 = try ContextItem.init(std.testing.allocator, .file_tree, "a" * *** 200); // Too big
+    const item1 = try ContextItem.init(std.testing.allocator, .file_tree, "a" * *** 200); // Too big
     try manager.addContext(item1);
 
     // Add high priority item
-    var item2 = try ContextItem.init(std.testing.allocator, .selection, "important");
+    const item2 = try ContextItem.init(std.testing.allocator, .selection, "important");
     try manager.addContext(item2);
 
     try manager.truncateToLimit();

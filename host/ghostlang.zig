@@ -108,98 +108,18 @@ fn builtinRegisterTheme(args: []const ghostlang.ScriptValue) ghostlang.ScriptVal
 // Reaper AI integration builtins
 
 fn builtinReaperComplete(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
-    const host = active_host orelse return .{ .string = "error: no active host" };
-
-    // Parse arguments: reaper_complete(prompt, language, [provider])
-    const prompt = getMandatoryStringArg(host, args, 0) orelse return .{ .string = "error: missing prompt" };
-    const language = getMandatoryStringArg(host, args, 1) orelse return .{ .string = "error: missing language" };
-    const provider = getOptionalStringArg(host, args, 2);
-
-    // Get or init reaper client
-    const client = ai.reaper_client.getOrInitClient(host.allocator) catch |err| {
-        var buf: [128]u8 = undefined;
-        const error_msg = std.fmt.bufPrint(&buf, "error: failed to init reaper client: {s}", .{@errorName(err)}) catch "error: failed to init client";
-        return .{ .string = error_msg };
-    };
-
-    // Make completion request
-    const request = ai.reaper_client.CompletionRequest{
-        .prompt = prompt,
-        .language = language,
-        .provider = provider,
-    };
-
-    const response = client.complete(request) catch |err| {
-        var buf: [128]u8 = undefined;
-        const error_msg = std.fmt.bufPrint(&buf, "error: completion failed: {s}", .{@errorName(err)}) catch "error: completion failed";
-        return .{ .string = error_msg };
-    };
-
-    if (!response.success) {
-        return .{ .string = response.error_message orelse "error: completion failed" };
-    }
-
-    return .{ .string = response.text };
+    _ = args;
+    return .{ .string = "error: reaper_complete deprecated - use thanos.grim" };
 }
 
 fn builtinReaperChat(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
-    const host = active_host orelse return .{ .string = "error: no active host" };
-
-    const message = getMandatoryStringArg(host, args, 0) orelse return .{ .string = "error: missing message" };
-    const provider = getOptionalStringArg(host, args, 1);
-
-    const client = ai.reaper_client.getOrInitClient(host.allocator) catch |err| {
-        var buf: [128]u8 = undefined;
-        const error_msg = std.fmt.bufPrint(&buf, "error: failed to init reaper client: {s}", .{@errorName(err)}) catch "error: failed to init client";
-        return .{ .string = error_msg };
-    };
-
-    const request = ai.reaper_client.ChatRequest{
-        .message = message,
-        .provider = provider,
-    };
-
-    const response = client.chat(request) catch |err| {
-        var buf: [128]u8 = undefined;
-        const error_msg = std.fmt.bufPrint(&buf, "error: chat failed: {s}", .{@errorName(err)}) catch "error: chat failed";
-        return .{ .string = error_msg };
-    };
-
-    if (!response.success) {
-        return .{ .string = response.error_message orelse "error: chat failed" };
-    }
-
-    return .{ .string = response.message };
+    _ = args;
+    return .{ .string = "error: reaper_chat deprecated - use thanos.grim" };
 }
 
 fn builtinReaperAgentic(args: []const ghostlang.ScriptValue) ghostlang.ScriptValue {
-    const host = active_host orelse return .{ .string = "error: no active host" };
-
-    const task = getMandatoryStringArg(host, args, 0) orelse return .{ .string = "error: missing task" };
-    const provider = getOptionalStringArg(host, args, 1);
-
-    const client = ai.reaper_client.getOrInitClient(host.allocator) catch |err| {
-        var buf: [128]u8 = undefined;
-        const error_msg = std.fmt.bufPrint(&buf, "error: failed to init reaper client: {s}", .{@errorName(err)}) catch "error: failed to init client";
-        return .{ .string = error_msg };
-    };
-
-    const request = ai.reaper_client.AgenticRequest{
-        .task = task,
-        .provider = provider,
-    };
-
-    const response = client.agentic(request) catch |err| {
-        var buf: [128]u8 = undefined;
-        const error_msg = std.fmt.bufPrint(&buf, "error: agentic task failed: {s}", .{@errorName(err)}) catch "error: agentic task failed";
-        return .{ .string = error_msg };
-    };
-
-    if (!response.success) {
-        return .{ .string = response.error_message orelse "error: agentic task failed" };
-    }
-
-    return .{ .string = response.result };
+    _ = args;
+    return .{ .string = "error: reaper_agentic deprecated - use thanos.grim" };
 }
 
 // Native FFI bridge for hybrid plugins
