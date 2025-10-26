@@ -270,8 +270,35 @@ pub const LSPCompletionMenu = struct {
                 }
                 return true;
             },
+            .escape => {
+                self.hide();
+                return true;
+            },
             else => false,
         };
+    }
+
+    /// Simplified method to set items from string array (for testing)
+    pub fn setItems(self: *LSPCompletionMenu, items: []const []const u8) !void {
+        self.list_view.clear();
+
+        for (items) |item| {
+            try self.list_view.addItem(.{
+                .text = try self.allocator.dupe(u8, item),
+                .secondary_text = null,
+                .icon = '●', // Simple bullet point
+            });
+        }
+
+        const title = try std.fmt.allocPrint(
+            self.allocator,
+            " Completions ({d}) ",
+            .{items.len},
+        );
+        defer self.allocator.free(title);
+        try self.border.setTitle(title);
+
+        self.visible = items.len > 0;
     }
 
     pub fn render(self: *LSPCompletionMenu, buffer: anytype, area: phantom.Rect) void {

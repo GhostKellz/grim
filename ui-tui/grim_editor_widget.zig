@@ -341,6 +341,21 @@ pub const GrimEditorWidget = struct {
             }
         }
 
+        // Let hover widget handle events
+        if (self.lsp_hover_widget) |hover| {
+            if (hover.visible) {
+                switch (event) {
+                    .key => |key| {
+                        if (key == .escape) {
+                            hover.hide();
+                            return true;
+                        }
+                    },
+                    else => {},
+                }
+            }
+        }
+
         // Widget doesn't handle events directly - parent (GrimApp) handles them
         return false;
     }
@@ -484,22 +499,44 @@ pub const GrimEditorWidget = struct {
 
     // LSP operations
     pub fn triggerHover(self: *GrimEditorWidget) !void {
-        if (self.lsp_client) |lsp| {
-            _ = lsp;
-            // TODO: Request hover information at cursor
-            if (self.lsp_hover_widget) |hover| {
-                hover.show();
-            }
+        if (self.lsp_hover_widget) |hover| {
+            // TODO: Request actual hover information from LSP client
+            // For now, show menu with test data
+            const test_hover =
+                \\**Function**: test_function
+                \\
+                \\```zig
+                \\pub fn test_function(arg: i32) !void
+                \\```
+                \\
+                \\This is a test function that demonstrates hover information.
+                \\It would normally come from the LSP server.
+            ;
+
+            try hover.setHoverContent(test_hover);
+            hover.show();
         }
     }
 
     pub fn triggerCompletion(self: *GrimEditorWidget) !void {
-        if (self.lsp_client) |lsp| {
-            _ = lsp;
-            // TODO: Request completions at cursor
-            if (self.lsp_completion_menu) |menu| {
-                menu.show();
-            }
+        if (self.lsp_completion_menu) |menu| {
+            // TODO: Request actual completions from LSP client
+            // For now, show menu with test data
+            const test_items = [_][]const u8{
+                "function",
+                "struct",
+                "const",
+                "var",
+                "pub",
+                "fn",
+                "if",
+                "else",
+                "while",
+                "for",
+            };
+
+            try menu.setItems(&test_items);
+            menu.show();
         }
     }
 

@@ -47,28 +47,29 @@ pub const LSPHoverWidget = struct {
     }
 
     /// Set hover content from LSP hover response
-    /// Supports markdown formatting from LSP
+    /// TODO: Parse markdown formatting from LSP
     pub fn setHoverContent(self: *LSPHoverWidget, content: []const u8) !void {
-        // LSP hover responses often contain markdown
-        // RichText.setMarkdown() will parse:
-        // - **bold**
-        // - *italic*
-        // - `code`
-        // - Headers (##)
-        // - Lists
-        try self.rich_text.setMarkdown(content);
-        self.visible = content.len > 0;
-    }
+        // Clear existing spans
+        for (self.rich_text.spans.items) |span| {
+            self.allocator.free(span.text);
+        }
+        self.rich_text.spans.clearRetainingCapacity();
 
-    /// Set hover content with custom styling
-    pub fn setStyledContent(self: *LSPHoverWidget, spans: []const phantom.widgets.TextSpan) !void {
-        try self.rich_text.setSpans(spans);
-        self.visible = spans.len > 0;
+        // For now, just add as plain text
+        // TODO: Parse markdown: **bold**, *italic*, `code`, etc.
+        try self.rich_text.addText(content);
+        self.visible = content.len > 0;
     }
 
     /// Set plain text content
     pub fn setPlainText(self: *LSPHoverWidget, text: []const u8) !void {
-        try self.rich_text.setText(text);
+        // Clear existing spans
+        for (self.rich_text.spans.items) |span| {
+            self.allocator.free(span.text);
+        }
+        self.rich_text.spans.clearRetainingCapacity();
+
+        try self.rich_text.addText(text);
         self.visible = text.len > 0;
     }
 

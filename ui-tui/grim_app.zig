@@ -389,6 +389,11 @@ pub const GrimApp = struct {
                 try editor.insertTab();
                 return true;
             },
+            .ctrl_n => {
+                // Trigger LSP completion (Ctrl+N like vim)
+                try editor.triggerCompletion();
+                return true;
+            },
             else => return false,
         }
     }
