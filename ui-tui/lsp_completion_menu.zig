@@ -187,7 +187,7 @@ pub const LSPCompletionMenu = struct {
     }
 
     pub fn selectPrev(self: *LSPCompletionMenu) void {
-        self.list_view.selectPrev();
+        self.list_view.selectPrevious();
     }
 
     pub fn getSelectedIndex(self: *LSPCompletionMenu) ?usize {
@@ -210,22 +210,39 @@ pub const LSPCompletionMenu = struct {
         }
     }
 
+    fn ensureSelectedVisible(self: *LSPCompletionMenu) void {
+        if (self.list_view.selected_index) |selected| {
+            const visible_count = self.list_view.viewport_height / self.list_view.item_height;
+            if (selected < self.list_view.scroll_offset) {
+                self.list_view.scroll_offset = selected;
+            } else if (selected >= self.list_view.scroll_offset + visible_count) {
+                self.list_view.scroll_offset = selected -| (visible_count - 1);
+            }
+        }
+    }
+
     pub fn handleKeyEvent(self: *LSPCompletionMenu, key: phantom.Key) bool {
         if (!self.visible) return false;
 
         return switch (key) {
-            .down, .char => |c| if (c == 'j') {
+            .down => {
                 self.selectNext();
                 return true;
-            } else false,
+            },
             .up => {
                 self.selectPrev();
                 return true;
             },
-            .char => |c| if (c == 'k') {
-                self.selectPrev();
-                return true;
-            } else false,
+            .char => |c| {
+                if (c == 'j') {
+                    self.selectNext();
+                    return true;
+                } else if (c == 'k') {
+                    self.selectPrev();
+                    return true;
+                }
+                return false;
+            },
             .page_down => {
                 // TODO: Jump down by viewport height
                 var i: usize = 0;
@@ -243,13 +260,13 @@ pub const LSPCompletionMenu = struct {
             },
             .home => {
                 self.list_view.selected_index = 0;
-                self.list_view.ensureSelectedVisible();
+                self.ensureSelectedVisible();
                 return true;
             },
             .end => {
                 if (self.list_view.items.items.len > 0) {
                     self.list_view.selected_index = self.list_view.items.items.len - 1;
-                    self.list_view.ensureSelectedVisible();
+                    self.ensureSelectedVisible();
                 }
                 return true;
             },

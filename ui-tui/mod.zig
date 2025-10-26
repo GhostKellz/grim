@@ -1,6 +1,7 @@
 pub const app = @import("app.zig");
 pub const editor = @import("editor.zig");
 pub const simple_tui = @import("simple_tui.zig");
+pub const grim_app = @import("grim_app.zig");
 pub const file_ops = @import("file_ops.zig");
 pub const editor_lsp = @import("editor_lsp.zig");
 pub const vim_commands = @import("vim_commands.zig");

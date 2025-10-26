@@ -82,7 +82,7 @@ pub const LSPHoverWidget = struct {
     }
 
     pub fn show(self: *LSPHoverWidget) void {
-        if (self.rich_text.text.items.len > 0) {
+        if (self.rich_text.spans.items.len > 0) {
             self.visible = true;
         }
     }

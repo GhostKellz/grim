@@ -8,6 +8,15 @@ const Editor = @import("editor.zig").Editor;
 const editor_lsp_mod = @import("editor_lsp.zig");
 
 const Widget = phantom.Widget;
+const Buffer = phantom.Buffer;
+const Cell = struct {
+    char: u21 = ' ',
+    style: phantom.Style = phantom.Style.default(),
+
+    pub fn init(char: u21, cell_style: phantom.Style) @This() {
+        return .{ .char = char, .style = cell_style };
+    }
+};
 
 // LSP widgets
 const lsp_completion_menu_mod = @import("lsp_completion_menu.zig");
@@ -42,16 +51,18 @@ pub const GrimEditorWidget = struct {
 
     const vtable = phantom.Widget.WidgetVTable{
         .render = render,
+        .deinit = deinit,
         .handleEvent = handleEvent,
         .resize = resize,
-        .deinit = deinit,
     };
 
     pub fn init(allocator: std.mem.Allocator) !*GrimEditorWidget {
         const self = try allocator.create(GrimEditorWidget);
         errdefer allocator.destroy(self);
 
-        const editor = try Editor.init(allocator);
+        const editor = try allocator.create(Editor);
+        errdefer allocator.destroy(editor);
+        editor.* = try Editor.init(allocator);
         errdefer editor.deinit();
 
         const lsp_completion = try lsp_completion_menu_mod.LSPCompletionMenu.init(allocator);
@@ -80,7 +91,7 @@ pub const GrimEditorWidget = struct {
     }
 
     fn deinit(widget: *phantom.Widget) void {
-        const self = @fieldParentPtr(GrimEditorWidget, "widget", widget);
+        const self: *GrimEditorWidget = @fieldParentPtr("widget", widget);
 
         if (self.lsp_hover_widget) |w| w.deinit();
         if (self.lsp_completion_menu) |m| m.deinit();
@@ -90,8 +101,8 @@ pub const GrimEditorWidget = struct {
         self.allocator.destroy(self);
     }
 
-    fn render(widget: *Widget, buffer: anytype, area: phantom.Rect) void {
-        const self = @fieldParentPtr(GrimEditorWidget, "widget", widget);
+    fn render(widget: *phantom.Widget, buffer: *Buffer, area: phantom.Rect) void {
+        const self: *GrimEditorWidget = @fieldParentPtr("widget", widget);
         self.area = area;
 
         // Render main editor content
@@ -134,11 +145,16 @@ pub const GrimEditorWidget = struct {
             // Render gutter (line number)
             if (self.show_line_numbers) {
                 var line_num_buf: [6]u8 = undefined;
-                const line_num = if (self.relative_line_numbers and actual_line_num != self.editor.cursor.line) blk: {
-                    const diff = if (actual_line_num > self.editor.cursor.line)
-                        actual_line_num - self.editor.cursor.line
+                const cursor_line_col = if (self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset)) |result|
+                    result
+                else |_|
+                    @TypeOf(try self.editor.rope.lineColumnAtOffset(0)){ .line = 0, .column = 0 };
+                const cursor_line = cursor_line_col.line;
+                const line_num = if (self.relative_line_numbers and actual_line_num != cursor_line) blk: {
+                    const diff = if (actual_line_num > cursor_line)
+                        actual_line_num - cursor_line
                     else
-                        self.editor.cursor.line - actual_line_num;
+                        cursor_line - actual_line_num;
                     break :blk diff;
                 } else actual_line_num + 1;
 
@@ -175,7 +191,7 @@ pub const GrimEditorWidget = struct {
     }
 
     fn renderHighlightedLine(
-        self: *GrimEditorWidget,
+        _: *GrimEditorWidget,
         buffer: anytype,
         x: u16,
         y: u16,
@@ -197,15 +213,17 @@ pub const GrimEditorWidget = struct {
             if (written >= max_width) break;
             if (current_x >= buffer.size.width) break;
 
-            buffer.setCell(current_x, y, phantom.Cell.init(codepoint, style));
+            const cell = Cell.init(codepoint, style);
+            buffer.setCell(current_x, y, .{ .char = cell.char, .style = cell.style });
             current_x += 1;
             written += 1;
         }
     }
 
     fn renderCursor(self: *GrimEditorWidget, buffer: anytype, area: phantom.Rect, content_start_x: u16) !void {
-        const cursor_line = self.editor.cursor.line;
-        const cursor_col = self.editor.cursor.col;
+        const cursor_line_col = self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset) catch return;
+        const cursor_line = cursor_line_col.line;
+        const cursor_col = cursor_line_col.column;
 
         // Check if cursor is in viewport
         if (cursor_line < self.viewport_top_line) return;
@@ -222,7 +240,7 @@ pub const GrimEditorWidget = struct {
 
         // Get character at cursor position
         const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
-        const cursor_offset = self.editor.rope.lineColToOffset(cursor_line, cursor_col);
+        const cursor_offset = self.editor.cursor.offset;
 
         var cursor_char: u21 = ' ';
         if (cursor_offset < content.len) {
@@ -238,7 +256,8 @@ pub const GrimEditorWidget = struct {
             .withFg(phantom.Color.black)
             .withBg(phantom.Color.white);
 
-        buffer.setCell(cursor_x, cursor_y, phantom.Cell.init(cursor_char, cursor_style));
+        const cell = Cell.init(cursor_char, cursor_style);
+        buffer.setCell(cursor_x, cursor_y, .{ .char = cell.char, .style = cell.style });
     }
 
     fn renderLSPOverlays(self: *GrimEditorWidget, buffer: anytype, area: phantom.Rect) !void {
@@ -246,8 +265,9 @@ pub const GrimEditorWidget = struct {
         if (self.lsp_completion_menu) |menu| {
             if (menu.visible) {
                 // Calculate menu position near cursor
-                const cursor_line = self.editor.cursor.line;
-                const cursor_col = self.editor.cursor.col;
+                const cursor_line_col = self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset) catch return;
+                const cursor_line = cursor_line_col.line;
+                const cursor_col = cursor_line_col.column;
 
                 if (cursor_line >= self.viewport_top_line and cursor_line < self.viewport_top_line + area.height) {
                     const screen_line = cursor_line - self.viewport_top_line;
@@ -277,7 +297,8 @@ pub const GrimEditorWidget = struct {
         if (self.lsp_hover_widget) |hover| {
             if (hover.visible) {
                 // Position hover widget above/below cursor
-                const cursor_line = self.editor.cursor.line;
+                const cursor_line_col = self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset) catch return;
+                const cursor_line = cursor_line_col.line;
 
                 if (cursor_line >= self.viewport_top_line and cursor_line < self.viewport_top_line + area.height) {
                     const screen_line = cursor_line - self.viewport_top_line;
@@ -303,9 +324,8 @@ pub const GrimEditorWidget = struct {
         }
     }
 
-    fn handleEvent(widget: *Widget, event: phantom.Event) bool {
-        const self = @fieldParentPtr(GrimEditorWidget, "widget", widget);
-
+    fn handleEvent(widget: *phantom.Widget, event: phantom.Event) bool {
+        const self: *GrimEditorWidget = @fieldParentPtr("widget", widget);
         // Let LSP widgets handle events first
         if (self.lsp_completion_menu) |menu| {
             if (menu.visible) {
@@ -321,12 +341,11 @@ pub const GrimEditorWidget = struct {
         }
 
         // Widget doesn't handle events directly - parent (GrimApp) handles them
-        _ = event;
         return false;
     }
 
-    fn resize(widget: *Widget, new_area: phantom.Rect) void {
-        const self = @fieldParentPtr(GrimEditorWidget, "widget", widget);
+    fn resize(widget: *phantom.Widget, new_area: phantom.Rect) void {
+        const self: *GrimEditorWidget = @fieldParentPtr("widget", widget);
         self.area = new_area;
     }
 
@@ -344,7 +363,10 @@ pub const GrimEditorWidget = struct {
 
     pub fn saveFile(self: *GrimEditorWidget) !void {
         if (self.editor.current_filename) |filepath| {
-            try self.editor.saveToFile(filepath);
+            const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+            const file = try std.fs.cwd().createFile(filepath, .{});
+            defer file.close();
+            try file.writeAll(content);
         } else {
             return error.NoFilename;
         }
@@ -356,7 +378,8 @@ pub const GrimEditorWidget = struct {
     }
 
     pub fn insertNewline(self: *GrimEditorWidget) !void {
-        try self.editor.insertNewline();
+        try self.editor.rope.insert(self.editor.cursor.offset, "\n");
+        self.editor.cursor.offset += 1;
         self.highlight_dirty = true;
     }
 
@@ -369,46 +392,51 @@ pub const GrimEditorWidget = struct {
     }
 
     pub fn deleteCharBackward(self: *GrimEditorWidget) !void {
-        try self.editor.deleteCharBackward();
+        if (self.editor.cursor.offset > 0) {
+            const prev_offset = self.editor.cursor.offset - 1;
+            try self.editor.rope.delete(prev_offset, 1);
+            self.editor.cursor.offset = prev_offset;
+        }
         self.highlight_dirty = true;
     }
 
     pub fn deleteCharForward(self: *GrimEditorWidget) !void {
-        try self.editor.deleteCharForward();
+        if (self.editor.cursor.offset < self.editor.rope.len()) {
+            try self.editor.rope.delete(self.editor.cursor.offset, 1);
+        }
         self.highlight_dirty = true;
     }
 
     pub fn moveCursorLeft(self: *GrimEditorWidget) !void {
-        try self.editor.moveCursorLeft();
+        self.editor.cursor.moveLeft(&self.editor.rope);
     }
 
     pub fn moveCursorRight(self: *GrimEditorWidget) !void {
-        try self.editor.moveCursorRight();
+        self.editor.cursor.moveRight(&self.editor.rope);
     }
 
     pub fn moveCursorUp(self: *GrimEditorWidget) !void {
-        try self.editor.moveCursorUp();
+        self.editor.moveCursorUp();
     }
 
     pub fn moveCursorDown(self: *GrimEditorWidget) !void {
-        try self.editor.moveCursorDown();
+        self.editor.moveCursorDown();
     }
 
     pub fn moveWordForward(self: *GrimEditorWidget) !void {
-        try self.editor.moveWordForward();
+        self.editor.moveWordForward();
     }
 
     pub fn moveWordBackward(self: *GrimEditorWidget) !void {
-        try self.editor.moveWordBackward();
+        self.editor.moveWordBackward();
     }
 
     pub fn moveToLineStart(self: *GrimEditorWidget) !void {
-        self.editor.cursor.col = 0;
+        self.editor.cursor.moveToLineStart(&self.editor.rope);
     }
 
     pub fn moveToLineEnd(self: *GrimEditorWidget) !void {
-        const line_len = self.editor.getCurrentLineLength();
-        self.editor.cursor.col = if (line_len > 0) line_len - 1 else 0;
+        self.editor.cursor.moveToLineEnd(&self.editor.rope);
     }
 
     // Visual mode operations
@@ -476,8 +504,9 @@ pub const GrimEditorWidget = struct {
 
     // Scrolling
     fn scrollToCursor(self: *GrimEditorWidget) void {
-        const cursor_line = self.editor.cursor.line;
-        const cursor_col = self.editor.cursor.col;
+        const cursor_line_col = self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset) catch return;
+        const cursor_line = cursor_line_col.line;
+        const cursor_col = cursor_line_col.column;
         const viewport_height = self.area.height;
         const viewport_width = if (self.area.width > 6) self.area.width - 6 else 0;
 
@@ -497,6 +526,18 @@ pub const GrimEditorWidget = struct {
     }
 
     fn getOffsetForLine(self: *GrimEditorWidget, line: usize) usize {
-        return self.editor.rope.lineColToOffset(line, 0);
+        // Find offset for the start of the given line
+        const content = self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() }) catch return 0;
+        var current_line: usize = 0;
+        var offset: usize = 0;
+
+        while (current_line < line and offset < content.len) {
+            if (content[offset] == '\n') {
+                current_line += 1;
+            }
+            offset += 1;
+        }
+
+        return offset;
     }
 };

@@ -4,6 +4,9 @@ const std = @import("std");
 const phantom = @import("phantom");
 const grim_editor_widget = @import("grim_editor_widget.zig");
 
+// Extract MouseEvent type from Event union (not exported from phantom root)
+const MouseEvent = @typeInfo(phantom.Event).@"union".fields[1].type;
+
 
 pub const LayoutManager = struct {
     allocator: std.mem.Allocator,
@@ -49,7 +52,7 @@ pub const LayoutManager = struct {
     /// Render all editor windows
     pub fn render(self: *LayoutManager, buffer: anytype, area: phantom.Rect) void {
         if (self.active_editor) |editor| {
-            editor.widget.vtable.render(&editor.widget, buffer, area);
+            editor.widget.render(buffer, area);
         }
     }
 
@@ -60,14 +63,12 @@ pub const LayoutManager = struct {
 
         if (self.active_editor) |editor| {
             const area = phantom.Rect.init(0, 0, new_width, new_height);
-            editor.widget.vtable.resize(&editor.widget, area);
+            editor.widget.resize(area);
         }
     }
 
     /// Handle mouse events (dispatch to correct editor)
-    pub fn handleMouse(self: *LayoutManager, mouse: phantom.MouseEvent, app: anytype) !bool {
-        _ = mouse;
-        _ = app;
+    pub fn handleMouse(_: *LayoutManager, _: MouseEvent, _: anytype) !bool {
         // TODO: Implement mouse handling
         return false;
     }

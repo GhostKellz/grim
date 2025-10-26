@@ -30,9 +30,9 @@ pub const CommandBar = struct {
             .allocator = allocator,
             .visible = false,
             .mode = .command,
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = .{},
             .cursor_pos = 0,
-            .history = std.ArrayList([]const u8).init(allocator),
+            .history = .{},
             .history_index = null,
         };
 
@@ -43,8 +43,8 @@ pub const CommandBar = struct {
         for (self.history.items) |item| {
             self.allocator.free(item);
         }
-        self.history.deinit();
-        self.buffer.deinit();
+        self.history.deinit(self.allocator);
+        self.buffer.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -118,7 +118,7 @@ pub const CommandBar = struct {
                 return true;
             },
             .char => |c| {
-                try self.buffer.insert(self.cursor_pos, c);
+                try self.buffer.insert(self.allocator, self.cursor_pos, @intCast(c));
                 self.cursor_pos += 1;
                 return true;
             },
@@ -132,7 +132,7 @@ pub const CommandBar = struct {
         if (command.len > 0) {
             // Add to history
             const history_item = try self.allocator.dupe(u8, command);
-            try self.history.append(history_item);
+            try self.history.append(self.allocator, history_item);
 
             // Execute based on mode
             switch (self.mode) {
@@ -163,7 +163,7 @@ pub const CommandBar = struct {
 
         if (self.history_index) |idx| {
             self.buffer.clearRetainingCapacity();
-            try self.buffer.appendSlice(self.history.items[idx]);
+            try self.buffer.appendSlice(self.allocator, self.history.items[idx]);
             self.cursor_pos = self.buffer.items.len;
         }
     }
@@ -173,7 +173,7 @@ pub const CommandBar = struct {
             if (idx + 1 < self.history.items.len) {
                 self.history_index = idx + 1;
                 self.buffer.clearRetainingCapacity();
-                try self.buffer.appendSlice(self.history.items[idx + 1]);
+                try self.buffer.appendSlice(self.allocator, self.history.items[idx + 1]);
                 self.cursor_pos = self.buffer.items.len;
             } else {
                 // At end of history, clear
@@ -207,7 +207,7 @@ pub const CommandBar = struct {
 
         while (i < self.buffer.items.len and current_x < area.x + area.width) : (i += 1) {
             const c = self.buffer.items[i];
-            buffer.setCell(current_x, area.y, phantom.Cell.init(c, style));
+            buffer.setCell(current_x, area.y, .{ .char = c, .style = style });
             current_x += 1;
         }
 
@@ -223,7 +223,7 @@ pub const CommandBar = struct {
                 .withFg(phantom.Color.black)
                 .withBg(phantom.Color.white);
 
-            buffer.setCell(cursor_x, area.y, phantom.Cell.init(cursor_char, cursor_style));
+            buffer.setCell(cursor_x, area.y, .{ .char = cursor_char, .style = cursor_style });
         }
     }
 };

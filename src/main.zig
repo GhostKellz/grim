@@ -65,9 +65,15 @@ pub fn main() !void {
         }
     }
 
-    // Initialize Simple TUI app
-    const SimpleTUI = @import("ui_tui").simple_tui.SimpleTUI;
-    var app = try SimpleTUI.init(allocator);
+    // Initialize Grim App (new Phantom-based architecture)
+    const GrimApp = @import("ui_tui").grim_app.GrimApp;
+    const GrimConfig = @import("ui_tui").grim_app.GrimConfig;
+
+    const config = GrimConfig{
+        .initial_file = file_to_load,
+    };
+
+    var app = try GrimApp.init(allocator, config);
     defer app.deinit();
 
     // Build plugin directories list
@@ -86,13 +92,19 @@ pub fn main() !void {
     };
     var plugin_mode = runtime.PluginAPI.EditorContext.EditorMode.normal;
     app.plugin_cursor = &plugin_cursor_position;
+
+    const active_editor = app.layout_manager.getActiveEditor() orelse {
+        std.log.err("No active editor available", .{});
+        return error.NoActiveEditor;
+    };
+
     var editor_context = runtime.PluginAPI.EditorContext{
-        .rope = &app.editor.rope,
+        .rope = &active_editor.editor.rope,
         .cursor_position = &plugin_cursor_position,
         .current_mode = &plugin_mode,
-        .highlighter = &app.editor.highlighter,
-        .selection_start = &app.editor.selection_start,
-        .selection_end = &app.editor.selection_end,
+        .highlighter = &active_editor.editor.highlighter,
+        .selection_start = &active_editor.editor.selection_start,
+        .selection_end = &active_editor.editor.selection_end,
         .active_buffer_id = app.getActiveBufferId(),
         .bridge = app.makeEditorBridge(),
     };
@@ -108,7 +120,7 @@ pub fn main() !void {
 
     app.attachPluginManager(&plugin_manager);
 
-    var editor_lsp = try EditorLSP.init(allocator, &app.editor);
+    var editor_lsp = try EditorLSP.init(allocator, active_editor.editor);
     defer {
         app.detachEditorLSP();
         editor_lsp.deinit();
@@ -164,7 +176,7 @@ pub fn main() !void {
         };
     } else {
         // Load a sample file for testing
-        try app.editor.rope.insert(0,
+        try active_editor.editor.rope.insert(0,
             \\fn main() !void {
             \\    const std = @import("std");
             \\    std.debug.print("Hello, Grim!\n", .{});
@@ -179,7 +191,7 @@ pub fn main() !void {
             \\}
         );
         // Set language for syntax highlighting (sample is Zig code)
-        try app.editor.highlighter.setLanguage("sample.zig");
+        try active_editor.editor.highlighter.setLanguage("sample.zig");
     }
 
     // Run the TUI immediately (show help in status line instead)

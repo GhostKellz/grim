@@ -6,6 +6,11 @@ const phantom = @import("phantom");
 const core = @import("core");
 const runtime = @import("runtime");
 const Editor = @import("editor.zig").Editor;
+const theme_mod = @import("theme.zig");
+const editor_lsp_mod = @import("editor_lsp.zig");
+
+// Extract MouseEvent type from Event union (not exported from phantom root)
+const MouseEvent = @typeInfo(phantom.Event).@"union".fields[1].type;
 
 // UI components
 const grim_editor_widget = @import("grim_editor_widget.zig");
@@ -64,6 +69,18 @@ pub const GrimApp = struct {
 
     // Plugin system
     plugin_manager: ?*runtime.PluginManager,
+    editor_context: ?*runtime.PluginAPI.EditorContext,
+    plugin_cursor: ?*runtime.PluginAPI.EditorContext.CursorPosition,
+
+    // LSP integration
+    editor_lsp: ?*editor_lsp_mod.EditorLSP,
+
+    // Theme system
+    theme_registry: theme_mod.ThemeRegistry,
+    active_theme: theme_mod.Theme,
+
+    // Buffer management
+    current_buffer_id: runtime.PluginAPI.BufferId,
 
     // Git integration
     git: core.Git,
@@ -117,6 +134,13 @@ pub const GrimApp = struct {
         // Initialize Fuzzy finder
         const fuzzy = core.FuzzyFinder.init(allocator);
 
+        // Initialize theme registry
+        var theme_registry = theme_mod.ThemeRegistry.init(allocator);
+        errdefer theme_registry.deinit();
+
+        // Get default theme
+        const default_theme = try theme_mod.Theme.get("ghost-hacker-blue");
+
         self.* = .{
             .allocator = allocator,
             .phantom_app = phantom_app,
@@ -127,23 +151,30 @@ pub const GrimApp = struct {
             .mode = .normal,
             .running = true,
             .plugin_manager = null,
+            .editor_context = null,
+            .plugin_cursor = null,
+            .editor_lsp = null,
+            .theme_registry = theme_registry,
+            .active_theme = default_theme,
+            .current_buffer_id = 1,
             .git = git,
             .harpoon = harpoon,
             .fuzzy = fuzzy,
         };
 
-        // Open initial file if specified
+        // Create initial editor (needed even if opening a file)
+        try self.layout_manager.createInitialEditor();
+
+        // Load initial file if specified
         if (config.initial_file) |file_path| {
             try self.openFile(file_path);
-        } else {
-            // Create empty buffer
-            try self.layout_manager.createInitialEditor();
         }
 
         return self;
     }
 
     pub fn deinit(self: *GrimApp) void {
+        self.theme_registry.deinit();
         self.fuzzy.deinit();
         self.harpoon.deinit();
         self.git.deinit();
@@ -174,24 +205,11 @@ pub const GrimApp = struct {
         // Main loop
         self.running = true;
         while (self.running) {
-            // Handle events
-            const event = try self.phantom_app.event_loop.pollEvent();
-
-            if (event) |evt| {
-                const handled = try self.handleEvent(evt);
-                if (!handled) {
-                    // Event wasn't handled, might need to stop
-                    if (evt == .key and (evt.key == .ctrl_c or evt.key == .escape)) {
-                        self.running = false;
-                    }
-                }
-            }
-
             // Render
             try self.render();
 
             // Sleep for tick rate
-            std.time.sleep(self.config.tick_rate_ms * std.time.ns_per_ms);
+            std.Thread.sleep(self.config.tick_rate_ms * std.time.ns_per_ms);
         }
     }
 
@@ -207,7 +225,7 @@ pub const GrimApp = struct {
             .system => |sys| {
                 switch (sys) {
                     .resize => {
-                        const new_size = try phantom.getTerminalSize();
+                        const new_size = self.phantom_app.terminal.size;
                         try self.handleResize(new_size);
                         return true;
                     },
@@ -423,23 +441,22 @@ pub const GrimApp = struct {
         }
     }
 
-    fn handleCommandMode(self: *GrimApp, key: phantom.Key) !bool {
+    fn handleCommandMode(_: *GrimApp, _: phantom.Key) !bool {
         // Handled by command_bar
         return false;
     }
 
-    fn handleSearchMode(self: *GrimApp, key: phantom.Key) !bool {
+    fn handleSearchMode(_: *GrimApp, _: phantom.Key) !bool {
         // Handled by command_bar
         return false;
     }
 
-    fn handleReplaceMode(self: *GrimApp, key: phantom.Key) !bool {
+    fn handleReplaceMode(_: *GrimApp, _: phantom.Key) !bool {
         // TODO: Implement replace mode
-        _ = key;
         return false;
     }
 
-    fn handleMouseEvent(self: *GrimApp, mouse: phantom.MouseEvent) !bool {
+    fn handleMouseEvent(self: *GrimApp, mouse: MouseEvent) !bool {
         // Delegate to layout manager to find which editor was clicked
         return try self.layout_manager.handleMouse(mouse, self);
     }
@@ -486,17 +503,17 @@ pub const GrimApp = struct {
         };
 
         // Render layout manager (handles all editor windows/splits/tabs)
-        try self.layout_manager.render(buffer, editor_area);
+        self.layout_manager.render(buffer, editor_area);
 
         // Update and render status bar
         if (self.layout_manager.getActiveEditor()) |active_editor| {
             try self.status_bar.update(active_editor.editor);
         }
-        try self.status_bar.render(buffer, status_bar_area);
+        self.status_bar.render(buffer, status_bar_area);
 
         // Render command bar if visible
         if (self.command_bar.visible) {
-            try self.command_bar.render(buffer, command_bar_area);
+            self.command_bar.render(buffer, command_bar_area);
         }
 
         // Flush to terminal (diff-based rendering, no flickering!)
@@ -541,14 +558,167 @@ pub const GrimApp = struct {
         try editor.saveFile();
     }
 
-    fn hideSystemCursor(self: *GrimApp) !void {
+    fn hideSystemCursor(_: *GrimApp) !void {
         try std.fs.File.stdout().writeAll("\x1b[?25l");
     }
 
-    fn showSystemCursor(self: *GrimApp) !void {
+    fn showSystemCursor(_: *GrimApp) !void {
         try std.fs.File.stdout().writeAll("\x1b[?25h");
     }
+
+    // === Compatibility methods for main.zig ===
+
+    pub fn setTheme(self: *GrimApp, name: []const u8) !void {
+        // Check theme registry first (for plugin themes)
+        if (self.theme_registry.get(name)) |plugin_theme| {
+            self.active_theme = plugin_theme;
+            return;
+        }
+
+        // Check for plugin::theme syntax
+        if (std.mem.indexOf(u8, name, "::")) |sep| {
+            const plugin_id = name[0..sep];
+            const plugin_theme_name = name[sep + 2 ..];
+            if (plugin_theme_name.len > 0) {
+                if (self.theme_registry.getPluginTheme(plugin_id, plugin_theme_name)) |plugin_theme_value| {
+                    self.active_theme = plugin_theme_value;
+                    return;
+                }
+            }
+        }
+
+        // Load built-in theme
+        self.active_theme = try theme_mod.Theme.get(name);
+    }
+
+    pub fn attachPluginManager(self: *GrimApp, manager: *runtime.PluginManager) void {
+        self.plugin_manager = manager;
+        manager.setThemeCallbacks(
+            @as(*anyopaque, @ptrCast(&self.theme_registry)),
+            theme_mod.registerThemeCallback,
+            theme_mod.unregisterThemeCallback,
+        );
+    }
+
+    pub fn attachEditorLSP(self: *GrimApp, editor_lsp: *editor_lsp_mod.EditorLSP) void {
+        self.editor_lsp = editor_lsp;
+    }
+
+    pub fn detachEditorLSP(self: *GrimApp) void {
+        self.editor_lsp = null;
+    }
+
+    pub fn setEditorContext(self: *GrimApp, ctx: *runtime.PluginAPI.EditorContext) void {
+        self.editor_context = ctx;
+        ctx.active_buffer_id = self.current_buffer_id;
+    }
+
+    pub fn getActiveBufferId(self: *const GrimApp) runtime.PluginAPI.BufferId {
+        return self.current_buffer_id;
+    }
+
+    pub fn makeEditorBridge(self: *GrimApp) runtime.PluginAPI.EditorContext.EditorBridge {
+        return .{
+            .ctx = @as(*anyopaque, @ptrCast(self)),
+            .getCurrentBuffer = bridgeGetCurrentBuffer,
+            .getCursorPosition = bridgeGetCursorPosition,
+            .setCursorPosition = bridgeSetCursorPosition,
+            .getSelection = bridgeGetSelection,
+            .setSelection = bridgeSetSelection,
+            .notifyChange = bridgeNotifyChange,
+        };
+    }
+
+    pub fn closeActiveBuffer(self: *GrimApp) void {
+        const editor = self.layout_manager.getActiveEditor() orelse return;
+        if (editor.editor.current_filename) |path| {
+            if (self.editor_lsp) |lsp| {
+                lsp.closeFile(path) catch |err| {
+                    std.log.warn("Failed to close LSP document: {}", .{err});
+                };
+            }
+        }
+    }
+
+    pub fn loadFile(self: *GrimApp, filepath: []const u8) !void {
+        try self.openFile(filepath);
+    }
 };
+
+// === EditorBridge callbacks ===
+
+fn bridgeGetCurrentBuffer(ctx: *anyopaque) runtime.PluginAPI.BufferId {
+    const self: *GrimApp = @ptrCast(@alignCast(ctx));
+    return self.current_buffer_id;
+}
+
+fn bridgeGetCursorPosition(ctx: *anyopaque) runtime.PluginAPI.EditorContext.CursorPosition {
+    const self: *GrimApp = @ptrCast(@alignCast(ctx));
+    const editor = self.layout_manager.getActiveEditor() orelse return .{ .line = 0, .column = 0, .byte_offset = 0 };
+    const line_col = editor.editor.rope.lineColumnAtOffset(editor.editor.cursor.offset) catch return .{ .line = 0, .column = 0, .byte_offset = 0 };
+    return .{
+        .line = line_col.line,
+        .column = line_col.column,
+        .byte_offset = editor.editor.cursor.offset,
+    };
+}
+
+fn bridgeSetCursorPosition(ctx: *anyopaque, pos: runtime.PluginAPI.EditorContext.CursorPosition) !void {
+    const self: *GrimApp = @ptrCast(@alignCast(ctx));
+    const editor = self.layout_manager.getActiveEditor() orelse return;
+    // Convert line/column to offset using rope
+    const line_col_result = editor.editor.rope.lineColumnAtOffset(editor.editor.cursor.offset) catch return;
+    _ = line_col_result;
+    _ = pos;
+    // TODO: Implement proper line/column to offset conversion
+}
+
+fn bridgeGetSelection(ctx: *anyopaque) ?runtime.PluginAPI.EditorContext.SelectionRange {
+    const self: *GrimApp = @ptrCast(@alignCast(ctx));
+    const editor = self.layout_manager.getActiveEditor() orelse return null;
+    if (editor.editor.selection_start) |start| {
+        if (editor.editor.selection_end) |end| {
+            return .{ .start = start, .end = end };
+        }
+    }
+    return null;
+}
+
+fn bridgeSetSelection(ctx: *anyopaque, selection: ?runtime.PluginAPI.EditorContext.SelectionRange) !void {
+    const self: *GrimApp = @ptrCast(@alignCast(ctx));
+    const editor = self.layout_manager.getActiveEditor() orelse return;
+    if (selection) |sel| {
+        editor.editor.selection_start = sel.start;
+        editor.editor.selection_end = sel.end;
+    } else {
+        editor.editor.selection_start = null;
+        editor.editor.selection_end = null;
+    }
+}
+
+fn bridgeNotifyChange(ctx: *anyopaque, change: runtime.PluginAPI.EditorContext.BufferChange) anyerror!void {
+    const self: *GrimApp = @ptrCast(@alignCast(ctx));
+    _ = change;
+
+    // Mark syntax highlighting as dirty (needs re-parse)
+    const editor = self.layout_manager.getActiveEditor() orelse return;
+    editor.highlight_dirty = true;
+
+    // Update cursor position if plugin modified it
+    if (self.plugin_cursor) |cursor_ptr| {
+        // TODO: Convert cursor_ptr line/column to offset
+        _ = cursor_ptr;
+    }
+
+    // Notify LSP of buffer change
+    if (self.editor_lsp) |lsp| {
+        if (editor.editor.current_filename) |path| {
+            lsp.notifyBufferChange(path) catch |err| {
+                std.log.warn("Failed to notify LSP of buffer change: {}", .{err});
+            };
+        }
+    }
+}
 
 // Global app context for event handler
 var grim_app_context: ?*GrimApp = null;
