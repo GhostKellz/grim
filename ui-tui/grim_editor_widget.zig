@@ -21,6 +21,7 @@ const Cell = struct {
 // LSP widgets
 const lsp_completion_menu_mod = @import("lsp_completion_menu.zig");
 const lsp_hover_widget_mod = @import("lsp_hover_widget.zig");
+const lsp_diagnostics_panel_mod = @import("lsp_diagnostics_panel.zig");
 
 pub const GrimEditorWidget = struct {
     widget: phantom.Widget,
@@ -33,6 +34,7 @@ pub const GrimEditorWidget = struct {
     lsp_client: ?*editor_lsp_mod.EditorLSP,
     lsp_completion_menu: ?*lsp_completion_menu_mod.LSPCompletionMenu,
     lsp_hover_widget: ?*lsp_hover_widget_mod.LSPHoverWidget,
+    lsp_diagnostics_panel: ?*lsp_diagnostics_panel_mod.LSPDiagnosticsPanel,
 
     // Syntax highlighting
     highlight_cache: []syntax.HighlightRange,
@@ -71,6 +73,9 @@ pub const GrimEditorWidget = struct {
         const lsp_hover = try lsp_hover_widget_mod.LSPHoverWidget.init(allocator, 60, 15);
         errdefer lsp_hover.deinit();
 
+        const lsp_diagnostics = try lsp_diagnostics_panel_mod.LSPDiagnosticsPanel.init(allocator, 80, 20);
+        errdefer lsp_diagnostics.deinit();
+
         self.* = .{
             .widget = .{ .vtable = &vtable },
             .allocator = allocator,
@@ -78,6 +83,7 @@ pub const GrimEditorWidget = struct {
             .lsp_client = null,
             .lsp_completion_menu = lsp_completion,
             .lsp_hover_widget = lsp_hover,
+            .lsp_diagnostics_panel = lsp_diagnostics,
             .highlight_cache = &.{},
             .highlight_dirty = true,
             .viewport_top_line = 0,
@@ -93,6 +99,7 @@ pub const GrimEditorWidget = struct {
     fn deinit(widget: *phantom.Widget) void {
         const self: *GrimEditorWidget = @fieldParentPtr("widget", widget);
 
+        if (self.lsp_diagnostics_panel) |panel| panel.deinit();
         if (self.lsp_hover_widget) |w| w.deinit();
         if (self.lsp_completion_menu) |m| m.deinit();
         if (self.lsp_client) |lsp| lsp.deinit();
@@ -105,6 +112,9 @@ pub const GrimEditorWidget = struct {
     fn render(widget: *phantom.Widget, buffer: *Buffer, area: phantom.Rect) void {
         const self: *GrimEditorWidget = @fieldParentPtr("widget", widget);
         self.area = area;
+
+        // Update LSP widgets with latest data before rendering
+        self.updateLSPWidgets();
 
         // Render main editor content
         self.renderEditorContent(buffer, area) catch |err| {
@@ -323,6 +333,25 @@ pub const GrimEditorWidget = struct {
                 }
             }
         }
+
+        // Render diagnostics panel if visible (bottom right)
+        if (self.lsp_diagnostics_panel) |panel| {
+            if (panel.visible) {
+                const panel_width: u16 = 50;
+                const panel_height: u16 = 20;
+                const panel_x = if (area.width > panel_width) area.x + (area.width - panel_width) else area.x;
+                const panel_y = if (area.height > panel_height) area.y + (area.height - panel_height) else area.y;
+
+                const panel_area = phantom.Rect{
+                    .x = panel_x,
+                    .y = panel_y,
+                    .width = panel_width,
+                    .height = panel_height,
+                };
+
+                panel.border.widget.vtable.render(&panel.border.widget, buffer, panel_area);
+            }
+        }
     }
 
     fn handleEvent(widget: *phantom.Widget, event: phantom.Event) bool {
@@ -497,46 +526,104 @@ pub const GrimEditorWidget = struct {
         _ = self;
     }
 
+    // Update LSP widgets with latest data from LSP client
+    pub fn updateLSPWidgets(self: *GrimEditorWidget) void {
+        if (self.lsp_client) |lsp| {
+            // Update hover widget if we have new hover info
+            if (lsp.getHoverInfo()) |hover_text| {
+                if (self.lsp_hover_widget) |hover| {
+                    hover.setHoverContent(hover_text) catch |err| {
+                        std.log.err("Failed to set hover content: {}", .{err});
+                    };
+                    if (!hover.visible) {
+                        hover.show();
+                    }
+                }
+            }
+
+            // Update completion menu if we have new completions
+            const completions = lsp.getCompletions();
+            if (completions.len > 0) {
+                if (self.lsp_completion_menu) |menu| {
+                    // Convert completions to string slice
+                    // TODO: This allocates, need to manage memory properly
+                    var items = self.allocator.alloc([]const u8, completions.len) catch return;
+                    for (completions, 0..) |completion, i| {
+                        items[i] = completion.label;
+                    }
+                    menu.setItems(items) catch |err| {
+                        self.allocator.free(items);
+                        std.log.err("Failed to set completion items: {}", .{err});
+                        return;
+                    };
+                    if (!menu.visible) {
+                        menu.show();
+                    }
+                }
+            }
+
+            // Update diagnostics panel if we have diagnostics for the current file
+            if (self.editor.current_filename) |path| {
+                if (lsp.getDiagnostics(path)) |diagnostics| {
+                    if (self.lsp_diagnostics_panel) |panel| {
+                        panel.setDiagnostics(diagnostics) catch |err| {
+                            std.log.err("Failed to set diagnostics: {}", .{err});
+                        };
+                    }
+                }
+            }
+        }
+    }
+
+    // Toggle diagnostics panel visibility
+    pub fn toggleDiagnostics(self: *GrimEditorWidget) void {
+        if (self.lsp_diagnostics_panel) |panel| {
+            panel.visible = !panel.visible;
+        }
+    }
+
     // LSP operations
     pub fn triggerHover(self: *GrimEditorWidget) !void {
-        if (self.lsp_hover_widget) |hover| {
-            // TODO: Request actual hover information from LSP client
-            // For now, show menu with test data
-            const test_hover =
-                \\**Function**: test_function
-                \\
-                \\```zig
-                \\pub fn test_function(arg: i32) !void
-                \\```
-                \\
-                \\This is a test function that demonstrates hover information.
-                \\It would normally come from the LSP server.
-            ;
+        // Request hover information from LSP client
+        if (self.lsp_client) |lsp| {
+            if (self.editor.current_filename) |path| {
+                // Get cursor position
+                const cursor_line_col = try self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset);
 
-            try hover.setHoverContent(test_hover);
-            hover.show();
+                // Request hover from LSP server
+                try lsp.requestHover(path, @intCast(cursor_line_col.line), @intCast(cursor_line_col.column));
+
+                // Show loading spinner in hover widget
+                if (self.lsp_hover_widget) |hover| {
+                    const loading_msg = "Loading...";
+                    try hover.setHoverContent(loading_msg);
+                    hover.show();
+                }
+
+                // Note: Actual hover content will be set by LSP response handler
+            }
         }
     }
 
     pub fn triggerCompletion(self: *GrimEditorWidget) !void {
-        if (self.lsp_completion_menu) |menu| {
-            // TODO: Request actual completions from LSP client
-            // For now, show menu with test data
-            const test_items = [_][]const u8{
-                "function",
-                "struct",
-                "const",
-                "var",
-                "pub",
-                "fn",
-                "if",
-                "else",
-                "while",
-                "for",
-            };
+        // Request completions from LSP client
+        if (self.lsp_client) |lsp| {
+            if (self.editor.current_filename) |path| {
+                // Get cursor position
+                const cursor_line_col = try self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset);
 
-            try menu.setItems(&test_items);
-            menu.show();
+                // Request completions from LSP server
+                try lsp.requestCompletion(path, @intCast(cursor_line_col.line), @intCast(cursor_line_col.column));
+
+                // Show loading in completion menu
+                if (self.lsp_completion_menu) |menu| {
+                    const loading_items = [_][]const u8{"Loading..."};
+                    try menu.setItems(&loading_items);
+                    menu.show();
+                }
+
+                // Note: Actual completion items will be set by LSP response handler
+            }
         }
     }
 

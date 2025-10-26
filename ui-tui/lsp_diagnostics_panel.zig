@@ -83,7 +83,7 @@ pub const LSPDiagnosticsPanel = struct {
             if (current_file == null or !std.mem.eql(u8, current_file.?, diag.source orelse "unknown")) {
                 if (current_file != null) {
                     // Add separator
-                    try self.content_lines.append(try self.allocator.dupe(u8, ""));
+                    try self.content_lines.append(self.allocator, try self.allocator.dupe(u8, ""));
                 }
                 current_file = diag.source;
                 const file_header = try std.fmt.allocPrint(
@@ -91,7 +91,7 @@ pub const LSPDiagnosticsPanel = struct {
                     "📄 {s}",
                     .{diag.source orelse "unknown"},
                 );
-                try self.content_lines.append(file_header);
+                try self.content_lines.append(self.allocator, file_header);
             }
 
             // Diagnostic icon based on severity
@@ -113,7 +113,7 @@ pub const LSPDiagnosticsPanel = struct {
                     diag.message,
                 },
             );
-            try self.content_lines.append(diag_line);
+            try self.content_lines.append(self.allocator, diag_line);
 
             // Add code if present
             if (diag.code) |code| {
@@ -122,7 +122,7 @@ pub const LSPDiagnosticsPanel = struct {
                     "    Code: {s}",
                     .{code},
                 );
-                try self.content_lines.append(code_line);
+                try self.content_lines.append(self.allocator, code_line);
             }
         }
 
@@ -133,19 +133,10 @@ pub const LSPDiagnosticsPanel = struct {
             .{ error_count, warning_count, info_count, hint_count },
         );
         defer self.allocator.free(title);
-        self.border.setTitle(title);
+        try self.border.setTitle(title);
 
-        // Build content for ScrollView
-        var content = std.ArrayList(u8).init(self.allocator);
-        defer content.deinit();
-
-        for (self.content_lines.items) |line| {
-            try content.appendSlice(line);
-            try content.append('\n');
-        }
-
-        try self.scroll_view.setContent(content.items);
-        self.visible = diagnostics.len > 0;
+        // Set content size for ScrollView
+        self.scroll_view.setContentSize(50, @intCast(self.content_lines.items.len));
     }
 
     pub fn scrollUp(self: *LSPDiagnosticsPanel) void {

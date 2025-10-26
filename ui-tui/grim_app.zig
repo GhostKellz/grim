@@ -537,6 +537,11 @@ pub const GrimApp = struct {
             try self.layout_manager.verticalSplit();
         } else if (std.mem.eql(u8, command, "tabnew")) {
             try self.layout_manager.newTab();
+        } else if (std.mem.eql(u8, command, "LspDiagnostics") or std.mem.eql(u8, command, "lspdiag")) {
+            // Toggle LSP diagnostics panel
+            if (self.layout_manager.getActiveEditor()) |editor| {
+                editor.toggleDiagnostics();
+            }
         } else {
             // Unknown command
             std.log.warn("Unknown command: {s}", .{command});
