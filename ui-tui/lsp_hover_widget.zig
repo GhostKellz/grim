@@ -1,6 +1,7 @@
 const std = @import("std");
 const phantom = @import("phantom");
 
+
 pub const LSPHoverWidget = struct {
     rich_text: *phantom.widgets.RichText,
     border: *phantom.widgets.Border,
@@ -91,11 +92,11 @@ pub const LSPHoverWidget = struct {
         self.height = height;
     }
 
-    pub fn render(self: *LSPHoverWidget, buffer: *phantom.Buffer, area: phantom.Rect) !void {
+    pub fn render(self: *LSPHoverWidget, buffer: anytype, area: phantom.Rect) void {
         if (!self.visible) return;
 
         // Render border (which contains rich_text)
-        try self.border.widget.vtable.render(&self.border.widget, buffer, area);
+        self.border.widget.vtable.render(&self.border.widget, buffer, area);
     }
 };
 

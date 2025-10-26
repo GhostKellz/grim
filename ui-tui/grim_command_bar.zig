@@ -3,6 +3,7 @@
 const std = @import("std");
 const phantom = @import("phantom");
 
+
 pub const CommandMode = enum {
     command, // :command
     search, // /search
@@ -183,7 +184,7 @@ pub const CommandBar = struct {
         }
     }
 
-    pub fn render(self: *CommandBar, buffer: *phantom.Buffer, area: phantom.Rect) !void {
+    pub fn render(self: *CommandBar, buffer: anytype, area: phantom.Rect) void {
         if (!self.visible) return;
 
         // Render prompt

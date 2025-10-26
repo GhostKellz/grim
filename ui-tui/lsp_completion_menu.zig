@@ -1,10 +1,12 @@
 const std = @import("std");
 const phantom = @import("phantom");
-const Buffer = @import("phantom").Terminal.buffer; // Get Buffer from Terminal
 const editor_lsp = @import("editor_lsp.zig");
 
 const Completion = editor_lsp.Completion;
 const CompletionKind = editor_lsp.Completion.CompletionKind;
+
+// Import ListView (ListViewItem is accessed via anonymous structs)
+const ListView = phantom.widgets.ListView;
 
 /// LSP completion item kinds mapped to Nerd Font icons
 const CompletionIcon = enum {
@@ -78,19 +80,12 @@ const CompletionIcon = enum {
             .property => .property,
             .unit => .unit,
             .value => .value,
-            .enum_member => .enum_member,
+            .@"enum" => .enum_type, // LSP uses @"enum", we display as enum_type
             .keyword => .keyword,
             .snippet => .snippet,
             .color => .color,
             .file => .file,
             .reference => .reference,
-            .folder => .folder,
-            .enum_type => .enum_type,
-            .constant => .constant,
-            .struct_type => .struct_type,
-            .event => .event,
-            .operator => .operator,
-            .type_parameter => .type_parameter,
         };
     }
 };
@@ -164,16 +159,15 @@ pub const LSPCompletionMenu = struct {
                 break :blk @as(u21, ' ');
             };
 
-            const list_item = phantom.widgets.ListViewItem{
+            // Use inline anonymous struct - Zig will coerce to ListView's ListViewItem type
+            try self.list_view.addItem(.{
                 .text = try self.allocator.dupe(u8, item.label),
                 .secondary_text = if (item.detail) |detail|
                     try self.allocator.dupe(u8, detail)
                 else
                     null,
                 .icon = icon_codepoint,
-            };
-
-            try self.list_view.addItem(list_item);
+            });
         }
 
         // Update border title with count
@@ -183,7 +177,7 @@ pub const LSPCompletionMenu = struct {
             .{items.len},
         );
         defer self.allocator.free(title);
-        self.border.setTitle(title);
+        try self.border.setTitle(title);
 
         self.visible = items.len > 0;
     }
@@ -263,8 +257,8 @@ pub const LSPCompletionMenu = struct {
         };
     }
 
-    pub fn render(self: *LSPCompletionMenu, buffer: *phantom.Buffer, area: phantom.Rect) !void {
+    pub fn render(self: *LSPCompletionMenu, buffer: anytype, area: phantom.Rect) void {
         if (!self.visible) return;
-        try self.border.widget.vtable.render(&self.border.widget, buffer, area);
+        self.border.widget.vtable.render(&self.border.widget, buffer, area);
     }
 };

@@ -4,6 +4,7 @@ const std = @import("std");
 const phantom = @import("phantom");
 const grim_editor_widget = @import("grim_editor_widget.zig");
 
+
 pub const LayoutManager = struct {
     allocator: std.mem.Allocator,
 
@@ -46,7 +47,7 @@ pub const LayoutManager = struct {
     }
 
     /// Render all editor windows
-    pub fn render(self: *LayoutManager, buffer: *phantom.Buffer, area: phantom.Rect) !void {
+    pub fn render(self: *LayoutManager, buffer: anytype, area: phantom.Rect) void {
         if (self.active_editor) |editor| {
             editor.widget.vtable.render(&editor.widget, buffer, area);
         }

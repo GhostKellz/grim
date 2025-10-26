@@ -1,6 +1,7 @@
 const std = @import("std");
 const phantom = @import("phantom");
 
+
 pub const LSPLoadingSpinner = struct {
     spinner: *phantom.widgets.Spinner,
     allocator: std.mem.Allocator,
@@ -60,9 +61,9 @@ pub const LSPLoadingSpinner = struct {
         self.spinner.setStyle(style);
     }
 
-    pub fn render(self: *LSPLoadingSpinner, buffer: *phantom.Buffer, area: phantom.Rect) !void {
+    pub fn render(self: *LSPLoadingSpinner, buffer: anytype, area: phantom.Rect) void {
         if (!self.visible) return;
-        try self.spinner.widget.vtable.render(&self.spinner.widget, buffer, area);
+        self.spinner.widget.vtable.render(&self.spinner.widget, buffer, area);
     }
 };
 

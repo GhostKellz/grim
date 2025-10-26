@@ -7,6 +7,8 @@ const syntax = @import("syntax");
 const Editor = @import("editor.zig").Editor;
 const editor_lsp_mod = @import("editor_lsp.zig");
 
+const Widget = phantom.Widget;
+
 // LSP widgets
 const lsp_completion_menu_mod = @import("lsp_completion_menu.zig");
 const lsp_hover_widget_mod = @import("lsp_hover_widget.zig");
@@ -88,7 +90,7 @@ pub const GrimEditorWidget = struct {
         self.allocator.destroy(self);
     }
 
-    fn render(widget: *phantom.Widget, buffer: *phantom.Buffer, area: phantom.Rect) void {
+    fn render(widget: *Widget, buffer: anytype, area: phantom.Rect) void {
         const self = @fieldParentPtr(GrimEditorWidget, "widget", widget);
         self.area = area;
 
@@ -103,7 +105,7 @@ pub const GrimEditorWidget = struct {
         };
     }
 
-    fn renderEditorContent(self: *GrimEditorWidget, buffer: *phantom.Buffer, area: phantom.Rect) !void {
+    fn renderEditorContent(self: *GrimEditorWidget, buffer: anytype, area: phantom.Rect) !void {
         // Ensure cursor is in viewport
         self.scrollToCursor();
 
@@ -174,7 +176,7 @@ pub const GrimEditorWidget = struct {
 
     fn renderHighlightedLine(
         self: *GrimEditorWidget,
-        buffer: *phantom.Buffer,
+        buffer: anytype,
         x: u16,
         y: u16,
         line: []const u8,
@@ -201,7 +203,7 @@ pub const GrimEditorWidget = struct {
         }
     }
 
-    fn renderCursor(self: *GrimEditorWidget, buffer: *phantom.Buffer, area: phantom.Rect, content_start_x: u16) !void {
+    fn renderCursor(self: *GrimEditorWidget, buffer: anytype, area: phantom.Rect, content_start_x: u16) !void {
         const cursor_line = self.editor.cursor.line;
         const cursor_col = self.editor.cursor.col;
 
@@ -239,7 +241,7 @@ pub const GrimEditorWidget = struct {
         buffer.setCell(cursor_x, cursor_y, phantom.Cell.init(cursor_char, cursor_style));
     }
 
-    fn renderLSPOverlays(self: *GrimEditorWidget, buffer: *phantom.Buffer, area: phantom.Rect) !void {
+    fn renderLSPOverlays(self: *GrimEditorWidget, buffer: anytype, area: phantom.Rect) !void {
         // Render completion menu if visible
         if (self.lsp_completion_menu) |menu| {
             if (menu.visible) {
@@ -266,7 +268,7 @@ pub const GrimEditorWidget = struct {
                         .height = menu_height,
                     };
 
-                    try menu.render(buffer, menu_area);
+                    menu.render(buffer, menu_area);
                 }
             }
         }
@@ -295,13 +297,13 @@ pub const GrimEditorWidget = struct {
                         .height = hover_height,
                     };
 
-                    try hover.render(buffer, hover_area);
+                    hover.render(buffer, hover_area);
                 }
             }
         }
     }
 
-    fn handleEvent(widget: *phantom.Widget, event: phantom.Event) bool {
+    fn handleEvent(widget: *Widget, event: phantom.Event) bool {
         const self = @fieldParentPtr(GrimEditorWidget, "widget", widget);
 
         // Let LSP widgets handle events first
@@ -323,7 +325,7 @@ pub const GrimEditorWidget = struct {
         return false;
     }
 
-    fn resize(widget: *phantom.Widget, new_area: phantom.Rect) void {
+    fn resize(widget: *Widget, new_area: phantom.Rect) void {
         const self = @fieldParentPtr(GrimEditorWidget, "widget", widget);
         self.area = new_area;
     }

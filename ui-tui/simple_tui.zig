@@ -784,7 +784,7 @@ pub const SimpleTUI = struct {
                 };
 
                 const buffer = self.phantom_terminal.?.getBackBuffer();
-                try menu.render(buffer, area);
+                menu.render(buffer, area);
             }
         }
 

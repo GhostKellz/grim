@@ -3,6 +3,7 @@ const phantom = @import("phantom");
 const lsp = @import("lsp");
 const editor_lsp = @import("editor_lsp.zig");
 
+
 const Diagnostic = editor_lsp.Diagnostic;
 
 pub const LSPDiagnosticsPanel = struct {
@@ -245,8 +246,8 @@ pub const LSPDiagnosticsPanel = struct {
         }
     }
 
-    pub fn render(self: *LSPDiagnosticsPanel, buffer: *phantom.Buffer, area: phantom.Rect) !void {
+    pub fn render(self: *LSPDiagnosticsPanel, buffer: anytype, area: phantom.Rect) void {
         if (!self.visible) return;
-        try self.border.widget.vtable.render(&self.border.widget, buffer, area);
+        self.border.widget.vtable.render(&self.border.widget, buffer, area);
     }
 };
