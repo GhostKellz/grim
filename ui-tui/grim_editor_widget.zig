@@ -98,6 +98,7 @@ pub const GrimEditorWidget = struct {
         if (self.lsp_client) |lsp| lsp.deinit();
         if (self.highlight_cache.len > 0) self.allocator.free(self.highlight_cache);
         self.editor.deinit();
+        self.allocator.destroy(self.editor); // Free the Editor pointer itself!
         self.allocator.destroy(self);
     }
 

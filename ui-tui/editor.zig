@@ -175,7 +175,24 @@ pub const Editor = struct {
     }
 
     pub fn loadFile(self: *Editor, path: []const u8) !void {
-        const file = try std.fs.cwd().openFile(path, .{});
+        // Try to open the file - if it doesn't exist, create new buffer
+        const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+            if (err == error.FileNotFound) {
+                // File doesn't exist - create new empty buffer with this name
+                const rope_len = self.rope.len();
+                if (rope_len > 0) {
+                    try self.rope.delete(0, rope_len);
+                }
+
+                if (self.current_filename) |old_filename| {
+                    self.allocator.free(old_filename);
+                }
+                self.current_filename = try self.allocator.dupe(u8, path);
+                try self.highlighter.setLanguage(path);
+                return;
+            }
+            return err;
+        };
         defer file.close();
 
         const stat = try file.stat();
