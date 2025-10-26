@@ -2,6 +2,7 @@ const std = @import("std");
 const runtime = @import("runtime");
 const syntax = @import("syntax");
 const core = @import("core");
+const phantom = @import("phantom");
 const theme_mod = @import("theme.zig");
 const Editor = @import("editor.zig").Editor;
 const editor_lsp_mod = @import("editor_lsp.zig");
@@ -107,6 +108,8 @@ pub const SimpleTUI = struct {
     phantom_lsp_diagnostics: ?*lsp_diagnostics_panel_mod.LSPDiagnosticsPanel,
     phantom_lsp_loading: ?*lsp_loading_spinner_mod.LSPLoadingSpinner,
     phantom_status_bar: ?*status_bar_flex_mod.StatusBar,
+    // Phantom terminal for double-buffered rendering
+    phantom_terminal: ?*phantom.Terminal,
     // AI ghost text renderer (removed - use zeke.grim or copilot.grim plugins)
     // ghost_text_renderer: ai.GhostTextRenderer,
     // Vim key sequences (dd, yy, etc.)
@@ -190,6 +193,7 @@ pub const SimpleTUI = struct {
             .phantom_lsp_diagnostics = null,
             .phantom_lsp_loading = null,
             .phantom_status_bar = null,
+            .phantom_terminal = null,
             // .ghost_text_renderer = ai.GhostTextRenderer.init(allocator),
             .completion_items_heap = false,
             .completion_prefix = completion_prefix,
@@ -295,6 +299,10 @@ pub const SimpleTUI = struct {
         if (self.phantom_lsp_diagnostics) |widget| widget.deinit();
         if (self.phantom_lsp_loading) |widget| widget.deinit();
         if (self.phantom_status_bar) |widget| widget.deinit();
+        if (self.phantom_terminal) |term| {
+            term.deinit();
+            self.allocator.destroy(term);
+        }
         // self.ghost_text_renderer.deinit();
         self.fuzzy_query.deinit(self.allocator);
         self.leader_key_sequence.deinit(self.allocator);
@@ -755,13 +763,29 @@ pub const SimpleTUI = struct {
         try self.renderCollaborationPresence(width, height);
         try self.renderCompletionBar(width, height);
 
-        // Render new LSP completion menu if visible
-        if (self.lsp_completion_menu.visible) {
-            const cursor_line = self.getCursorLine();
-            const cursor_col = self.getCursorColumn();
-            const menu_x = @min(cursor_col + 10, width - 20); // Position near cursor
-            const menu_y = @min(cursor_line + 2, height - 10); // Below cursor
-            try self.lsp_completion_menu.render(self.stdout, @intCast(menu_x), @intCast(menu_y), 8);
+        // Render Phantom LSP completion menu if visible
+        if (self.phantom_lsp_completion) |menu| {
+            if (menu.visible and self.phantom_terminal != null) {
+                const cursor_line = self.getCursorLine();
+                const cursor_col = self.getCursorColumn();
+
+                // Calculate menu position (near cursor)
+                const menu_width: u16 = 40;
+                const menu_height: u16 = 10;
+                const menu_x = @min(cursor_col + 2, width - menu_width);
+                const menu_y = @min(cursor_line + 2, height - menu_height);
+
+                // Render to Phantom buffer
+                const area = phantom.Rect{
+                    .x = menu_x,
+                    .y = menu_y,
+                    .width = menu_width,
+                    .height = menu_height,
+                };
+
+                const buffer = self.phantom_terminal.?.getBackBuffer();
+                try menu.render(buffer, area);
+            }
         }
 
         try self.renderSignatureHelpPopup(width, height);
@@ -2524,6 +2548,15 @@ pub const SimpleTUI = struct {
         if (self.phantom_lsp_diagnostics) |widget| widget.deinit();
         if (self.phantom_lsp_loading) |widget| widget.deinit();
         if (self.phantom_status_bar) |widget| widget.deinit();
+        if (self.phantom_terminal) |term| {
+            term.deinit();
+            self.allocator.destroy(term);
+        }
+
+        // Initialize Phantom terminal for double-buffered rendering
+        const phantom_term = try self.allocator.create(phantom.Terminal);
+        phantom_term.* = try phantom.Terminal.init(self.allocator);
+        self.phantom_terminal = phantom_term;
 
         // Initialize new widgets with terminal size
         self.phantom_lsp_completion = try lsp_completion_menu_mod.LSPCompletionMenu.init(self.allocator);
@@ -3734,6 +3767,11 @@ pub const SimpleTUI = struct {
         self.completion_dirty = false;
         self.clearCompletionDisplay();
         self.completion_prefix.clearRetainingCapacity();
+
+        // Hide Phantom LSP completion menu
+        if (self.phantom_lsp_completion) |menu| {
+            menu.hide();
+        }
     }
 
     fn isWordChar(ch: u8) bool {
@@ -3811,6 +3849,18 @@ pub const SimpleTUI = struct {
             self.completion_selected_index = self.completion_items.len - 1;
         }
         self.completion_dirty = false;
+
+        // Update Phantom LSP completion menu
+        if (self.phantom_lsp_completion) |menu| {
+            menu.setCompletions(self.completion_items) catch |err| {
+                std.log.warn("Failed to update Phantom completion menu: {}", .{err});
+            };
+            if (self.completion_items.len > 0) {
+                menu.show();
+            } else {
+                menu.hide();
+            }
+        }
     }
 
     fn triggerCompletionRequest(self: *SimpleTUI) void {

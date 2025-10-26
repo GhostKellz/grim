@@ -1,6 +1,10 @@
 const std = @import("std");
 const phantom = @import("phantom");
-const lsp = @import("lsp");
+const Buffer = @import("phantom").Terminal.buffer; // Get Buffer from Terminal
+const editor_lsp = @import("editor_lsp.zig");
+
+const Completion = editor_lsp.Completion;
+const CompletionKind = editor_lsp.Completion.CompletionKind;
 
 /// LSP completion item kinds mapped to Nerd Font icons
 const CompletionIcon = enum {
@@ -60,34 +64,33 @@ const CompletionIcon = enum {
         };
     }
 
-    pub fn fromLSPKind(kind: u32) CompletionIcon {
+    pub fn fromCompletionKind(kind: CompletionKind) CompletionIcon {
         return switch (kind) {
-            1 => .text,
-            2 => .method,
-            3 => .function,
-            4 => .constructor,
-            5 => .field,
-            6 => .variable,
-            7 => .class,
-            8 => .interface,
-            9 => .module,
-            10 => .property,
-            11 => .unit,
-            12 => .value,
-            13 => .enum_member,
-            14 => .keyword,
-            15 => .snippet,
-            16 => .color,
-            17 => .file,
-            18 => .reference,
-            19 => .folder,
-            20 => .enum_type,
-            21 => .constant,
-            22 => .struct_type,
-            23 => .event,
-            24 => .operator,
-            25 => .type_parameter,
-            else => .text,
+            .text => .text,
+            .method => .method,
+            .function => .function,
+            .constructor => .constructor,
+            .field => .field,
+            .variable => .variable,
+            .class => .class,
+            .interface => .interface,
+            .module => .module,
+            .property => .property,
+            .unit => .unit,
+            .value => .value,
+            .enum_member => .enum_member,
+            .keyword => .keyword,
+            .snippet => .snippet,
+            .color => .color,
+            .file => .file,
+            .reference => .reference,
+            .folder => .folder,
+            .enum_type => .enum_type,
+            .constant => .constant,
+            .struct_type => .struct_type,
+            .event => .event,
+            .operator => .operator,
+            .type_parameter => .type_parameter,
         };
     }
 };
@@ -144,11 +147,11 @@ pub const LSPCompletionMenu = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn setCompletions(self: *LSPCompletionMenu, items: []const lsp.CompletionItem) !void {
+    pub fn setCompletions(self: *LSPCompletionMenu, items: []const Completion) !void {
         self.list_view.clear();
 
         for (items) |item| {
-            const kind = CompletionIcon.fromLSPKind(item.kind orelse 1);
+            const kind = CompletionIcon.fromCompletionKind(item.kind);
             const icon_str = kind.toIcon();
 
             // Convert icon string to u21 codepoint
