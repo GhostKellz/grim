@@ -22,6 +22,13 @@ pub const buffer_sessions = @import("buffer_sessions.zig");
 pub const font_manager = @import("font_manager.zig");
 pub const file_tree = @import("file_tree.zig");
 
+// Phantom v0.6.0 LSP widgets
+pub const lsp_completion_menu = @import("lsp_completion_menu.zig");
+pub const lsp_diagnostics_panel = @import("lsp_diagnostics_panel.zig");
+pub const lsp_hover_widget = @import("lsp_hover_widget.zig");
+pub const lsp_loading_spinner = @import("lsp_loading_spinner.zig");
+pub const status_bar_flex = @import("status_bar_flex.zig");
+
 pub const App = app.App;
 pub const Mode = app.Mode;
 pub const Command = app.Command;
@@ -49,3 +56,10 @@ pub const ThemeCustomizer = theme_customizer.ThemeCustomizer;
 pub const BufferSessions = buffer_sessions.BufferSessions;
 pub const FontManager = font_manager.FontManager;
 pub const FileTree = file_tree.FileTree;
+
+// Phantom v0.6.0 LSP widget exports
+pub const LSPCompletionMenu = lsp_completion_menu.LSPCompletionMenu;
+pub const LSPDiagnosticsPanel = lsp_diagnostics_panel.LSPDiagnosticsPanel;
+pub const LSPHoverWidget = lsp_hover_widget.LSPHoverWidget;
+pub const LSPLoadingSpinner = lsp_loading_spinner.LSPLoadingSpinner;
+pub const StatusBarFlex = status_bar_flex.StatusBar;

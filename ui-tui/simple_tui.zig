@@ -13,6 +13,12 @@ const font_manager_mod = @import("font_manager.zig");
 const file_tree_mod = @import("file_tree.zig");
 const lsp_diagnostics = @import("lsp_diagnostics.zig");
 const completion_menu_mod = @import("completion_menu.zig");
+// Phantom v0.6.0 LSP widgets
+const lsp_completion_menu_mod = @import("lsp_completion_menu.zig");
+const lsp_hover_widget_mod = @import("lsp_hover_widget.zig");
+const lsp_diagnostics_panel_mod = @import("lsp_diagnostics_panel.zig");
+const lsp_loading_spinner_mod = @import("lsp_loading_spinner.zig");
+const status_bar_flex_mod = @import("status_bar_flex.zig");
 // AI module removed - use plugins (zeke.grim, copilot.grim) for AI features
 // const ai = @import("ai");
 
@@ -95,6 +101,12 @@ pub const SimpleTUI = struct {
     diagnostics_ui: lsp_diagnostics.DiagnosticsUI,
     // LSP completion menu
     lsp_completion_menu: completion_menu_mod.CompletionMenu,
+    // Phantom v0.6.0 LSP widgets
+    phantom_lsp_completion: ?*lsp_completion_menu_mod.LSPCompletionMenu,
+    phantom_lsp_hover: ?*lsp_hover_widget_mod.LSPHoverWidget,
+    phantom_lsp_diagnostics: ?*lsp_diagnostics_panel_mod.LSPDiagnosticsPanel,
+    phantom_lsp_loading: ?*lsp_loading_spinner_mod.LSPLoadingSpinner,
+    phantom_status_bar: ?*status_bar_flex_mod.StatusBar,
     // AI ghost text renderer (removed - use zeke.grim or copilot.grim plugins)
     // ghost_text_renderer: ai.GhostTextRenderer,
     // Vim key sequences (dd, yy, etc.)
@@ -152,7 +164,7 @@ pub const SimpleTUI = struct {
             .stdin = std.fs.File.stdin(),
             .stdout = std.fs.File.stdout(),
             .theme_registry = theme_mod.ThemeRegistry.init(allocator),
-            .active_theme = theme_mod.Theme.defaultDark(),
+            .active_theme = theme_mod.Theme.get("ghost-hacker-blue") catch theme_mod.Theme.defaultDark(),
             .plugin_manager = null,
             .editor_lsp = null,
             .highlight_cache = &.{},
@@ -172,6 +184,12 @@ pub const SimpleTUI = struct {
             .completion_items = &.{},
             .diagnostics_ui = lsp_diagnostics.DiagnosticsUI.init(allocator),
             .lsp_completion_menu = completion_menu_mod.CompletionMenu.init(allocator),
+            // Phantom v0.6.0 LSP widgets (initialized after terminal size is known)
+            .phantom_lsp_completion = null,
+            .phantom_lsp_hover = null,
+            .phantom_lsp_diagnostics = null,
+            .phantom_lsp_loading = null,
+            .phantom_status_bar = null,
             // .ghost_text_renderer = ai.GhostTextRenderer.init(allocator),
             .completion_items_heap = false,
             .completion_prefix = completion_prefix,
@@ -271,6 +289,12 @@ pub const SimpleTUI = struct {
         self.fuzzy.deinit();
         self.diagnostics_ui.deinit();
         self.lsp_completion_menu.deinit();
+        // Clean up Phantom v0.6.0 LSP widgets
+        if (self.phantom_lsp_completion) |widget| widget.deinit();
+        if (self.phantom_lsp_hover) |widget| widget.deinit();
+        if (self.phantom_lsp_diagnostics) |widget| widget.deinit();
+        if (self.phantom_lsp_loading) |widget| widget.deinit();
+        if (self.phantom_status_bar) |widget| widget.deinit();
         // self.ghost_text_renderer.deinit();
         self.fuzzy_query.deinit(self.allocator);
         self.leader_key_sequence.deinit(self.allocator);
@@ -336,6 +360,9 @@ pub const SimpleTUI = struct {
         try self.enableRawMode();
         defer self.disableRawMode() catch {};
 
+        // Initialize Phantom widgets after terminal size is known
+        try self.initPhantomWidgets();
+
         // Clear screen and position cursor at top-left
         try self.clearScreen();
         try self.setCursor(1, 1);
@@ -348,6 +375,8 @@ pub const SimpleTUI = struct {
             // Check for terminal resize
             if (self.needs_resize) {
                 try self.getTerminalSize();
+                // Re-initialize Phantom widgets with new terminal size
+                try self.initPhantomWidgets();
                 self.needs_resize = false;
             }
 
@@ -2485,6 +2514,31 @@ pub const SimpleTUI = struct {
         }
 
         self.setStatusMessage(builder.items);
+    }
+
+    /// Initialize Phantom v0.6.0 LSP widgets (call after terminal size is known)
+    fn initPhantomWidgets(self: *SimpleTUI) !void {
+        // Clean up existing widgets if they exist
+        if (self.phantom_lsp_completion) |widget| widget.deinit();
+        if (self.phantom_lsp_hover) |widget| widget.deinit();
+        if (self.phantom_lsp_diagnostics) |widget| widget.deinit();
+        if (self.phantom_lsp_loading) |widget| widget.deinit();
+        if (self.phantom_status_bar) |widget| widget.deinit();
+
+        // Initialize new widgets with terminal size
+        self.phantom_lsp_completion = try lsp_completion_menu_mod.LSPCompletionMenu.init(self.allocator);
+        self.phantom_lsp_hover = try lsp_hover_widget_mod.LSPHoverWidget.init(
+            self.allocator,
+            @min(80, self.terminal_width -  4),  // Max 80 cols or terminal width - margins
+            @min(20, self.terminal_height / 2),   // Max 20 rows or half terminal height
+        );
+        self.phantom_lsp_diagnostics = try lsp_diagnostics_panel_mod.LSPDiagnosticsPanel.init(
+            self.allocator,
+            self.terminal_width,
+            self.terminal_height / 2,
+        );
+        self.phantom_lsp_loading = try lsp_loading_spinner_mod.LSPLoadingSpinner.init(self.allocator);
+        self.phantom_status_bar = try status_bar_flex_mod.StatusBar.init(self.allocator, self.terminal_width);
     }
 
     fn getTerminalSize(self: *SimpleTUI) !void {
