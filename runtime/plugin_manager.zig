@@ -632,12 +632,12 @@ pub const PluginManager = struct {
     }
 
     pub fn deinit(self: *PluginManager) void {
-        var iter = self.loaded_plugin_states.iterator();
-        while (iter.next()) |entry| {
-            self.cleanupGhostlangState(entry.value_ptr.*);
-        }
-        self.loaded_plugin_states.deinit();
-        self.ghostlang_host.deinit();
+        // Skip cleanup during shutdown - hashmap has locked iterator issue
+        // The OS will reclaim all memory when the process exits
+        // TODO: Fix hashmap iterator locking issue
+        _ = self;
+        // self.loaded_plugin_states.deinit();
+        // self.ghostlang_host.deinit();
     }
 
     pub fn discoverPlugins(self: *PluginManager) ![]PluginInfo {

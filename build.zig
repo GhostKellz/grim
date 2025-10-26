@@ -50,6 +50,10 @@ pub fn build(b: *std.Build) void {
         .target = target,
         .optimize = optimize,
     });
+    const zigzag = b.dependency("zigzag", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Grove dependency for Ghostlang integration
     const ghostlang_enabled = b.option(bool, "ghostlang", "Enable Ghostlang (.gza) support via Grove") orelse false;
@@ -129,6 +133,7 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         .imports = &.{
             .{ .name = "phantom", .module = phantom.module("phantom") },
+            .{ .name = "zigzag", .module = zigzag.module("zigzag") },
             .{ .name = "core", .module = core_mod },
             .{ .name = "syntax", .module = syntax_mod },
             .{ .name = "runtime", .module = runtime_mod },

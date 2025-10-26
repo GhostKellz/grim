@@ -28,6 +28,10 @@ pub const StatusBar = struct {
     }
 
     pub fn deinit(self: *StatusBar) void {
+        // Clean up any remaining child widgets before freeing flex_row
+        for (self.flex_row.children.items) |child| {
+            child.widget.vtable.deinit(child.widget);
+        }
         self.flex_row.widget.vtable.deinit(&self.flex_row.widget);
         self.allocator.destroy(self);
     }
@@ -81,6 +85,7 @@ pub const StatusBar = struct {
                 " {s} ",
                 .{lang_name},
             );
+            defer self.allocator.free(ft_text);
             const ft_widget = try phantom.widgets.Text.initWithStyle(
                 self.allocator,
                 ft_text,
@@ -98,6 +103,7 @@ pub const StatusBar = struct {
             "{}:{}",
             .{ cursor_line_col.line + 1, cursor_line_col.column + 1 },
         );
+        defer self.allocator.free(pos_text);
         const pos_widget = try phantom.widgets.Text.initWithStyle(
             self.allocator,
             pos_text,
@@ -117,6 +123,7 @@ pub const StatusBar = struct {
             "{d}%",
             .{line_percent},
         );
+        defer self.allocator.free(percent_text);
         const percent_widget = try phantom.widgets.Text.initWithStyle(
             self.allocator,
             percent_text,

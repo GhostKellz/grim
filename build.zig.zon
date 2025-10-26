@@ -38,7 +38,7 @@
         },
         .phantom = .{
             .url = "https://github.com/ghostkellz/phantom/archive/refs/heads/main.tar.gz",
-            .hash = "phantom-0.6.2-E0eWBGrjEwAHuUJDtCCWMtA8rwdIfE-1Di38s-Z1yMAW",
+            .hash = "phantom-0.6.3-E0eWBGflEwAwWSHDM-uBCKSbwbHFCzxOL7GEjXdYki3P",
         },
         .gcode = .{
             .url = "https://github.com/ghostkellz/gcode/archive/refs/heads/main.tar.gz",
@@ -58,7 +58,7 @@
         },
         .zap = .{
             .url = "https://github.com/ghostkellz/zap/archive/refs/heads/main.tar.gz",
-            .hash = "zap-0.1.0--jHF1uDGAQCEyW0mG4V3fFEyPHvT1WCQTbDqFnEqBmCP",
+            .hash = "zap-0.1.0--jHF1uDGAQAYX2E8H_F70MbwPXANmOevSfOForA2n-ay",
         },
         .ghostls = .{
             .url = "https://github.com/ghostkellz/ghostls/archive/refs/heads/main.tar.gz",
@@ -79,6 +79,10 @@
         .zlog = .{
             .url = "https://github.com/ghostkellz/zlog/archive/refs/heads/main.tar.gz",
             .hash = "zlog-0.1.0-kS0sWERcCAD4GivJW2gmFSr5XTSvs9go-5-9zZng-RjR",
+        },
+        .zigzag = .{
+            .url = "https://github.com/ghostkellz/zigzag/archive/refs/heads/main.tar.gz",
+            .hash = "zigzag-0.1.0-NmTasChICACF9vO1gHyPzHtDj0AVD_0O72deub0sLliE",
         },
     },
     .paths = .{

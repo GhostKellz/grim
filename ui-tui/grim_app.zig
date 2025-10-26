@@ -96,14 +96,13 @@ pub const GrimApp = struct {
         errdefer allocator.destroy(self);
 
         // Initialize Phantom App with config
-        const phantom_config = phantom.AppConfig{
-            .title = "Grim Editor",
+        var phantom_app = try phantom.App.init(allocator, .{
+            .title = "Grim",
             .tick_rate_ms = config.tick_rate_ms,
             .mouse_enabled = config.mouse_enabled,
             .resize_enabled = true,
-        };
-
-        var phantom_app = try phantom.App.init(allocator, phantom_config);
+            .add_default_handler = false, // NEW: Disable Escape/Ctrl+C auto-quit for vim compatibility
+        });
         errdefer phantom_app.deinit();
 
         // Get terminal size
@@ -191,26 +190,16 @@ pub const GrimApp = struct {
         // Set up global context for event handler
         grim_app_context = self;
 
-        // Add main event handler
+        // Add our event handler
         try self.phantom_app.event_loop.addHandler(grimEventHandler);
-
-        // Enable raw mode and alternate screen
-        try self.phantom_app.terminal.enableRawMode();
-        defer self.phantom_app.terminal.disableRawMode() catch {};
 
         // Hide cursor (we'll draw it manually)
         try self.hideSystemCursor();
         defer self.showSystemCursor() catch {};
 
-        // Main loop
-        self.running = true;
-        while (self.running) {
-            // Render
-            try self.render();
-
-            // Sleep for tick rate
-            std.Thread.sleep(self.config.tick_rate_ms * std.time.ns_per_ms);
-        }
+        // Use Phantom v0.6.3's runWithoutDefaults() for full control
+        // This skips the default Escape/Ctrl+C handler, giving us vim compatibility
+        try self.phantom_app.runWithoutDefaults();
     }
 
     /// Handle all events
@@ -233,8 +222,9 @@ pub const GrimApp = struct {
                 }
             },
             .tick => {
-                // Tick events handled by render loop
-                return false;
+                // Render on each tick
+                try self.render();
+                return true;
             },
         }
     }
@@ -334,7 +324,7 @@ pub const GrimApp = struct {
                     // Quit
                     'q' => {
                         // TODO: Handle unsaved buffers
-                        self.running = false;
+                        self.phantom_app.stop();
                         return true;
                     },
 
