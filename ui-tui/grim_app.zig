@@ -66,6 +66,7 @@ pub const GrimApp = struct {
     // State
     mode: Mode,
     running: bool,
+    waiting_for_window_command: bool,
 
     // Plugin system
     plugin_manager: ?*runtime.PluginManager,
@@ -149,6 +150,7 @@ pub const GrimApp = struct {
             .status_bar = status_bar,
             .mode = .normal,
             .running = true,
+            .waiting_for_window_command = false,
             .plugin_manager = null,
             .editor_context = null,
             .plugin_cursor = null,
@@ -248,6 +250,12 @@ pub const GrimApp = struct {
     }
 
     fn handleNormalMode(self: *GrimApp, key: phantom.Key) !bool {
+        // Handle window commands (after Ctrl+W)
+        if (self.waiting_for_window_command) {
+            self.waiting_for_window_command = false;
+            return try self.handleWindowCommand(key);
+        }
+
         switch (key) {
             .char => |c| {
                 switch (c) {
@@ -336,8 +344,9 @@ pub const GrimApp = struct {
                 return true;
             },
             .ctrl_w => {
-                // Window commands - delegate to layout manager
-                return try self.layout_manager.handleWindowCommand(self);
+                // Enter window command mode - wait for next key
+                self.waiting_for_window_command = true;
+                return true;
             },
             else => return false,
         }
@@ -451,9 +460,102 @@ pub const GrimApp = struct {
         return false;
     }
 
+    fn handleWindowCommand(self: *GrimApp, key: phantom.Key) !bool {
+        switch (key) {
+            .char => |c| {
+                switch (c) {
+                    // Split commands
+                    's' => {
+                        try self.layout_manager.horizontalSplit();
+                        return true;
+                    },
+                    'v' => {
+                        try self.layout_manager.verticalSplit();
+                        return true;
+                    },
+
+                    // Navigation commands (TODO: implement in LayoutManager)
+                    'h' => {
+                        _ = try self.layout_manager.handleWindowCommand(.left);
+                        return true;
+                    },
+                    'j' => {
+                        _ = try self.layout_manager.handleWindowCommand(.down);
+                        return true;
+                    },
+                    'k' => {
+                        _ = try self.layout_manager.handleWindowCommand(.up);
+                        return true;
+                    },
+                    'l' => {
+                        _ = try self.layout_manager.handleWindowCommand(.right);
+                        return true;
+                    },
+
+                    // Close window
+                    'q' => {
+                        // TODO: Implement close window
+                        std.log.warn("Close window not yet implemented", .{});
+                        return true;
+                    },
+                    'o' => {
+                        // TODO: Close all other windows
+                        std.log.warn("Close other windows not yet implemented", .{});
+                        return true;
+                    },
+
+                    // Equalize splits
+                    '=' => {
+                        // TODO: Implement equalize
+                        std.log.warn("Equalize splits not yet implemented", .{});
+                        return true;
+                    },
+
+                    // Resize
+                    '<' => {
+                        // TODO: Implement resize left
+                        std.log.warn("Resize not yet implemented", .{});
+                        return true;
+                    },
+                    '>' => {
+                        // TODO: Implement resize right
+                        std.log.warn("Resize not yet implemented", .{});
+                        return true;
+                    },
+
+                    // Escape cancels
+                    else => return false,
+                }
+            },
+            .left => {
+                _ = try self.layout_manager.handleWindowCommand(.left);
+                return true;
+            },
+            .right => {
+                _ = try self.layout_manager.handleWindowCommand(.right);
+                return true;
+            },
+            .up => {
+                _ = try self.layout_manager.handleWindowCommand(.up);
+                return true;
+            },
+            .down => {
+                _ = try self.layout_manager.handleWindowCommand(.down);
+                return true;
+            },
+            .escape => {
+                // Cancel window command mode
+                return true;
+            },
+            else => return false,
+        }
+    }
+
     fn handleMouseEvent(self: *GrimApp, mouse: MouseEvent) !bool {
         // Delegate to layout manager to find which editor was clicked
-        return try self.layout_manager.handleMouse(mouse, self);
+        const term_size = self.phantom_app.terminal.size;
+        const editor_area = phantom.Rect.init(0, 0, term_size.width, term_size.height - 2);
+        return try self.layout_manager.handleMouse(mouse, editor_area);
     }
 
     fn handleResize(self: *GrimApp, new_size: phantom.Size) !void {
@@ -537,6 +639,18 @@ pub const GrimApp = struct {
             try self.layout_manager.verticalSplit();
         } else if (std.mem.eql(u8, command, "tabnew")) {
             try self.layout_manager.newTab();
+        } else if (std.mem.eql(u8, command, "tabn") or std.mem.eql(u8, command, "tabnext")) {
+            self.layout_manager.nextTab();
+        } else if (std.mem.eql(u8, command, "tabp") or std.mem.eql(u8, command, "tabprev")) {
+            self.layout_manager.prevTab();
+        } else if (std.mem.eql(u8, command, "tabc") or std.mem.eql(u8, command, "tabclose")) {
+            try self.layout_manager.closeTab();
+        } else if (std.mem.startsWith(u8, command, "tabn ")) {
+            const tab_num_str = std.mem.trim(u8, command[5..], " ");
+            const tab_num = try std.fmt.parseInt(usize, tab_num_str, 10);
+            if (tab_num > 0) {
+                try self.layout_manager.switchTab(tab_num - 1); // 1-indexed to 0-indexed
+            }
         } else if (std.mem.eql(u8, command, "LspDiagnostics") or std.mem.eql(u8, command, "lspdiag")) {
             // Toggle LSP diagnostics panel
             if (self.layout_manager.getActiveEditor()) |editor| {
