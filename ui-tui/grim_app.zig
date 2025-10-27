@@ -67,6 +67,7 @@ pub const GrimApp = struct {
     mode: Mode,
     running: bool,
     waiting_for_window_command: bool,
+    pending_operator: u8, // For vim operator pending (yy, dd, etc)
 
     // Plugin system
     plugin_manager: ?*runtime.PluginManager,
@@ -151,6 +152,7 @@ pub const GrimApp = struct {
             .mode = .normal,
             .running = true,
             .waiting_for_window_command = false,
+            .pending_operator = 0,
             .plugin_manager = null,
             .editor_context = null,
             .plugin_cursor = null,
@@ -250,6 +252,15 @@ pub const GrimApp = struct {
     }
 
     fn handleNormalMode(self: *GrimApp, key: phantom.Key) !bool {
+        const editor = self.layout_manager.getActiveEditor();
+
+        // Record key if macro recording is active
+        if (editor) |ed| {
+            if (ed.isRecording()) {
+                try ed.recordKey(key);
+            }
+        }
+
         // Handle window commands (after Ctrl+W)
         if (self.waiting_for_window_command) {
             self.waiting_for_window_command = false;
@@ -339,14 +350,91 @@ pub const GrimApp = struct {
                         return true;
                     },
 
-                    // Quit
+                    // Paste
+                    'p' => {
+                        try self.layout_manager.getActiveEditor().?.paste(null);
+                        return true;
+                    },
+
+                    // Yank line (yy is handled as two 'y' presses)
+                    'y' => {
+                        // Enter pending operator mode for yy
+                        self.pending_operator = 'y';
+                        return true;
+                    },
+
+                    // Delete line (dd is handled as two 'd' presses)
+                    'd' => {
+                        if (self.pending_operator == 'd') {
+                            // dd - delete line
+                            try self.layout_manager.getActiveEditor().?.deleteLine(null);
+                            self.pending_operator = 0;
+                            return true;
+                        } else {
+                            // First d - wait for second
+                            self.pending_operator = 'd';
+                            return true;
+                        }
+                    },
+
+                    // Macro recording / Quit
                     'q' => {
+                        if (editor) |ed| {
+                            if (ed.isRecording()) {
+                                // Stop recording
+                                ed.stopRecordingMacro();
+                                return true;
+                            }
+                        }
                         // TODO: Handle unsaved buffers
                         self.phantom_app.stop();
                         return true;
                     },
 
-                    else => return false,
+                    // Replay macro
+                    '@' => {
+                        // Wait for register
+                        self.pending_operator = '@';
+                        return true;
+                    },
+
+                    else => {
+                        // Check pending operator
+                        if (self.pending_operator == 'y') {
+                            if (c == 'y') {
+                                // yy - yank line
+                                try self.layout_manager.getActiveEditor().?.yankLine(null);
+                                self.pending_operator = 0;
+                                return true;
+                            }
+                            self.pending_operator = 0;
+                        } else if (self.pending_operator == 'd') {
+                            // Reset pending operator if not 'd'
+                            self.pending_operator = 0;
+                        } else if (self.pending_operator == '@') {
+                            // Replay macro from register
+                            if (editor) |ed| {
+                                try ed.replayMacro(@intCast(c));
+                            }
+                            self.pending_operator = 0;
+                            return true;
+                        } else if (self.pending_operator == 'q') {
+                            // Start recording macro to register
+                            if (editor) |ed| {
+                                try ed.startRecordingMacro(@intCast(c));
+                            }
+                            self.pending_operator = 0;
+                            return true;
+                        }
+
+                        // Check if 'q' followed by register for macro recording
+                        if (c == 'q' and self.pending_operator == 0) {
+                            self.pending_operator = 'q';
+                            return true;
+                        }
+
+                        return false;
+                    },
                 }
             },
             .ctrl_c => {
@@ -676,6 +764,19 @@ pub const GrimApp = struct {
             // Toggle LSP diagnostics panel
             if (self.layout_manager.getActiveEditor()) |editor| {
                 editor.toggleDiagnostics();
+            }
+        } else if (std.mem.eql(u8, command, "bnext") or std.mem.eql(u8, command, "bn")) {
+            try self.layout_manager.bufferNext();
+        } else if (std.mem.eql(u8, command, "bprev") or std.mem.eql(u8, command, "bp")) {
+            try self.layout_manager.bufferPrev();
+        } else if (std.mem.eql(u8, command, "bdelete") or std.mem.eql(u8, command, "bd")) {
+            try self.layout_manager.bufferDelete();
+        } else if (std.mem.eql(u8, command, "buffers") or std.mem.eql(u8, command, "ls")) {
+            // List all buffers
+            const buffers = self.layout_manager.getBufferList();
+            std.log.info("=== Buffers ===", .{});
+            for (buffers, 0..) |buffer, i| {
+                std.log.info("  [{d}] {s}", .{ i + 1, buffer.name });
             }
         } else {
             // Unknown command

@@ -53,6 +53,7 @@ pub fn build(b: *std.Build) void {
     const zigzag = b.dependency("zigzag", .{
         .target = target,
         .optimize = optimize,
+        // Keep io_uring enabled to avoid compile errors, but use epoll at runtime
     });
 
     // Grove dependency for Ghostlang integration

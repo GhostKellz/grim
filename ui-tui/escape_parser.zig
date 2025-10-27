@@ -208,10 +208,10 @@ pub const EscapeParser = struct {
             0x07 => .{ .key = .ctrl_g },
             0x08 => .{ .key = .ctrl_h },
             0x09 => .{ .key = .tab }, // Ctrl+I is Tab
-            0x0A => .{ .key = .ctrl_j },
+            0x0A => .{ .key = .enter }, // Ctrl+J / \n is Enter
             0x0B => .{ .key = .ctrl_k },
             0x0C => .{ .key = .ctrl_l },
-            0x0D => .{ .key = .enter }, // Ctrl+M is Enter
+            0x0D => .{ .key = .enter }, // Ctrl+M / \r is Enter
             0x0E => .{ .key = .ctrl_n },
             0x0F => .{ .key = .ctrl_o },
             0x10 => .{ .key = .ctrl_p },
@@ -226,8 +226,6 @@ pub const EscapeParser = struct {
             0x19 => .{ .key = .ctrl_y },
             0x1A => .{ .key = .ctrl_z },
             0x1B => .{ .key = .escape }, // ESC
-            '\r', '\n' => .{ .key = .enter },
-            '\t' => .{ .key = .tab },
             else => .invalid,
         };
     }

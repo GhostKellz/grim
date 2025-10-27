@@ -56,11 +56,31 @@ pub const GrimEditorWidget = struct {
     search_matches: std.ArrayList(SearchMatch),
     current_match_index: ?usize,
 
+    // Visual mode state
+    visual_mode: VisualMode,
+    visual_anchor: ?usize, // Start offset of visual selection
+
+    // Register system (for yank/paste)
+    unnamed_register: ?[]const u8, // "" register
+    named_registers: std.StringHashMap([]const u8), // Named registers (a-z)
+
+    // Macro system
+    recording_macro: ?u8, // Register being recorded to (a-z)
+    macro_buffer: std.ArrayList(phantom.Key), // Current recording
+    macros: std.StringHashMap([]phantom.Key), // Recorded macros (a-z)
+
     const SearchMatch = struct {
         start_offset: usize,
         end_offset: usize,
         line: usize,
         col: usize,
+    };
+
+    pub const VisualMode = enum {
+        none,
+        character, // v
+        line, // V
+        block, // Ctrl-V (not implemented yet)
     };
 
     const vtable = phantom.Widget.WidgetVTable{
@@ -106,6 +126,13 @@ pub const GrimEditorWidget = struct {
             .search_pattern = null,
             .search_matches = std.ArrayList(SearchMatch){},
             .current_match_index = null,
+            .visual_mode = .none,
+            .visual_anchor = null,
+            .unnamed_register = null,
+            .named_registers = std.StringHashMap([]const u8).init(allocator),
+            .recording_macro = null,
+            .macro_buffer = std.ArrayList(phantom.Key){},
+            .macros = std.StringHashMap([]phantom.Key).init(allocator),
         };
 
         return self;
@@ -121,6 +148,23 @@ pub const GrimEditorWidget = struct {
         if (self.highlight_cache.len > 0) self.allocator.free(self.highlight_cache);
         if (self.search_pattern) |pattern| self.allocator.free(pattern);
         self.search_matches.deinit(self.allocator);
+
+        // Free registers
+        if (self.unnamed_register) |reg| self.allocator.free(reg);
+        var reg_iter = self.named_registers.valueIterator();
+        while (reg_iter.next()) |value| {
+            self.allocator.free(value.*);
+        }
+        self.named_registers.deinit();
+
+        // Free macros
+        self.macro_buffer.deinit(self.allocator);
+        var macro_iter = self.macros.valueIterator();
+        while (macro_iter.next()) |value| {
+            self.allocator.free(value.*);
+        }
+        self.macros.deinit();
+
         self.editor.deinit();
         self.allocator.destroy(self.editor); // Free the Editor pointer itself!
         self.allocator.destroy(self);
@@ -219,7 +263,7 @@ pub const GrimEditorWidget = struct {
     }
 
     fn renderHighlightedLine(
-        _: *GrimEditorWidget,
+        self: *GrimEditorWidget,
         buffer: anytype,
         x: u16,
         y: u16,
@@ -227,24 +271,71 @@ pub const GrimEditorWidget = struct {
         line_num: usize,
         max_width: u16,
     ) !void {
-        _ = line_num; // TODO: Use for syntax highlighting lookup
-
-        // For now, render plain text
-        // TODO: Implement syntax highlighting from highlight_cache
-        const style = phantom.Style.default().withFg(phantom.Color.white);
+        // Default style
+        const default_style = phantom.Style.default().withFg(phantom.Color.white);
 
         var current_x = x;
         var written: usize = 0;
+        var col: usize = 0;
         var utf8_iter = std.unicode.Utf8Iterator{ .bytes = line, .i = 0 };
 
         while (utf8_iter.nextCodepoint()) |codepoint| {
             if (written >= max_width) break;
             if (current_x >= buffer.size.width) break;
 
-            const cell = Cell.init(codepoint, style);
+            var cell_style = default_style;
+
+            // Check syntax highlighting (line/col based)
+            for (self.highlight_cache) |hl_range| {
+                const in_range = if (line_num == hl_range.start_line and line_num == hl_range.end_line)
+                    col >= hl_range.start_col and col < hl_range.end_col
+                else if (line_num == hl_range.start_line)
+                    col >= hl_range.start_col
+                else if (line_num == hl_range.end_line)
+                    col < hl_range.end_col
+                else
+                    line_num > hl_range.start_line and line_num < hl_range.end_line;
+
+                if (in_range) {
+                    cell_style = self.highlightStyleFromType(hl_range.highlight_type);
+                    break;
+                }
+            }
+
+            // Check visual selection (higher priority than syntax highlighting)
+            if (self.visual_mode != .none) {
+                if (self.getSelectionRange()) |range| {
+                    const line_start_offset = self.getOffsetForLine(line_num);
+                    const byte_offset = line_start_offset + utf8_iter.i;
+
+                    if (byte_offset >= range.start and byte_offset < range.end) {
+                        cell_style = phantom.Style.default()
+                            .withFg(phantom.Color.white)
+                            .withBg(phantom.Color.blue);
+                    }
+                }
+            }
+
+            // Check search matches (highest priority - byte offset based)
+            if (self.search_pattern != null) {
+                const line_start_offset = self.getOffsetForLine(line_num);
+                const byte_offset = line_start_offset + utf8_iter.i;
+
+                for (self.search_matches.items) |match| {
+                    if (byte_offset >= match.start_offset and byte_offset < match.end_offset) {
+                        cell_style = phantom.Style.default()
+                            .withFg(phantom.Color.black)
+                            .withBg(phantom.Color.yellow);
+                        break;
+                    }
+                }
+            }
+
+            const cell = Cell.init(codepoint, cell_style);
             buffer.setCell(current_x, y, .{ .char = cell.char, .style = cell.style });
             current_x += 1;
             written += 1;
+            col += 1;
         }
     }
 
@@ -503,18 +594,30 @@ pub const GrimEditorWidget = struct {
 
     // Visual mode operations
     pub fn startVisualMode(self: *GrimEditorWidget) !void {
-        // TODO: Implement visual mode state
-        _ = self;
+        if (self.visual_mode == .none) {
+            self.visual_mode = .character;
+            self.visual_anchor = self.editor.cursor.offset;
+        } else {
+            // Toggle off if already in visual mode
+            self.visual_mode = .none;
+            self.visual_anchor = null;
+        }
     }
 
     pub fn startVisualLineMode(self: *GrimEditorWidget) !void {
-        // TODO: Implement visual line mode
-        _ = self;
+        if (self.visual_mode == .none) {
+            self.visual_mode = .line;
+            self.visual_anchor = self.editor.cursor.offset;
+        } else {
+            // Toggle off if already in visual mode
+            self.visual_mode = .none;
+            self.visual_anchor = null;
+        }
     }
 
     pub fn clearSelection(self: *GrimEditorWidget) !void {
-        // TODO: Clear visual selection
-        _ = self;
+        self.visual_mode = .none;
+        self.visual_anchor = null;
     }
 
     pub fn extendSelectionLeft(self: *GrimEditorWidget) !void {
@@ -534,13 +637,77 @@ pub const GrimEditorWidget = struct {
     }
 
     pub fn deleteSelection(self: *GrimEditorWidget) !void {
-        // TODO: Delete visual selection
-        _ = self;
+        if (self.visual_mode == .none) return;
+
+        const range = self.getSelectionRange() orelse return;
+        const start = range.start;
+        const end = range.end;
+
+        if (start >= end) return;
+
+        // Delete the selected range
+        try self.editor.rope.delete(start, end - start);
+        self.editor.cursor.offset = start;
+
+        // Exit visual mode
+        self.visual_mode = .none;
+        self.visual_anchor = null;
+        self.highlight_dirty = true;
     }
 
     pub fn yankSelection(self: *GrimEditorWidget) !void {
-        // TODO: Yank visual selection
-        _ = self;
+        if (self.visual_mode == .none) return;
+
+        const range = self.getSelectionRange() orelse return;
+        const start = range.start;
+        const end = range.end;
+
+        if (start >= end) return;
+
+        // Get the selected text
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        const selected_text = content[start..end];
+
+        // Store in unnamed register
+        try self.setRegister(null, selected_text);
+
+        // Exit visual mode
+        self.visual_mode = .none;
+        self.visual_anchor = null;
+    }
+
+    fn getSelectionRange(self: *GrimEditorWidget) ?struct { start: usize, end: usize } {
+        if (self.visual_mode == .none) return null;
+        const anchor = self.visual_anchor orelse return null;
+        const cursor = self.editor.cursor.offset;
+
+        if (self.visual_mode == .character) {
+            const start = @min(anchor, cursor);
+            const end = @max(anchor, cursor) + 1; // Include character under cursor
+            return .{ .start = start, .end = end };
+        } else if (self.visual_mode == .line) {
+            // Get line boundaries
+            const content = self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() }) catch return null;
+
+            // Find line start of anchor
+            var anchor_line_start = anchor;
+            while (anchor_line_start > 0 and content[anchor_line_start - 1] != '\n') {
+                anchor_line_start -= 1;
+            }
+
+            // Find line end of cursor (include newline)
+            var cursor_line_end = cursor;
+            while (cursor_line_end < content.len and content[cursor_line_end] != '\n') {
+                cursor_line_end += 1;
+            }
+            if (cursor_line_end < content.len) cursor_line_end += 1; // Include the newline
+
+            const start = @min(anchor_line_start, anchor_line_start);
+            const end = @max(cursor_line_end, cursor_line_end);
+            return .{ .start = start, .end = end };
+        }
+
+        return null;
     }
 
     // Update LSP widgets with latest data from LSP client
@@ -774,5 +941,204 @@ pub const GrimEditorWidget = struct {
         }
         self.search_matches.clearRetainingCapacity();
         self.current_match_index = null;
+    }
+
+    fn highlightStyleFromType(self: *GrimEditorWidget, hl_type: syntax.HighlightType) phantom.Style {
+        _ = self;
+        return switch (hl_type) {
+            .keyword => phantom.Style.default().withFg(phantom.Color.magenta),
+            .type_name => phantom.Style.default().withFg(phantom.Color.cyan),
+            .function_name => phantom.Style.default().withFg(phantom.Color.blue),
+            .string_literal => phantom.Style.default().withFg(phantom.Color.green),
+            .number_literal => phantom.Style.default().withFg(phantom.Color.yellow),
+            .comment => phantom.Style.default().withFg(phantom.Color.bright_black),
+            .operator => phantom.Style.default().withFg(phantom.Color.red),
+            .punctuation => phantom.Style.default().withFg(phantom.Color.white),
+            .variable => phantom.Style.default().withFg(phantom.Color.white),
+            .@"error" => phantom.Style.default().withFg(phantom.Color.red),
+            .none => phantom.Style.default().withFg(phantom.Color.white),
+        };
+    }
+
+    // === Register and clipboard operations ===
+
+    /// Set register content (null for unnamed register)
+    pub fn setRegister(self: *GrimEditorWidget, register: ?u8, text: []const u8) !void {
+        if (register) |reg| {
+            // Named register (a-z)
+            const key = [_]u8{reg};
+            const owned_text = try self.allocator.dupe(u8, text);
+            if (self.named_registers.get(&key)) |old_value| {
+                self.allocator.free(old_value);
+            }
+            try self.named_registers.put(&key, owned_text);
+        } else {
+            // Unnamed register
+            if (self.unnamed_register) |old| {
+                self.allocator.free(old);
+            }
+            self.unnamed_register = try self.allocator.dupe(u8, text);
+
+            // Also try to copy to system clipboard
+            self.copyToClipboard(text) catch |err| {
+                std.log.warn("Failed to copy to clipboard: {}", .{err});
+            };
+        }
+    }
+
+    /// Get register content (null for unnamed register)
+    pub fn getRegister(self: *GrimEditorWidget, register: ?u8) ?[]const u8 {
+        if (register) |reg| {
+            const key = [_]u8{reg};
+            return self.named_registers.get(&key);
+        } else {
+            return self.unnamed_register;
+        }
+    }
+
+    /// Paste from register at cursor
+    pub fn paste(self: *GrimEditorWidget, register: ?u8) !void {
+        const text = self.getRegister(register) orelse return;
+        try self.editor.rope.insert(self.editor.cursor.offset, text);
+        self.editor.cursor.offset += text.len;
+        self.highlight_dirty = true;
+    }
+
+    /// Yank current line to register
+    pub fn yankLine(self: *GrimEditorWidget, register: ?u8) !void {
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        const cursor_offset = self.editor.cursor.offset;
+
+        // Find line start
+        var line_start = cursor_offset;
+        while (line_start > 0 and content[line_start - 1] != '\n') {
+            line_start -= 1;
+        }
+
+        // Find line end (include newline)
+        var line_end = cursor_offset;
+        while (line_end < content.len and content[line_end] != '\n') {
+            line_end += 1;
+        }
+        if (line_end < content.len) line_end += 1;
+
+        const line_text = content[line_start..line_end];
+        try self.setRegister(register, line_text);
+    }
+
+    /// Delete current line to register
+    pub fn deleteLine(self: *GrimEditorWidget, register: ?u8) !void {
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        const cursor_offset = self.editor.cursor.offset;
+
+        // Find line start
+        var line_start = cursor_offset;
+        while (line_start > 0 and content[line_start - 1] != '\n') {
+            line_start -= 1;
+        }
+
+        // Find line end (include newline)
+        var line_end = cursor_offset;
+        while (line_end < content.len and content[line_end] != '\n') {
+            line_end += 1;
+        }
+        if (line_end < content.len) line_end += 1;
+
+        const line_text = content[line_start..line_end];
+        try self.setRegister(register, line_text);
+
+        // Delete the line
+        try self.editor.rope.delete(line_start, line_end - line_start);
+        self.editor.cursor.offset = line_start;
+        self.highlight_dirty = true;
+    }
+
+    /// Copy text to system clipboard
+    fn copyToClipboard(self: *GrimEditorWidget, text: []const u8) !void {
+        // Try different clipboard commands based on platform
+        // xclip (Linux/X11)
+        const argv_xclip = [_][]const u8{ "xclip", "-selection", "clipboard" };
+        var child = std.process.Child.init(&argv_xclip, self.allocator);
+        child.stdin_behavior = .Pipe;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+
+        child.spawn() catch {
+            // Try wl-copy (Wayland)
+            const argv_wl = [_][]const u8{"wl-copy"};
+            var child_wl = std.process.Child.init(&argv_wl, self.allocator);
+            child_wl.stdin_behavior = .Pipe;
+            child_wl.stdout_behavior = .Ignore;
+            child_wl.stderr_behavior = .Ignore;
+            child_wl.spawn() catch return error.ClipboardNotAvailable;
+
+            if (child_wl.stdin) |stdin| {
+                try stdin.writeAll(text);
+                stdin.close();
+                child_wl.stdin = null;
+            }
+            _ = try child_wl.wait();
+            return;
+        };
+
+        if (child.stdin) |stdin| {
+            try stdin.writeAll(text);
+            stdin.close();
+            child.stdin = null;
+        }
+        _ = try child.wait();
+    }
+
+    // === Macro operations ===
+
+    /// Start recording macro to register (a-z)
+    pub fn startRecordingMacro(self: *GrimEditorWidget, register: u8) !void {
+        if (self.recording_macro != null) {
+            // Already recording, stop recording first
+            self.stopRecordingMacro();
+        }
+
+        self.recording_macro = register;
+        self.macro_buffer.clearRetainingCapacity();
+    }
+
+    /// Stop recording macro and save it
+    pub fn stopRecordingMacro(self: *GrimEditorWidget) void {
+        if (self.recording_macro) |register| {
+            // Save macro to storage
+            const key = [_]u8{register};
+            const macro_keys = self.allocator.dupe(phantom.Key, self.macro_buffer.items) catch return;
+
+            // Free old macro if exists
+            if (self.macros.get(&key)) |old_macro| {
+                self.allocator.free(old_macro);
+            }
+
+            self.macros.put(&key, macro_keys) catch return;
+            self.recording_macro = null;
+        }
+    }
+
+    /// Record a key press (if recording)
+    pub fn recordKey(self: *GrimEditorWidget, key: phantom.Key) !void {
+        if (self.recording_macro != null) {
+            try self.macro_buffer.append(self.allocator, key);
+        }
+    }
+
+    /// Replay macro from register (a-z)
+    pub fn replayMacro(self: *GrimEditorWidget, register: u8) !void {
+        const key = [_]u8{register};
+        const macro = self.macros.get(&key) orelse return;
+
+        // TODO: Implement macro replay by processing recorded keys
+        // This requires access to the app's event handling system
+        _ = macro;
+        std.log.info("Macro replay for register '{c}' not yet fully implemented", .{register});
+    }
+
+    /// Check if currently recording
+    pub fn isRecording(self: *GrimEditorWidget) bool {
+        return self.recording_macro != null;
     }
 };

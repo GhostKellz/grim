@@ -17,12 +17,15 @@ pub fn main() !void {
     // Parse command line options
     var theme_name: ?[]const u8 = null;
     var file_to_load: ?[]const u8 = null;
+    var use_zigzag = false;
 
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
 
-        if (std.mem.eql(u8, arg, "--theme") or std.mem.eql(u8, arg, "-t")) {
+        if (std.mem.eql(u8, arg, "--zigzag")) {
+            use_zigzag = true;
+        } else if (std.mem.eql(u8, arg, "--theme") or std.mem.eql(u8, arg, "-t")) {
             // Next arg is theme name
             if (i + 1 < args.len) {
                 i += 1;
@@ -65,142 +68,161 @@ pub fn main() !void {
         }
     }
 
-    // Initialize Grim App (new Phantom-based architecture)
-    const GrimApp = @import("ui_tui").grim_app.GrimApp;
-    const GrimConfig = @import("ui_tui").grim_app.GrimConfig;
+    // Choose event loop: ZigZag (high-performance) or Phantom (simple)
+    if (use_zigzag) {
+        std.log.info("Using ZigZag event loop (io_uring/epoll/kqueue)", .{});
+        const GrimAppZigZag = @import("ui_tui").grim_app_zigzag.GrimAppZigZag;
+        const GrimConfig = @import("ui_tui").grim_app_zigzag.GrimConfig;
 
-    const config = GrimConfig{
-        .initial_file = file_to_load,
-    };
+        const config = GrimConfig{};
+        var app = try GrimAppZigZag.init(allocator, config);
+        defer app.deinit();
 
-    var app = try GrimApp.init(allocator, config);
-    defer app.deinit();
-
-    // Build plugin directories list
-    var plugin_dirs = try std.ArrayList([]const u8).initCapacity(allocator, 0);
-    defer {
-        for (plugin_dirs.items) |dir| allocator.free(dir);
-        plugin_dirs.deinit(allocator);
-    }
-    try collectPluginDirectories(&plugin_dirs, allocator);
-
-    // Initialize plugin API editor context
-    var plugin_cursor_position = runtime.PluginAPI.EditorContext.CursorPosition{
-        .line = 0,
-        .column = 0,
-        .byte_offset = 0,
-    };
-    var plugin_mode = runtime.PluginAPI.EditorContext.EditorMode.normal;
-    app.plugin_cursor = &plugin_cursor_position;
-
-    const active_editor = app.layout_manager.getActiveEditor() orelse {
-        std.log.err("No active editor available", .{});
-        return error.NoActiveEditor;
-    };
-
-    var editor_context = runtime.PluginAPI.EditorContext{
-        .rope = &active_editor.editor.rope,
-        .cursor_position = &plugin_cursor_position,
-        .current_mode = &plugin_mode,
-        .highlighter = &active_editor.editor.highlighter,
-        .selection_start = &active_editor.editor.selection_start,
-        .selection_end = &active_editor.editor.selection_end,
-        .active_buffer_id = app.getActiveBufferId(),
-        .bridge = app.makeEditorBridge(),
-    };
-
-    app.setEditorContext(&editor_context);
-
-    var plugin_api = runtime.PluginAPI.init(allocator, &editor_context);
-    defer plugin_api.deinit();
-
-    // Initialize plugin manager and discovery
-    var plugin_manager = try runtime.PluginManager.init(allocator, &plugin_api, plugin_dirs.items);
-    defer plugin_manager.deinit();
-
-    app.attachPluginManager(&plugin_manager);
-
-    var editor_lsp = try EditorLSP.init(allocator, active_editor.editor);
-    defer {
-        app.detachEditorLSP();
-        editor_lsp.deinit();
-    }
-    app.attachEditorLSP(editor_lsp);
-    defer app.closeActiveBuffer();
-
-    // Set default theme to ghost-hacker-blue if no theme specified
-    if (theme_name == null) {
-        app.setTheme("ghost-hacker-blue") catch |err| {
-            std.debug.print("Warning: Failed to set default theme: {}\n", .{err});
-        };
-    }
-
-    const discovered_plugins = try plugin_manager.discoverPlugins();
-    defer cleanupDiscoveredPlugins(allocator, &plugin_manager, discovered_plugins);
-
-    // Lazy load plugins - only load on first use instead of at startup
-    // This dramatically improves startup time
-    var loaded_count: usize = 0;
-    for (discovered_plugins) |*plugin_info| {
-        if (!plugin_info.manifest.enable_on_startup) continue;
-
-        // Only load critical plugins at startup (none by default for fast start)
-        // Others loaded on-demand when first command is used
-        if (std.mem.eql(u8, plugin_info.manifest.name, "core")) {
-            plugin_manager.loadPlugin(plugin_info) catch |err| {
-                std.log.err("Failed to load plugin '{s}': {}", .{ plugin_info.manifest.name, err });
-                continue;
-            };
-            loaded_count += 1;
+        // Open file if provided
+        if (file_to_load) |path| {
+            try app.openFile(path);
         }
-    }
 
-    const init_time = std.time.nanoTimestamp() - start_time;
-    std.log.info("Initialized in {d:.2}ms ({} plugins loaded)", .{
-        @as(f64, @floatFromInt(init_time)) / 1_000_000.0,
-        loaded_count,
-    });
-
-    // Apply theme if specified
-    if (theme_name) |theme| {
-        app.setTheme(theme) catch |err| {
-            std.debug.print("Warning: Failed to set theme '{s}': {}\n", .{ theme, err });
-        };
-    }
-
-    // Load file if provided
-    if (file_to_load) |file_path| {
-        app.loadFile(file_path) catch |err| {
-            std.debug.print("Failed to load file {s}: {}\n", .{ file_path, err });
-            // Continue with empty buffer
-        };
+        // Run with ZigZag
+        try app.run();
     } else {
-        // Load a sample file for testing
-        try active_editor.editor.rope.insert(0,
-            \\fn main() !void {
-            \\    const std = @import("std");
-            \\    std.debug.print("Hello, Grim!\n", .{});
-            \\
-            \\    // This is a comment
-            \\    const x: u32 = 42;
-            \\    var y = x * 2;
-            \\
-            \\    if (y > 80) {
-            \\        std.debug.print("y is large: {}\n", .{y});
-            \\    }
-            \\}
-        );
-        // Set language for syntax highlighting (sample is Zig code)
-        try active_editor.editor.highlighter.setLanguage("sample.zig");
+        std.log.info("Using Phantom event loop (default)", .{});
+        const GrimApp = @import("ui_tui").grim_app.GrimApp;
+        const GrimConfig = @import("ui_tui").grim_app.GrimConfig;
+
+        const config = GrimConfig{
+            .initial_file = file_to_load,
+        };
+
+        var app = try GrimApp.init(allocator, config);
+        defer app.deinit();
+
+        // Build plugin directories list
+        var plugin_dirs = try std.ArrayList([]const u8).initCapacity(allocator, 0);
+        defer {
+            for (plugin_dirs.items) |dir| allocator.free(dir);
+            plugin_dirs.deinit(allocator);
+        }
+        try collectPluginDirectories(&plugin_dirs, allocator);
+
+        // Initialize plugin API editor context
+        var plugin_cursor_position = runtime.PluginAPI.EditorContext.CursorPosition{
+            .line = 0,
+            .column = 0,
+            .byte_offset = 0,
+        };
+        var plugin_mode = runtime.PluginAPI.EditorContext.EditorMode.normal;
+        app.plugin_cursor = &plugin_cursor_position;
+
+        const active_editor = app.layout_manager.getActiveEditor() orelse {
+            std.log.err("No active editor available", .{});
+            return error.NoActiveEditor;
+        };
+
+        var editor_context = runtime.PluginAPI.EditorContext{
+            .rope = &active_editor.editor.rope,
+            .cursor_position = &plugin_cursor_position,
+            .current_mode = &plugin_mode,
+            .highlighter = &active_editor.editor.highlighter,
+            .selection_start = &active_editor.editor.selection_start,
+            .selection_end = &active_editor.editor.selection_end,
+            .active_buffer_id = app.getActiveBufferId(),
+            .bridge = app.makeEditorBridge(),
+        };
+
+        app.setEditorContext(&editor_context);
+
+        var plugin_api = runtime.PluginAPI.init(allocator, &editor_context);
+        defer plugin_api.deinit();
+
+        // Initialize plugin manager and discovery
+        var plugin_manager = try runtime.PluginManager.init(allocator, &plugin_api, plugin_dirs.items);
+        defer plugin_manager.deinit();
+
+        app.attachPluginManager(&plugin_manager);
+
+        var editor_lsp = try EditorLSP.init(allocator, active_editor.editor);
+        defer {
+            app.detachEditorLSP();
+            editor_lsp.deinit();
+        }
+        app.attachEditorLSP(editor_lsp);
+        defer app.closeActiveBuffer();
+
+        // Set default theme to ghost-hacker-blue if no theme specified
+        if (theme_name == null) {
+            app.setTheme("ghost-hacker-blue") catch |err| {
+                std.debug.print("Warning: Failed to set default theme: {}\n", .{err});
+            };
+        }
+
+        const discovered_plugins = try plugin_manager.discoverPlugins();
+        defer cleanupDiscoveredPlugins(allocator, &plugin_manager, discovered_plugins);
+
+        // Lazy load plugins - only load on first use instead of at startup
+        // This dramatically improves startup time
+        var loaded_count: usize = 0;
+        for (discovered_plugins) |*plugin_info| {
+            if (!plugin_info.manifest.enable_on_startup) continue;
+
+            // Only load critical plugins at startup (none by default for fast start)
+            // Others loaded on-demand when first command is used
+            if (std.mem.eql(u8, plugin_info.manifest.name, "core")) {
+                plugin_manager.loadPlugin(plugin_info) catch |err| {
+                    std.log.err("Failed to load plugin '{s}': {}", .{ plugin_info.manifest.name, err });
+                    continue;
+                };
+                loaded_count += 1;
+            }
+        }
+
+        const init_time = std.time.nanoTimestamp() - start_time;
+        std.log.info("Initialized in {d:.2}ms ({} plugins loaded)", .{
+            @as(f64, @floatFromInt(init_time)) / 1_000_000.0,
+            loaded_count,
+        });
+
+        // Apply theme if specified
+        if (theme_name) |theme| {
+            app.setTheme(theme) catch |err| {
+                std.debug.print("Warning: Failed to set theme '{s}': {}\n", .{ theme, err });
+            };
+        }
+
+        // Load file if provided
+        if (file_to_load) |file_path| {
+            app.loadFile(file_path) catch |err| {
+                std.debug.print("Failed to load file {s}: {}\n", .{ file_path, err });
+                // Continue with empty buffer
+            };
+        } else {
+            // Load a sample file for testing
+            try active_editor.editor.rope.insert(0,
+                \\fn main() !void {
+                \\    const std = @import("std");
+                \\    std.debug.print("Hello, Grim!\n", .{});
+                \\
+                \\    // This is a comment
+                \\    const x: u32 = 42;
+                \\    var y = x * 2;
+                \\
+                \\    if (y > 80) {
+                \\        std.debug.print("y is large: {}\n", .{y});
+                \\    }
+                \\}
+            );
+            // Set language for syntax highlighting (sample is Zig code)
+            try active_editor.editor.highlighter.setLanguage("sample.zig");
+        }
+
+        // Run the TUI immediately (show help in status line instead)
+        app.run() catch |err| {
+            std.debug.print("TUI error: {}\n", .{err});
+            return;
+        };
+
+        std.debug.print("Grim editor closed.\n", .{});
     }
-
-    // Run the TUI immediately (show help in status line instead)
-    app.run() catch |err| {
-        std.debug.print("TUI error: {}\n", .{err});
-        return;
-    };
-
-    std.debug.print("Grim editor closed.\n", .{});
 }
 
 test "simple test" {

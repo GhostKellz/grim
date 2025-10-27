@@ -15,6 +15,14 @@ pub const Direction = enum {
     down,
 };
 
+/// Direction for window resize
+pub const ResizeDirection = enum {
+    increase,
+    decrease,
+    increase_vertical,
+    decrease_vertical,
+};
+
 /// Split node - represents either a leaf (editor) or a container (split)
 pub const SplitNode = union(enum) {
     leaf: *grim_editor_widget.GrimEditorWidget,
@@ -170,12 +178,21 @@ pub const TabPage = struct {
     }
 };
 
+pub const Buffer = struct {
+    editor: *grim_editor_widget.GrimEditorWidget,
+    filepath: ?[]const u8,
+    name: []const u8,
+};
+
 pub const LayoutManager = struct {
     allocator: std.mem.Allocator,
 
     // Tab management
     tabs: std.ArrayList(*TabPage),
     active_tab_index: usize,
+
+    // Buffer management
+    buffers: std.ArrayList(Buffer),
 
     // Rendering area
     width: u16,
@@ -196,10 +213,20 @@ pub const LayoutManager = struct {
         errdefer tabs.deinit(allocator);
         try tabs.append(allocator, initial_tab);
 
+        // Create buffer list
+        var buffers = std.ArrayList(Buffer){};
+        errdefer buffers.deinit(allocator);
+        try buffers.append(allocator, Buffer{
+            .editor = initial_editor,
+            .filepath = null,
+            .name = try allocator.dupe(u8, "[No Name]"),
+        });
+
         self.* = .{
             .allocator = allocator,
             .tabs = tabs,
             .active_tab_index = 0,
+            .buffers = buffers,
             .width = width,
             .height = height,
         };
@@ -212,6 +239,16 @@ pub const LayoutManager = struct {
             tab.deinit();
         }
         self.tabs.deinit(self.allocator);
+
+        // Free buffer list (editors are freed by tabs)
+        for (self.buffers.items) |buffer| {
+            self.allocator.free(buffer.name);
+            if (buffer.filepath) |path| {
+                self.allocator.free(path);
+            }
+        }
+        self.buffers.deinit(self.allocator);
+
         self.allocator.destroy(self);
     }
 
@@ -284,7 +321,7 @@ pub const LayoutManager = struct {
         const current_pos = try self.getEditorPosition(node, current, area) orelse return null;
 
         // Find all editors and their positions
-        var candidates = std.ArrayList(EditorCandidate).init(self.allocator);
+        var candidates = std.ArrayList(EditorCandidate){};
         defer candidates.deinit(self.allocator);
 
         try self.collectEditorPositions(node, area, &candidates);
@@ -308,7 +345,7 @@ pub const LayoutManager = struct {
             // Calculate distance (Manhattan distance)
             const dx = candidate.center_x - current_pos.center_x;
             const dy = candidate.center_y - current_pos.center_y;
-            const distance = @abs(dx) + @abs(dy);
+            const distance: i32 = @intCast(@abs(dx) + @abs(dy));
 
             if (distance < best_distance) {
                 best_distance = distance;
@@ -408,7 +445,7 @@ pub const LayoutManager = struct {
 
     // === Window resize ===
 
-    pub fn resizeSplit(self: *LayoutManager, direction: enum { increase, decrease, increase_vertical, decrease_vertical }) !void {
+    pub fn resizeSplit(self: *LayoutManager, direction: ResizeDirection) !void {
         const tab = self.getActiveTab() orelse return;
         const current_editor = tab.active_editor;
 
@@ -421,7 +458,7 @@ pub const LayoutManager = struct {
         self: *LayoutManager,
         node: *SplitNode,
         target: *grim_editor_widget.GrimEditorWidget,
-        direction: enum { increase, decrease, increase_vertical, decrease_vertical },
+        direction: ResizeDirection,
         delta: f32,
     ) !void {
         switch (node.*) {
@@ -839,5 +876,74 @@ pub const LayoutManager = struct {
         if (self.active_tab_index >= self.tabs.items.len) {
             self.active_tab_index = self.tabs.items.len - 1;
         }
+    }
+
+    // === Buffer management ===
+
+    /// Get index of buffer containing the active editor
+    pub fn getActiveBufferIndex(self: *LayoutManager) ?usize {
+        const active_editor = self.getActiveEditor() orelse return null;
+        for (self.buffers.items, 0..) |buffer, i| {
+            if (buffer.editor == active_editor) {
+                return i;
+            }
+        }
+        return null;
+    }
+
+    /// Switch to next buffer
+    pub fn bufferNext(self: *LayoutManager) !void {
+        const current_idx = self.getActiveBufferIndex() orelse return;
+        const next_idx = (current_idx + 1) % self.buffers.items.len;
+
+        const tab = self.getActiveTab() orelse return;
+        tab.active_editor = self.buffers.items[next_idx].editor;
+    }
+
+    /// Switch to previous buffer
+    pub fn bufferPrev(self: *LayoutManager) !void {
+        const current_idx = self.getActiveBufferIndex() orelse return;
+        const prev_idx = if (current_idx == 0)
+            self.buffers.items.len - 1
+        else
+            current_idx - 1;
+
+        const tab = self.getActiveTab() orelse return;
+        tab.active_editor = self.buffers.items[prev_idx].editor;
+    }
+
+    /// Delete/close current buffer
+    pub fn bufferDelete(self: *LayoutManager) !void {
+        const current_idx = self.getActiveBufferIndex() orelse return;
+
+        if (self.buffers.items.len <= 1) {
+            return error.CannotCloseLastBuffer;
+        }
+
+        // Get the buffer to delete
+        const buffer = self.buffers.orderedRemove(current_idx);
+
+        // Free buffer data
+        self.allocator.free(buffer.name);
+        if (buffer.filepath) |path| {
+            self.allocator.free(path);
+        }
+
+        // Switch to next buffer before deleting editor
+        const next_idx = if (current_idx >= self.buffers.items.len)
+            self.buffers.items.len - 1
+        else
+            current_idx;
+
+        const tab = self.getActiveTab() orelse return;
+        tab.active_editor = self.buffers.items[next_idx].editor;
+
+        // Free the editor widget
+        buffer.editor.widget.vtable.deinit(&buffer.editor.widget);
+    }
+
+    /// Get list of all buffers (for display)
+    pub fn getBufferList(self: *LayoutManager) []const Buffer {
+        return self.buffers.items;
     }
 };

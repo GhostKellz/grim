@@ -82,7 +82,7 @@
         },
         .zigzag = .{
             .url = "https://github.com/ghostkellz/zigzag/archive/refs/heads/main.tar.gz",
-            .hash = "zigzag-0.1.0-NmTasChICACF9vO1gHyPzHtDj0AVD_0O72deub0sLliE",
+            .hash = "zigzag-0.1.0-NmTasN9ICAAVgsLxNF42rJLLmh8SnQWU8zcEFitzH2EI",
         },
     },
     .paths = .{

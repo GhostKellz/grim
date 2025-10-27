@@ -6,11 +6,14 @@ const zigzag = @import("zigzag");
 const phantom = @import("phantom");
 const escape_parser = @import("escape_parser.zig");
 
+/// Event handler function type with explicit error set
+pub const EventHandler = *const fn (phantom.Event) anyerror!bool;
+
 /// Bridge between ZigZag event loop and Phantom event handlers
 pub const ZigZagPhantomBridge = struct {
     allocator: std.mem.Allocator,
     zigzag_loop: zigzag.EventLoop,
-    phantom_handlers: std.ArrayList(*const fn (phantom.Event) !bool),
+    phantom_handlers: std.ArrayList(EventHandler),
 
     // Event loop state
     stdin_watch: ?*const zigzag.Watch = null,
@@ -18,16 +21,16 @@ pub const ZigZagPhantomBridge = struct {
     should_stop: bool = false,
 
     // Terminal state
-    terminal_size: phantom.geometry.Size,
+    terminal_size: phantom.Size,
 
     /// Initialize the bridge
-    pub fn init(allocator: std.mem.Allocator, terminal_size: phantom.geometry.Size) !*ZigZagPhantomBridge {
+    pub fn init(allocator: std.mem.Allocator, terminal_size: phantom.Size) !*ZigZagPhantomBridge {
         const self = try allocator.create(ZigZagPhantomBridge);
 
         // Initialize ZigZag event loop with event coalescing enabled
-        var loop = try zigzag.EventLoop.init(allocator, .{
+        const loop = try zigzag.EventLoop.init(allocator, .{
             .max_events = 256,
-            .backend = null, // Auto-detect best backend
+            .backend = .epoll, // Use epoll (io_uring requires kernel 6.1+)
             .coalescing = .{
                 .coalesce_resize = true,
                 .max_coalesce_time_ms = 10,
@@ -38,7 +41,7 @@ pub const ZigZagPhantomBridge = struct {
         self.* = .{
             .allocator = allocator,
             .zigzag_loop = loop,
-            .phantom_handlers = std.ArrayList(*const fn (phantom.Event) !bool).init(allocator),
+            .phantom_handlers = .empty,
             .terminal_size = terminal_size,
         };
 
@@ -57,19 +60,19 @@ pub const ZigZagPhantomBridge = struct {
             self.zigzag_loop.removeFd(watch);
         }
 
-        self.phantom_handlers.deinit();
+        self.phantom_handlers.deinit(self.allocator);
         self.zigzag_loop.deinit();
         self.allocator.destroy(self);
     }
 
     /// Add a Phantom event handler
-    pub fn addHandler(self: *ZigZagPhantomBridge, handler: *const fn (phantom.Event) !bool) !void {
-        try self.phantom_handlers.append(handler);
+    pub fn addHandler(self: *ZigZagPhantomBridge, handler: EventHandler) !void {
+        try self.phantom_handlers.append(self.allocator, handler);
     }
 
     /// Start watching stdin for keyboard input
     pub fn watchStdin(self: *ZigZagPhantomBridge) !void {
-        const stdin_fd = std.io.getStdIn().handle;
+        const stdin_fd = std.posix.STDIN_FILENO;
 
         // Add stdin to ZigZag event loop
         const watch = try self.zigzag_loop.addFd(stdin_fd, .{ .read = true });
@@ -101,7 +104,7 @@ pub const ZigZagPhantomBridge = struct {
 
             if (!had_events) {
                 // Sleep for 10ms if no events
-                std.time.sleep(10 * std.time.ns_per_ms);
+                std.Thread.sleep(10 * std.time.ns_per_ms);
             }
         }
     }
