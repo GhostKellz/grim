@@ -16,7 +16,7 @@ const MouseEvent = @typeInfo(phantom.Event).@"union".fields[1].type;
 const grim_editor_widget = @import("grim_editor_widget.zig");
 const grim_layout = @import("grim_layout.zig");
 const grim_command_bar = @import("grim_command_bar.zig");
-const status_bar_flex = @import("status_bar_flex.zig");
+const powerline_status = @import("powerline_status.zig");
 
 // LSP widgets
 const lsp_completion_menu = @import("lsp_completion_menu.zig");
@@ -61,7 +61,7 @@ pub const GrimApp = struct {
     // Core components
     layout_manager: *grim_layout.LayoutManager,
     command_bar: *grim_command_bar.CommandBar,
-    status_bar: *status_bar_flex.StatusBar,
+    status_bar: *powerline_status.PowerlineStatus,
 
     // State
     mode: Mode,
@@ -126,8 +126,8 @@ pub const GrimApp = struct {
         const command_bar = try grim_command_bar.CommandBar.init(allocator);
         errdefer command_bar.deinit();
 
-        // Initialize status bar
-        const status_bar = try status_bar_flex.StatusBar.init(allocator, term_size.width);
+        // Initialize status bar (powerlevel10k style)
+        const status_bar = try powerline_status.PowerlineStatus.init(allocator, term_size.width);
         errdefer status_bar.deinit();
 
         // Initialize Git
@@ -756,11 +756,10 @@ pub const GrimApp = struct {
         // Render layout manager (handles all editor windows/splits/tabs)
         self.layout_manager.render(buffer, editor_area);
 
-        // Update and render status bar
+        // Render status bar (powerlevel10k style)
         if (self.layout_manager.getActiveEditor()) |active_editor| {
-            try self.status_bar.update(active_editor, self.mode);
+            try self.status_bar.render(buffer, status_bar_area, active_editor, self.mode, &self.git);
         }
-        self.status_bar.render(buffer, status_bar_area);
 
         // Render command bar if visible
         if (self.command_bar.visible) {
@@ -777,7 +776,16 @@ pub const GrimApp = struct {
 
         // Parse command
         if (std.mem.eql(u8, command, "q") or std.mem.eql(u8, command, "quit")) {
-            // TODO: Check for unsaved buffers
+            // Check for unsaved buffers
+            if (self.layout_manager.getActiveEditor()) |editor| {
+                if (editor.is_modified) {
+                    std.log.warn("No write since last change (add ! to override)", .{});
+                    return;
+                }
+            }
+            self.running = false;
+        } else if (std.mem.eql(u8, command, "q!") or std.mem.eql(u8, command, "quit!")) {
+            // Force quit without checking for unsaved changes
             self.running = false;
         } else if (std.mem.eql(u8, command, "w") or std.mem.eql(u8, command, "write")) {
             try self.saveCurrentBuffer();
@@ -826,9 +834,40 @@ pub const GrimApp = struct {
         } else if (std.mem.startsWith(u8, command, "%s/") or std.mem.startsWith(u8, command, "s/")) {
             // Substitute command: :%s/pattern/replacement/flags or :s/pattern/replacement/flags
             try self.handleSubstitute(command);
+        } else if (std.mem.startsWith(u8, command, "set ")) {
+            // Handle :set commands
+            const set_args = std.mem.trim(u8, command[4..], " ");
+            try self.handleSetCommand(set_args);
         } else {
             // Unknown command
             std.log.warn("Unknown command: {s}", .{command});
+        }
+    }
+
+    fn handleSetCommand(self: *GrimApp, args: []const u8) !void {
+        const editor = self.layout_manager.getActiveEditor() orelse return error.NoActiveEditor;
+
+        if (std.mem.eql(u8, args, "expandtab") or std.mem.eql(u8, args, "et")) {
+            editor.expand_tab = true;
+            std.log.info("expandtab enabled", .{});
+        } else if (std.mem.eql(u8, args, "noexpandtab") or std.mem.eql(u8, args, "noet")) {
+            editor.expand_tab = false;
+            std.log.info("expandtab disabled", .{});
+        } else if (std.mem.startsWith(u8, args, "tabstop=") or std.mem.startsWith(u8, args, "ts=")) {
+            const eq_pos = std.mem.indexOfScalar(u8, args, '=') orelse return;
+            const value_str = args[eq_pos + 1 ..];
+            const tab_size = std.fmt.parseInt(u8, value_str, 10) catch {
+                std.log.warn("Invalid tabstop value: {s}", .{value_str});
+                return;
+            };
+            if (tab_size > 0 and tab_size <= 16) {
+                editor.tab_size = tab_size;
+                std.log.info("tabstop set to {d}", .{tab_size});
+            } else {
+                std.log.warn("tabstop must be between 1 and 16", .{});
+            }
+        } else {
+            std.log.warn("Unknown set option: {s}", .{args});
         }
     }
 
@@ -915,9 +954,22 @@ pub const GrimApp = struct {
 
     pub fn attachEditorLSP(self: *GrimApp, editor_lsp: *editor_lsp_mod.EditorLSP) void {
         self.editor_lsp = editor_lsp;
+
+        // Attach LSP to all editor widgets in the layout
+        const all_editors = self.layout_manager.getAllEditors();
+        for (all_editors) |editor_widget| {
+            editor_widget.attachLSP(editor_lsp);
+        }
     }
 
     pub fn detachEditorLSP(self: *GrimApp) void {
+        // Detach LSP from all editor widgets
+        if (self.editor_lsp != null) {
+            const all_editors = self.layout_manager.getAllEditors();
+            for (all_editors) |editor_widget| {
+                editor_widget.detachLSP();
+            }
+        }
         self.editor_lsp = null;
     }
 

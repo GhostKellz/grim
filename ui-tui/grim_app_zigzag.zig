@@ -10,7 +10,7 @@ const lsp = @import("lsp");
 const Editor = core.Editor;
 const Rope = core.Rope;
 const grim_layout = @import("grim_layout.zig");
-const status_bar_flex = @import("status_bar_flex.zig");
+const powerline_status = @import("powerline_status.zig");
 const grim_command_bar = @import("grim_command_bar.zig");
 
 const zigzag_adapter = @import("zigzag_adapter.zig");
@@ -45,7 +45,7 @@ pub const GrimAppZigZag = struct {
 
     // UI components
     layout_manager: *grim_layout.LayoutManager,
-    status_bar: *status_bar_flex.StatusBar,
+    status_bar: *powerline_status.PowerlineStatus,
     command_bar_widget: *grim_command_bar.CommandBar,
 
     // LSP and plugins
@@ -55,6 +55,9 @@ pub const GrimAppZigZag = struct {
     mode: GrimMode = .normal,
     running: bool = true,
     config: GrimConfig,
+
+    // Git integration
+    git: core.Git,
 
     pub fn init(allocator: std.mem.Allocator, config: GrimConfig) !*GrimAppZigZag {
         const self = try allocator.create(GrimAppZigZag);
@@ -79,8 +82,8 @@ pub const GrimAppZigZag = struct {
         );
         errdefer layout_manager.deinit();
 
-        // Initialize UI components
-        const status_bar = try status_bar_flex.StatusBar.init(allocator, term_size.width);
+        // Initialize UI components (powerlevel10k style)
+        const status_bar = try powerline_status.PowerlineStatus.init(allocator, term_size.width);
         errdefer status_bar.deinit();
 
         const command_bar_widget = try grim_command_bar.CommandBar.init(allocator);
@@ -98,6 +101,7 @@ pub const GrimAppZigZag = struct {
             .command_bar_widget = command_bar_widget,
             .plugin_manager = plugin_manager,
             .config = config,
+            .git = core.Git.init(allocator),
         };
 
         return self;
@@ -105,6 +109,7 @@ pub const GrimAppZigZag = struct {
 
     pub fn deinit(self: *GrimAppZigZag) void {
         if (self.plugin_manager) |pm| pm.deinit();
+        self.git.deinit();
         self.status_bar.deinit();
         self.command_bar_widget.deinit();
         self.layout_manager.deinit();
@@ -361,12 +366,11 @@ pub const GrimAppZigZag = struct {
         const editor_area = phantom.Rect.init(0, 0, term_size.width, term_size.height - 2);
         self.layout_manager.render(buffer, editor_area);
 
-        // Update and render status bar
-        if (self.layout_manager.getActiveEditor()) |active_editor| {
-            try self.status_bar.update(active_editor, self.mode);
-        }
+        // Render status bar (powerlevel10k style)
         const status_area = phantom.Rect.init(0, term_size.height - 2, term_size.width, 1);
-        self.status_bar.render(buffer, status_area);
+        if (self.layout_manager.getActiveEditor()) |active_editor| {
+            try self.status_bar.render(buffer, status_area, active_editor, self.mode, &self.git);
+        }
 
         // Render command bar
         const command_area = phantom.Rect.init(0, term_size.height - 1, term_size.width, 1);
