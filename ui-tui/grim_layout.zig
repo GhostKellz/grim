@@ -258,11 +258,443 @@ pub const LayoutManager = struct {
 
     /// Handle Ctrl+W window commands
     pub fn handleWindowCommand(self: *LayoutManager, direction: Direction) !bool {
-        // TODO: Implement window navigation
-        _ = self;
-        _ = direction;
-        std.log.warn("Window navigation not yet implemented", .{});
+        const tab = self.getActiveTab() orelse return false;
+        const current_editor = tab.active_editor;
+
+        // Find the editor in the given direction
+        const editor_area = phantom.Rect.init(0, 0, self.width, self.height);
+        if (try self.findEditorInDirection(tab.root, current_editor, direction, editor_area)) |new_editor| {
+            tab.active_editor = new_editor;
+            return true;
+        }
+
         return false;
+    }
+
+    /// Find the editor in a given direction from the current editor
+    fn findEditorInDirection(
+        self: *LayoutManager,
+        node: *SplitNode,
+        current: *grim_editor_widget.GrimEditorWidget,
+        direction: Direction,
+        area: phantom.Rect,
+    ) !?*grim_editor_widget.GrimEditorWidget {
+
+        // Get current editor position
+        const current_pos = try self.getEditorPosition(node, current, area) orelse return null;
+
+        // Find all editors and their positions
+        var candidates = std.ArrayList(EditorCandidate).init(self.allocator);
+        defer candidates.deinit(self.allocator);
+
+        try self.collectEditorPositions(node, area, &candidates);
+
+        // Filter candidates by direction
+        var best_candidate: ?*grim_editor_widget.GrimEditorWidget = null;
+        var best_distance: i32 = std.math.maxInt(i32);
+
+        for (candidates.items) |candidate| {
+            if (candidate.editor == current) continue;
+
+            const valid = switch (direction) {
+                .left => candidate.center_x < current_pos.center_x,
+                .right => candidate.center_x > current_pos.center_x,
+                .up => candidate.center_y < current_pos.center_y,
+                .down => candidate.center_y > current_pos.center_y,
+            };
+
+            if (!valid) continue;
+
+            // Calculate distance (Manhattan distance)
+            const dx = candidate.center_x - current_pos.center_x;
+            const dy = candidate.center_y - current_pos.center_y;
+            const distance = @abs(dx) + @abs(dy);
+
+            if (distance < best_distance) {
+                best_distance = distance;
+                best_candidate = candidate.editor;
+            }
+        }
+
+        return best_candidate;
+    }
+
+    const EditorCandidate = struct {
+        editor: *grim_editor_widget.GrimEditorWidget,
+        center_x: i32,
+        center_y: i32,
+    };
+
+    fn getEditorPosition(
+        self: *LayoutManager,
+        node: *SplitNode,
+        target: *grim_editor_widget.GrimEditorWidget,
+        area: phantom.Rect,
+    ) !?EditorCandidate {
+
+        switch (node.*) {
+            .leaf => |editor| {
+                if (editor == target) {
+                    return EditorCandidate{
+                        .editor = editor,
+                        .center_x = @as(i32, @intCast(area.x)) + @divTrunc(@as(i32, @intCast(area.width)), 2),
+                        .center_y = @as(i32, @intCast(area.y)) + @divTrunc(@as(i32, @intCast(area.height)), 2),
+                    };
+                }
+                return null;
+            },
+            .vsplit => |vsplit| {
+                const split_x = area.x + @as(u16, @intFromFloat(@as(f32, @floatFromInt(area.width)) * vsplit.ratio));
+                const left_area = phantom.Rect.init(area.x, area.y, split_x - area.x, area.height);
+                const right_area = phantom.Rect.init(split_x + 1, area.y, area.x + area.width - split_x - 1, area.height);
+
+                if (try self.getEditorPosition(vsplit.left, target, left_area)) |pos| {
+                    return pos;
+                }
+                if (try self.getEditorPosition(vsplit.right, target, right_area)) |pos| {
+                    return pos;
+                }
+                return null;
+            },
+            .hsplit => |hsplit| {
+                const split_y = area.y + @as(u16, @intFromFloat(@as(f32, @floatFromInt(area.height)) * hsplit.ratio));
+                const top_area = phantom.Rect.init(area.x, area.y, area.width, split_y - area.y);
+                const bottom_area = phantom.Rect.init(area.x, split_y + 1, area.width, area.y + area.height - split_y - 1);
+
+                if (try self.getEditorPosition(hsplit.top, target, top_area)) |pos| {
+                    return pos;
+                }
+                if (try self.getEditorPosition(hsplit.bottom, target, bottom_area)) |pos| {
+                    return pos;
+                }
+                return null;
+            },
+        }
+    }
+
+    fn collectEditorPositions(
+        self: *LayoutManager,
+        node: *SplitNode,
+        area: phantom.Rect,
+        candidates: *std.ArrayList(EditorCandidate),
+    ) !void {
+
+        switch (node.*) {
+            .leaf => |editor| {
+                try candidates.append(self.allocator, EditorCandidate{
+                    .editor = editor,
+                    .center_x = @as(i32, @intCast(area.x)) + @divTrunc(@as(i32, @intCast(area.width)), 2),
+                    .center_y = @as(i32, @intCast(area.y)) + @divTrunc(@as(i32, @intCast(area.height)), 2),
+                });
+            },
+            .vsplit => |vsplit| {
+                const split_x = area.x + @as(u16, @intFromFloat(@as(f32, @floatFromInt(area.width)) * vsplit.ratio));
+                const left_area = phantom.Rect.init(area.x, area.y, split_x - area.x, area.height);
+                const right_area = phantom.Rect.init(split_x + 1, area.y, area.x + area.width - split_x - 1, area.height);
+
+                try self.collectEditorPositions(vsplit.left, left_area, candidates);
+                try self.collectEditorPositions(vsplit.right, right_area, candidates);
+            },
+            .hsplit => |hsplit| {
+                const split_y = area.y + @as(u16, @intFromFloat(@as(f32, @floatFromInt(area.height)) * hsplit.ratio));
+                const top_area = phantom.Rect.init(area.x, area.y, area.width, split_y - area.y);
+                const bottom_area = phantom.Rect.init(area.x, split_y + 1, area.width, area.y + area.height - split_y - 1);
+
+                try self.collectEditorPositions(hsplit.top, top_area, candidates);
+                try self.collectEditorPositions(hsplit.bottom, bottom_area, candidates);
+            },
+        }
+    }
+
+    // === Window resize ===
+
+    pub fn resizeSplit(self: *LayoutManager, direction: enum { increase, decrease, increase_vertical, decrease_vertical }) !void {
+        const tab = self.getActiveTab() orelse return;
+        const current_editor = tab.active_editor;
+
+        const delta: f32 = 0.1; // 10% resize increment
+
+        try self.resizeSplitRecursive(tab.root, current_editor, direction, delta);
+    }
+
+    fn resizeSplitRecursive(
+        self: *LayoutManager,
+        node: *SplitNode,
+        target: *grim_editor_widget.GrimEditorWidget,
+        direction: enum { increase, decrease, increase_vertical, decrease_vertical },
+        delta: f32,
+    ) !void {
+        switch (node.*) {
+            .leaf => {},
+            .vsplit => |*vsplit| {
+                // Check if target is in left or right
+                if (try self.containsEditor(vsplit.left, target)) {
+                    // Target is on the left
+                    switch (direction) {
+                        .increase => {
+                            // Increase width of left pane
+                            vsplit.ratio = @min(0.9, vsplit.ratio + delta);
+                        },
+                        .decrease => {
+                            // Decrease width of left pane
+                            vsplit.ratio = @max(0.1, vsplit.ratio - delta);
+                        },
+                        else => {},
+                    }
+                } else if (try self.containsEditor(vsplit.right, target)) {
+                    // Target is on the right
+                    switch (direction) {
+                        .increase => {
+                            // Increase width of right pane
+                            vsplit.ratio = @max(0.1, vsplit.ratio - delta);
+                        },
+                        .decrease => {
+                            // Decrease width of right pane
+                            vsplit.ratio = @min(0.9, vsplit.ratio + delta);
+                        },
+                        else => {},
+                    }
+                }
+
+                // Recursively resize children
+                try self.resizeSplitRecursive(vsplit.left, target, direction, delta);
+                try self.resizeSplitRecursive(vsplit.right, target, direction, delta);
+            },
+            .hsplit => |*hsplit| {
+                // Check if target is in top or bottom
+                if (try self.containsEditor(hsplit.top, target)) {
+                    // Target is on the top
+                    switch (direction) {
+                        .increase_vertical => {
+                            // Increase height of top pane
+                            hsplit.ratio = @min(0.9, hsplit.ratio + delta);
+                        },
+                        .decrease_vertical => {
+                            // Decrease height of top pane
+                            hsplit.ratio = @max(0.1, hsplit.ratio - delta);
+                        },
+                        else => {},
+                    }
+                } else if (try self.containsEditor(hsplit.bottom, target)) {
+                    // Target is on the bottom
+                    switch (direction) {
+                        .increase_vertical => {
+                            // Increase height of bottom pane
+                            hsplit.ratio = @max(0.1, hsplit.ratio - delta);
+                        },
+                        .decrease_vertical => {
+                            // Decrease height of bottom pane
+                            hsplit.ratio = @min(0.9, hsplit.ratio + delta);
+                        },
+                        else => {},
+                    }
+                }
+
+                // Recursively resize children
+                try self.resizeSplitRecursive(hsplit.top, target, direction, delta);
+                try self.resizeSplitRecursive(hsplit.bottom, target, direction, delta);
+            },
+        }
+    }
+
+    fn containsEditor(self: *LayoutManager, node: *SplitNode, target: *grim_editor_widget.GrimEditorWidget) !bool {
+        switch (node.*) {
+            .leaf => |editor| return editor == target,
+            .vsplit => |vsplit| {
+                return try self.containsEditor(vsplit.left, target) or try self.containsEditor(vsplit.right, target);
+            },
+            .hsplit => |hsplit| {
+                return try self.containsEditor(hsplit.top, target) or try self.containsEditor(hsplit.bottom, target);
+            },
+        }
+    }
+
+    pub fn equalizeSplits(self: *LayoutManager) void {
+        const tab = self.getActiveTab() orelse return;
+        self.equalizeSplitsRecursive(tab.root);
+    }
+
+    fn equalizeSplitsRecursive(self: *LayoutManager, node: *SplitNode) void {
+        switch (node.*) {
+            .leaf => {},
+            .vsplit => |*vsplit| {
+                vsplit.ratio = 0.5;
+                self.equalizeSplitsRecursive(vsplit.left);
+                self.equalizeSplitsRecursive(vsplit.right);
+            },
+            .hsplit => |*hsplit| {
+                hsplit.ratio = 0.5;
+                self.equalizeSplitsRecursive(hsplit.top);
+                self.equalizeSplitsRecursive(hsplit.bottom);
+            },
+        }
+    }
+
+    // === Close window ===
+
+    pub fn closeWindow(self: *LayoutManager) !void {
+        const tab = self.getActiveTab() orelse return;
+        const current_editor = tab.active_editor;
+
+        // Count editors
+        const editor_count = try self.countEditors(tab.root);
+        if (editor_count <= 1) {
+            return error.CannotCloseLastWindow;
+        }
+
+        // Close the editor and collapse the split
+        if (try self.closeEditorAndCollapse(tab.root, current_editor)) |new_root| {
+            // If root changed, update it
+            const old_root = tab.root;
+            tab.root = new_root;
+            self.allocator.destroy(old_root);
+
+            // Find a new active editor
+            tab.active_editor = try self.findAnyEditor(tab.root) orelse return error.NoEditorsLeft;
+        } else {
+            // Root didn't change, find new active editor
+            tab.active_editor = try self.findAnyEditor(tab.root) orelse return error.NoEditorsLeft;
+        }
+    }
+
+    fn countEditors(self: *LayoutManager, node: *SplitNode) !usize {
+        switch (node.*) {
+            .leaf => return 1,
+            .vsplit => |vsplit| {
+                return try self.countEditors(vsplit.left) + try self.countEditors(vsplit.right);
+            },
+            .hsplit => |hsplit| {
+                return try self.countEditors(hsplit.top) + try self.countEditors(hsplit.bottom);
+            },
+        }
+    }
+
+    fn closeEditorAndCollapse(self: *LayoutManager, node: *SplitNode, target: *grim_editor_widget.GrimEditorWidget) !?*SplitNode {
+        switch (node.*) {
+            .leaf => |editor| {
+                if (editor == target) {
+                    // Clean up this editor
+                    editor.widget.vtable.deinit(&editor.widget);
+                    return null; // Signal that this node should be removed
+                }
+                return null;
+            },
+            .vsplit => |*vsplit| {
+                // Check if target is in left
+                if (try self.containsEditor(vsplit.left, target)) {
+                    if (try self.closeEditorAndCollapse(vsplit.left, target)) |_| {
+                        // Left was replaced, shouldn't happen at this level
+                    } else {
+                        // Left was removed, promote right
+                        const promoted = vsplit.right;
+                        vsplit.left.deinit(self.allocator);
+                        self.allocator.destroy(vsplit.left);
+                        return promoted;
+                    }
+                }
+
+                // Check if target is in right
+                if (try self.containsEditor(vsplit.right, target)) {
+                    if (try self.closeEditorAndCollapse(vsplit.right, target)) |_| {
+                        // Right was replaced
+                    } else {
+                        // Right was removed, promote left
+                        const promoted = vsplit.left;
+                        vsplit.right.deinit(self.allocator);
+                        self.allocator.destroy(vsplit.right);
+                        return promoted;
+                    }
+                }
+
+                return null;
+            },
+            .hsplit => |*hsplit| {
+                // Check if target is in top
+                if (try self.containsEditor(hsplit.top, target)) {
+                    if (try self.closeEditorAndCollapse(hsplit.top, target)) |_| {
+                        // Top was replaced
+                    } else {
+                        // Top was removed, promote bottom
+                        const promoted = hsplit.bottom;
+                        hsplit.top.deinit(self.allocator);
+                        self.allocator.destroy(hsplit.top);
+                        return promoted;
+                    }
+                }
+
+                // Check if target is in bottom
+                if (try self.containsEditor(hsplit.bottom, target)) {
+                    if (try self.closeEditorAndCollapse(hsplit.bottom, target)) |_| {
+                        // Bottom was replaced
+                    } else {
+                        // Bottom was removed, promote top
+                        const promoted = hsplit.top;
+                        hsplit.bottom.deinit(self.allocator);
+                        self.allocator.destroy(hsplit.bottom);
+                        return promoted;
+                    }
+                }
+
+                return null;
+            },
+        }
+    }
+
+    fn findAnyEditor(self: *LayoutManager, node: *SplitNode) !?*grim_editor_widget.GrimEditorWidget {
+        switch (node.*) {
+            .leaf => |editor| return editor,
+            .vsplit => |vsplit| {
+                if (try self.findAnyEditor(vsplit.left)) |ed| return ed;
+                return try self.findAnyEditor(vsplit.right);
+            },
+            .hsplit => |hsplit| {
+                if (try self.findAnyEditor(hsplit.top)) |ed| return ed;
+                return try self.findAnyEditor(hsplit.bottom);
+            },
+        }
+    }
+
+    pub fn closeOtherWindows(self: *LayoutManager) !void {
+        const tab = self.getActiveTab() orelse return;
+        const current_editor = tab.active_editor;
+
+        // Clean up old root (but not the current editor)
+        self.cleanupNodeExcept(tab.root, current_editor);
+
+        // Create new root with just current editor
+        const new_root = try self.allocator.create(SplitNode);
+        new_root.* = .{ .leaf = current_editor };
+
+        // Free old root structure (but not the editor itself)
+        const old_root = tab.root;
+        if (old_root != new_root) {
+            self.allocator.destroy(old_root);
+        }
+
+        tab.root = new_root;
+        tab.active_editor = current_editor;
+    }
+
+    fn cleanupNodeExcept(self: *LayoutManager, node: *SplitNode, keep: *grim_editor_widget.GrimEditorWidget) void {
+        switch (node.*) {
+            .leaf => |editor| {
+                if (editor != keep) {
+                    editor.widget.vtable.deinit(&editor.widget);
+                }
+            },
+            .vsplit => |vsplit| {
+                self.cleanupNodeExcept(vsplit.left, keep);
+                self.cleanupNodeExcept(vsplit.right, keep);
+                self.allocator.destroy(vsplit.left);
+                self.allocator.destroy(vsplit.right);
+            },
+            .hsplit => |hsplit| {
+                self.cleanupNodeExcept(hsplit.top, keep);
+                self.cleanupNodeExcept(hsplit.bottom, keep);
+                self.allocator.destroy(hsplit.top);
+                self.allocator.destroy(hsplit.bottom);
+            },
+        }
     }
 
     // === Split management ===

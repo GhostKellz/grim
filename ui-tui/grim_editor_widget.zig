@@ -51,6 +51,18 @@ pub const GrimEditorWidget = struct {
     show_line_numbers: bool,
     relative_line_numbers: bool,
 
+    // Search state
+    search_pattern: ?[]const u8,
+    search_matches: std.ArrayList(SearchMatch),
+    current_match_index: ?usize,
+
+    const SearchMatch = struct {
+        start_offset: usize,
+        end_offset: usize,
+        line: usize,
+        col: usize,
+    };
+
     const vtable = phantom.Widget.WidgetVTable{
         .render = render,
         .deinit = deinit,
@@ -91,6 +103,9 @@ pub const GrimEditorWidget = struct {
             .area = phantom.Rect.init(0, 0, 80, 24),
             .show_line_numbers = true,
             .relative_line_numbers = false,
+            .search_pattern = null,
+            .search_matches = std.ArrayList(SearchMatch){},
+            .current_match_index = null,
         };
 
         return self;
@@ -104,6 +119,8 @@ pub const GrimEditorWidget = struct {
         if (self.lsp_completion_menu) |m| m.deinit();
         if (self.lsp_client) |lsp| lsp.deinit();
         if (self.highlight_cache.len > 0) self.allocator.free(self.highlight_cache);
+        if (self.search_pattern) |pattern| self.allocator.free(pattern);
+        self.search_matches.deinit(self.allocator);
         self.editor.deinit();
         self.allocator.destroy(self.editor); // Free the Editor pointer itself!
         self.allocator.destroy(self);
@@ -664,5 +681,98 @@ pub const GrimEditorWidget = struct {
         }
 
         return offset;
+    }
+
+    // === Search functionality ===
+
+    pub fn search(self: *GrimEditorWidget, pattern: []const u8, forward: bool) !void {
+        // Free old pattern and matches
+        if (self.search_pattern) |old_pattern| {
+            self.allocator.free(old_pattern);
+        }
+        self.search_matches.clearRetainingCapacity();
+
+        // Store new pattern
+        self.search_pattern = try self.allocator.dupe(u8, pattern);
+
+        // Find all matches
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        var offset: usize = 0;
+        while (offset + pattern.len <= content.len) {
+            if (std.mem.eql(u8, content[offset .. offset + pattern.len], pattern)) {
+                // Found a match, convert offset to line/col
+                const line_col = self.offsetToLineCol(content, offset);
+                try self.search_matches.append(self.allocator, SearchMatch{
+                    .start_offset = offset,
+                    .end_offset = offset + pattern.len,
+                    .line = line_col.line,
+                    .col = line_col.col,
+                });
+                offset += pattern.len;
+            } else {
+                offset += 1;
+            }
+        }
+
+        // Jump to first match
+        if (self.search_matches.items.len > 0) {
+            self.current_match_index = 0;
+            try self.jumpToMatch(0, forward);
+        }
+    }
+
+    pub fn searchNext(self: *GrimEditorWidget) !void {
+        if (self.search_matches.items.len == 0) return;
+
+        const idx = self.current_match_index orelse 0;
+        const next = (idx + 1) % self.search_matches.items.len;
+        self.current_match_index = next;
+        try self.jumpToMatch(next, true);
+    }
+
+    pub fn searchPrev(self: *GrimEditorWidget) !void {
+        if (self.search_matches.items.len == 0) return;
+
+        const idx = self.current_match_index orelse 0;
+        const prev = if (idx == 0) self.search_matches.items.len - 1 else idx - 1;
+        self.current_match_index = prev;
+        try self.jumpToMatch(prev, false);
+    }
+
+    fn jumpToMatch(self: *GrimEditorWidget, index: usize, forward: bool) !void {
+        _ = forward;
+        if (index >= self.search_matches.items.len) return;
+
+        const match = self.search_matches.items[index];
+        // Move cursor to match location
+        self.editor.cursor.offset = match.start_offset;
+    }
+
+    fn offsetToLineCol(self: *GrimEditorWidget, content: []const u8, offset: usize) struct { line: usize, col: usize } {
+        _ = self;
+        var line: usize = 0;
+        var col: usize = 0;
+        var i: usize = 0;
+
+        while (i < offset and i < content.len) : (i += 1) {
+            if (content[i] == '\n') {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+
+        return .{ .line = line, .col = col };
+    }
+
+    pub fn clearSearch(self: *GrimEditorWidget) void {
+        if (self.search_pattern) |pattern| {
+            self.allocator.free(pattern);
+            self.search_pattern = null;
+        }
+        self.search_matches.clearRetainingCapacity();
+        self.current_match_index = null;
     }
 };

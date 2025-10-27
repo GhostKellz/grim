@@ -329,6 +329,16 @@ pub const GrimApp = struct {
                         return true;
                     },
 
+                    // Search navigation
+                    'n' => {
+                        try self.layout_manager.getActiveEditor().?.searchNext();
+                        return true;
+                    },
+                    'N' => {
+                        try self.layout_manager.getActiveEditor().?.searchPrev();
+                        return true;
+                    },
+
                     // Quit
                     'q' => {
                         // TODO: Handle unsaved buffers
@@ -494,32 +504,43 @@ pub const GrimApp = struct {
 
                     // Close window
                     'q' => {
-                        // TODO: Implement close window
-                        std.log.warn("Close window not yet implemented", .{});
+                        self.layout_manager.closeWindow() catch |err| {
+                            if (err == error.CannotCloseLastWindow) {
+                                // Just ignore, can't close last window
+                            } else {
+                                return err;
+                            }
+                        };
                         return true;
                     },
                     'o' => {
-                        // TODO: Close all other windows
-                        std.log.warn("Close other windows not yet implemented", .{});
+                        try self.layout_manager.closeOtherWindows();
                         return true;
                     },
 
                     // Equalize splits
                     '=' => {
-                        // TODO: Implement equalize
-                        std.log.warn("Equalize splits not yet implemented", .{});
+                        self.layout_manager.equalizeSplits();
                         return true;
                     },
 
-                    // Resize
+                    // Resize horizontal
                     '<' => {
-                        // TODO: Implement resize left
-                        std.log.warn("Resize not yet implemented", .{});
+                        try self.layout_manager.resizeSplit(.decrease);
                         return true;
                     },
                     '>' => {
-                        // TODO: Implement resize right
-                        std.log.warn("Resize not yet implemented", .{});
+                        try self.layout_manager.resizeSplit(.increase);
+                        return true;
+                    },
+
+                    // Resize vertical
+                    '+' => {
+                        try self.layout_manager.resizeSplit(.increase_vertical);
+                        return true;
+                    },
+                    '-' => {
+                        try self.layout_manager.resizeSplit(.decrease_vertical);
                         return true;
                     },
 

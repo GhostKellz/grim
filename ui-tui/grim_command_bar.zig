@@ -117,6 +117,11 @@ pub const CommandBar = struct {
                 try self.historyNext();
                 return true;
             },
+            .tab => {
+                // Tab completion
+                try self.tabComplete();
+                return true;
+            },
             .char => |c| {
                 try self.buffer.insert(self.allocator, self.cursor_pos, @intCast(c));
                 self.cursor_pos += 1;
@@ -124,6 +129,78 @@ pub const CommandBar = struct {
             },
             else => return false,
         }
+    }
+
+    fn tabComplete(self: *CommandBar) !void {
+        if (self.mode != .command) return;
+        if (self.buffer.items.len == 0) return;
+
+        const input = self.buffer.items;
+
+        // List of completable commands
+        const commands = [_][]const u8{
+            "quit",     "q",
+            "write",    "w",
+            "wq",
+            "split",    "sp",
+            "vsplit",   "vsp",
+            "tabnew",
+            "tabn",     "tabnext",
+            "tabp",     "tabprev",
+            "tabc",     "tabclose",
+            "edit",     "e",
+            "bnext",    "bn",
+            "bprev",    "bp",
+            "bdelete",  "bd",
+            "buffers",  "ls",
+            "LspDiagnostics",
+            "lspdiag",
+        };
+
+        // Find matches
+        var matches = std.ArrayList([]const u8){};
+        defer matches.deinit(self.allocator);
+
+        for (commands) |cmd| {
+            if (std.mem.startsWith(u8, cmd, input)) {
+                try matches.append(self.allocator, cmd);
+            }
+        }
+
+        if (matches.items.len == 1) {
+            // Single match, complete it
+            self.buffer.clearRetainingCapacity();
+            try self.buffer.appendSlice(self.allocator, matches.items[0]);
+            self.cursor_pos = self.buffer.items.len;
+        } else if (matches.items.len > 1) {
+            // Multiple matches, complete to longest common prefix
+            const common = longestCommonPrefix(matches.items);
+            if (common.len > input.len) {
+                self.buffer.clearRetainingCapacity();
+                try self.buffer.appendSlice(self.allocator, common);
+                self.cursor_pos = self.buffer.items.len;
+            }
+        }
+    }
+
+    fn longestCommonPrefix(strings: []const []const u8) []const u8 {
+        if (strings.len == 0) return "";
+        if (strings.len == 1) return strings[0];
+
+        var prefix_len: usize = 0;
+        const first = strings[0];
+
+        outer: while (prefix_len < first.len) {
+            const ch = first[prefix_len];
+            for (strings[1..]) |str| {
+                if (prefix_len >= str.len or str[prefix_len] != ch) {
+                    break :outer;
+                }
+            }
+            prefix_len += 1;
+        }
+
+        return first[0..prefix_len];
     }
 
     fn execute(self: *CommandBar, app: anytype) !void {
@@ -139,9 +216,17 @@ pub const CommandBar = struct {
                 .command => {
                     try app.executeCommand(command);
                 },
-                .search, .search_backward => {
-                    // TODO: Implement search
-                    std.log.warn("Search not yet implemented: {s}", .{command});
+                .search => {
+                    // Forward search
+                    if (app.layout_manager.getActiveEditor()) |editor| {
+                        try editor.search(command, true);
+                    }
+                },
+                .search_backward => {
+                    // Backward search
+                    if (app.layout_manager.getActiveEditor()) |editor| {
+                        try editor.search(command, false);
+                    }
                 },
             }
         }
