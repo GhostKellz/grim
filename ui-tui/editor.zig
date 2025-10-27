@@ -27,6 +27,20 @@ pub const Editor = struct {
     // Search state
     search_pattern: ?[]u8,
     last_search_forward: bool,
+    // Undo/redo system
+    undo_stack: std.ArrayList(UndoEntry),
+    redo_stack: std.ArrayList(UndoEntry),
+    in_undo_group: bool, // Track if we're in a multi-change group
+
+    pub const UndoEntry = struct {
+        content: []const u8, // Full content snapshot
+        cursor_offset: usize,
+        allocator: std.mem.Allocator,
+
+        pub fn deinit(self: *UndoEntry) void {
+            self.allocator.free(self.content);
+        }
+    };
 
     pub const Mode = enum {
         normal,
@@ -149,6 +163,9 @@ pub const Editor = struct {
             .yank_linewise = false,
             .search_pattern = null,
             .last_search_forward = true,
+            .undo_stack = std.ArrayList(UndoEntry){},
+            .redo_stack = std.ArrayList(UndoEntry){},
+            .in_undo_group = false,
         };
     }
 
@@ -170,6 +187,15 @@ pub const Editor = struct {
         if (self.search_pattern) |pattern| {
             self.allocator.free(pattern);
         }
+        // Free undo/redo stacks
+        for (self.undo_stack.items) |*entry| {
+            entry.deinit();
+        }
+        self.undo_stack.deinit(self.allocator);
+        for (self.redo_stack.items) |*entry| {
+            entry.deinit();
+        }
+        self.redo_stack.deinit(self.allocator);
         self.cursors.deinit(self.allocator);
         self.* = undefined;
     }
@@ -1061,6 +1087,89 @@ pub const Editor = struct {
             return self.cursors.items;
         }
         return &.{};
+    }
+
+    // === Undo/Redo System ===
+
+    /// Save current state to undo stack (call before making changes)
+    pub fn saveUndoState(self: *Editor) !void {
+        // Get current content
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        const owned_content = try self.allocator.dupe(u8, content);
+
+        const entry = UndoEntry{
+            .content = owned_content,
+            .cursor_offset = self.cursor.offset,
+            .allocator = self.allocator,
+        };
+
+        try self.undo_stack.append(self.allocator, entry);
+
+        // Clear redo stack when new change is made
+        for (self.redo_stack.items) |*redo_entry| {
+            redo_entry.deinit();
+        }
+        self.redo_stack.clearRetainingCapacity();
+
+        // Limit undo stack size to 100 entries
+        if (self.undo_stack.items.len > 100) {
+            var old_entry = self.undo_stack.orderedRemove(0);
+            old_entry.deinit();
+        }
+    }
+
+    /// Undo last change
+    pub fn undo(self: *Editor) !void {
+        if (self.undo_stack.items.len == 0) return;
+
+        // Save current state to redo stack
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        const owned_content = try self.allocator.dupe(u8, content);
+        const redo_entry = UndoEntry{
+            .content = owned_content,
+            .cursor_offset = self.cursor.offset,
+            .allocator = self.allocator,
+        };
+        try self.redo_stack.append(self.allocator, redo_entry);
+
+        // Restore previous state
+        var entry = self.undo_stack.pop() orelse return;
+        defer entry.deinit();
+
+        // Replace rope content
+        const rope_len = self.rope.len();
+        if (rope_len > 0) {
+            try self.rope.delete(0, rope_len);
+        }
+        try self.rope.insert(0, entry.content);
+        self.cursor.offset = entry.cursor_offset;
+    }
+
+    /// Redo last undone change
+    pub fn redo(self: *Editor) !void {
+        if (self.redo_stack.items.len == 0) return;
+
+        // Save current state to undo stack
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+        const owned_content = try self.allocator.dupe(u8, content);
+        const undo_entry = UndoEntry{
+            .content = owned_content,
+            .cursor_offset = self.cursor.offset,
+            .allocator = self.allocator,
+        };
+        try self.undo_stack.append(self.allocator, undo_entry);
+
+        // Restore redo state
+        var entry = self.redo_stack.pop() orelse return;
+        defer entry.deinit();
+
+        // Replace rope content
+        const rope_len = self.rope.len();
+        if (rope_len > 0) {
+            try self.rope.delete(0, rope_len);
+        }
+        try self.rope.insert(0, entry.content);
+        self.cursor.offset = entry.cursor_offset;
     }
 };
 

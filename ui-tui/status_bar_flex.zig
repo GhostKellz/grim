@@ -1,7 +1,7 @@
 const std = @import("std");
 const phantom = @import("phantom");
 const Editor = @import("editor.zig").Editor;
-const GrimMode = @import("app.zig").Mode;
+const GrimEditorWidget = @import("grim_editor_widget.zig").GrimEditorWidget;
 
 pub const StatusBar = struct {
     flex_row: *phantom.widgets.FlexRow,
@@ -36,19 +36,16 @@ pub const StatusBar = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn update(self: *StatusBar, editor: *Editor) !void {
+    pub fn update(self: *StatusBar, editor_widget: *GrimEditorWidget, grim_mode: anytype) !void {
         // Clean up old widgets before creating new ones
         for (self.flex_row.children.items) |child| {
             child.widget.vtable.deinit(child.widget);
         }
         self.flex_row.children.clearRetainingCapacity();
 
-        // Left section: Mode indicator (fixed width) - convert Editor.Mode to GrimMode
-        const grim_mode: GrimMode = switch (editor.mode) {
-            .normal => .normal,
-            .insert => .insert,
-            else => .normal,
-        };
+        const editor = editor_widget.editor;
+
+        // Left section: Mode indicator (fixed width)
         const mode_text = try self.modeText(grim_mode);
         const mode_widget = try phantom.widgets.Text.initWithStyle(
             self.allocator,
@@ -56,6 +53,26 @@ pub const StatusBar = struct {
             self.modeStyle(grim_mode),
         );
         try self.flex_row.addChild(.{ .widget = &mode_widget.widget, .flex_basis =10 });
+
+        // Recording indicator
+        if (editor_widget.isRecording()) {
+            const recording_register = editor_widget.recording_macro.?;
+            const rec_text = try std.fmt.allocPrint(
+                self.allocator,
+                " REC[{c}] ",
+                .{recording_register},
+            );
+            defer self.allocator.free(rec_text);
+            const rec_widget = try phantom.widgets.Text.initWithStyle(
+                self.allocator,
+                rec_text,
+                phantom.Style.default()
+                    .withFg(phantom.Color.black)
+                    .withBg(phantom.Color.red)
+                    .withBold(),
+            );
+            try self.flex_row.addChild(.{ .widget = &rec_widget.widget, .flex_basis =@intCast(rec_text.len) });
+        }
 
         // File modification indicator
         const modified = false; // TODO: Track modification state
@@ -147,25 +164,46 @@ pub const StatusBar = struct {
         self.flex_row.widget.vtable.render(&self.flex_row.widget, buffer, area);
     }
 
-    fn modeText(self: *StatusBar, mode: GrimMode) ![]const u8 {
+    fn modeText(self: *StatusBar, mode: anytype) ![]const u8 {
         _ = self;
-        return switch (mode) {
-            .normal => " NORMAL ",
-            .insert => " INSERT ",
-        };
+        // Handle both simple and extended mode enums
+        const mode_name = @tagName(mode);
+        if (std.mem.eql(u8, mode_name, "normal")) return " NORMAL ";
+        if (std.mem.eql(u8, mode_name, "insert")) return " INSERT ";
+        if (std.mem.eql(u8, mode_name, "visual")) return " VISUAL ";
+        if (std.mem.eql(u8, mode_name, "visual_line")) return " V-LINE ";
+        if (std.mem.eql(u8, mode_name, "visual_block")) return " V-BLOCK ";
+        if (std.mem.eql(u8, mode_name, "command")) return " COMMAND ";
+        return " NORMAL ";
     }
 
-    fn modeStyle(self: *StatusBar, mode: GrimMode) phantom.Style {
+    fn modeStyle(self: *StatusBar, mode: anytype) phantom.Style {
         _ = self;
-        return switch (mode) {
-            .normal => phantom.Style.default()
-                .withFg(phantom.Color.black)
-                .withBg(phantom.Color.blue)
-                .withBold(),
-            .insert => phantom.Style.default()
+        const mode_name = @tagName(mode);
+        if (std.mem.eql(u8, mode_name, "insert")) {
+            return phantom.Style.default()
                 .withFg(phantom.Color.black)
                 .withBg(phantom.Color.green)
-                .withBold(),
-        };
+                .withBold();
+        }
+        if (std.mem.eql(u8, mode_name, "visual") or
+            std.mem.eql(u8, mode_name, "visual_line") or
+            std.mem.eql(u8, mode_name, "visual_block")) {
+            return phantom.Style.default()
+                .withFg(phantom.Color.black)
+                .withBg(phantom.Color.magenta)
+                .withBold();
+        }
+        if (std.mem.eql(u8, mode_name, "command")) {
+            return phantom.Style.default()
+                .withFg(phantom.Color.black)
+                .withBg(phantom.Color.yellow)
+                .withBold();
+        }
+        // Default: normal mode
+        return phantom.Style.default()
+            .withFg(phantom.Color.black)
+            .withBg(phantom.Color.blue)
+            .withBold();
     }
 };

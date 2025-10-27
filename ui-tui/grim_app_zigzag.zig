@@ -363,7 +363,7 @@ pub const GrimAppZigZag = struct {
 
         // Update and render status bar
         if (self.layout_manager.getActiveEditor()) |active_editor| {
-            try self.status_bar.update(active_editor.editor);
+            try self.status_bar.update(active_editor, self.mode);
         }
         const status_area = phantom.Rect.init(0, term_size.height - 2, term_size.width, 1);
         self.status_bar.render(buffer, status_area);

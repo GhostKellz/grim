@@ -69,6 +69,10 @@ pub const GrimApp = struct {
     waiting_for_window_command: bool,
     pending_operator: u8, // For vim operator pending (yy, dd, etc)
 
+    // Macro replay state
+    macro_replay_buffer: ?[]const phantom.Key,
+    macro_replay_index: usize,
+
     // Plugin system
     plugin_manager: ?*runtime.PluginManager,
     editor_context: ?*runtime.PluginAPI.EditorContext,
@@ -153,6 +157,8 @@ pub const GrimApp = struct {
             .running = true,
             .waiting_for_window_command = false,
             .pending_operator = 0,
+            .macro_replay_buffer = null,
+            .macro_replay_index = 0,
             .plugin_manager = null,
             .editor_context = null,
             .plugin_cursor = null,
@@ -240,6 +246,28 @@ pub const GrimApp = struct {
             return try self.command_bar.handleKey(key, self);
         }
 
+        // Process the actual key
+        const handled = try self.processKey(key);
+
+        // If we're replaying a macro, inject the next key
+        if (self.macro_replay_buffer) |replay_keys| {
+            if (self.macro_replay_index < replay_keys.len) {
+                const next_key = replay_keys[self.macro_replay_index];
+                self.macro_replay_index += 1;
+
+                // Recursively process the macro key
+                _ = try self.processKey(next_key);
+            } else {
+                // Macro replay finished
+                self.macro_replay_buffer = null;
+                self.macro_replay_index = 0;
+            }
+        }
+
+        return handled;
+    }
+
+    fn processKey(self: *GrimApp, key: phantom.Key) !bool {
         // Route to mode-specific handler
         switch (self.mode) {
             .normal => return try self.handleNormalMode(key),
@@ -356,6 +384,12 @@ pub const GrimApp = struct {
                         return true;
                     },
 
+                    // Undo
+                    'u' => {
+                        try self.layout_manager.getActiveEditor().?.undo();
+                        return true;
+                    },
+
                     // Yank line (yy is handled as two 'y' presses)
                     'y' => {
                         // Enter pending operator mode for yy
@@ -414,7 +448,11 @@ pub const GrimApp = struct {
                         } else if (self.pending_operator == '@') {
                             // Replay macro from register
                             if (editor) |ed| {
-                                try ed.replayMacro(@intCast(c));
+                                const macro_keys = try ed.replayMacro(@intCast(c));
+                                if (macro_keys) |keys| {
+                                    self.macro_replay_buffer = keys;
+                                    self.macro_replay_index = 0;
+                                }
                             }
                             self.pending_operator = 0;
                             return true;
@@ -446,6 +484,11 @@ pub const GrimApp = struct {
                 self.waiting_for_window_command = true;
                 return true;
             },
+            .ctrl_r => {
+                // Redo
+                try self.layout_manager.getActiveEditor().?.redo();
+                return true;
+            },
             else => return false,
         }
     }
@@ -456,6 +499,8 @@ pub const GrimApp = struct {
         switch (key) {
             .escape => {
                 self.mode = .normal;
+                // End undo grouping when leaving insert mode
+                editor.endUndoGroup();
                 return true;
             },
             .char => |c| {
@@ -713,7 +758,7 @@ pub const GrimApp = struct {
 
         // Update and render status bar
         if (self.layout_manager.getActiveEditor()) |active_editor| {
-            try self.status_bar.update(active_editor.editor);
+            try self.status_bar.update(active_editor, self.mode);
         }
         self.status_bar.render(buffer, status_bar_area);
 
@@ -778,10 +823,42 @@ pub const GrimApp = struct {
             for (buffers, 0..) |buffer, i| {
                 std.log.info("  [{d}] {s}", .{ i + 1, buffer.name });
             }
+        } else if (std.mem.startsWith(u8, command, "%s/") or std.mem.startsWith(u8, command, "s/")) {
+            // Substitute command: :%s/pattern/replacement/flags or :s/pattern/replacement/flags
+            try self.handleSubstitute(command);
         } else {
             // Unknown command
             std.log.warn("Unknown command: {s}", .{command});
         }
+    }
+
+    fn handleSubstitute(self: *GrimApp, command: []const u8) !void {
+        const editor = self.layout_manager.getActiveEditor() orelse return error.NoActiveEditor;
+
+        // Parse the substitute command
+        // Format: %s/pattern/replacement/flags or s/pattern/replacement/flags
+        const cmd_start = if (std.mem.startsWith(u8, command, "%s/")) @as(usize, 3) else @as(usize, 2);
+        const rest = command[cmd_start..];
+
+        // Find pattern (between first and second /)
+        const first_slash = std.mem.indexOfScalar(u8, rest, '/') orelse return error.InvalidSubstituteFormat;
+        const pattern = rest[0..first_slash];
+
+        // Find replacement (between second and third /)
+        const after_pattern = rest[first_slash + 1 ..];
+        const second_slash = std.mem.indexOfScalar(u8, after_pattern, '/') orelse return error.InvalidSubstituteFormat;
+        const replacement = after_pattern[0..second_slash];
+
+        // Get flags (after third /)
+        const flags = after_pattern[second_slash + 1 ..];
+        const global = std.mem.indexOfScalar(u8, flags, 'g') != null;
+        const confirm = std.mem.indexOfScalar(u8, flags, 'c') != null;
+
+        // Determine if it's global (entire file) or current line
+        const is_global_range = std.mem.startsWith(u8, command, "%s/");
+
+        // Perform the substitution
+        try editor.substitute(pattern, replacement, is_global_range, global, confirm);
     }
 
     fn openFile(self: *GrimApp, filepath: []const u8) !void {

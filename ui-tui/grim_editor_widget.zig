@@ -189,6 +189,13 @@ pub const GrimEditorWidget = struct {
     }
 
     fn renderEditorContent(self: *GrimEditorWidget, buffer: anytype, area: phantom.Rect) !void {
+        // Update syntax highlighting if dirty
+        if (self.highlight_dirty) {
+            self.updateHighlighting() catch |err| {
+                std.log.warn("Failed to update syntax highlighting: {}", .{err});
+            };
+        }
+
         // Ensure cursor is in viewport
         self.scrollToCursor();
 
@@ -510,8 +517,35 @@ pub const GrimEditorWidget = struct {
         self.viewport_top_line = 0;
         self.viewport_left_col = 0;
 
+        // Detect language and trigger syntax highlighting
+        try self.activateSyntaxHighlighting(filepath);
+
         // Initialize LSP if needed
-        // TODO: Detect language and start LSP client
+        // TODO: Start LSP client for detected language
+    }
+
+    fn activateSyntaxHighlighting(self: *GrimEditorWidget, filepath: []const u8) !void {
+        // Set the language based on file extension
+        try self.editor.highlighter.setLanguage(filepath);
+
+        // Initial highlighting
+        try self.updateHighlighting();
+    }
+
+    fn updateHighlighting(self: *GrimEditorWidget) !void {
+        // Get highlights from the highlighter
+        const highlights = try self.editor.highlighter.highlight(&self.editor.rope);
+        defer self.allocator.free(highlights);
+
+        // Convert highlights to ranges for rendering
+        const ranges = try syntax.convertHighlightsToRanges(self.allocator, highlights, &self.editor.rope);
+
+        // Free old cache and store new ranges
+        if (self.highlight_cache.len > 0) {
+            self.allocator.free(self.highlight_cache);
+        }
+        self.highlight_cache = ranges;
+        self.highlight_dirty = false;
     }
 
     pub fn saveFile(self: *GrimEditorWidget) !void {
@@ -526,11 +560,17 @@ pub const GrimEditorWidget = struct {
     }
 
     pub fn insertChar(self: *GrimEditorWidget, c: u21) !void {
+        // Save undo state for first char of insert sequence
+        if (!self.editor.in_undo_group) {
+            try self.editor.saveUndoState();
+            self.editor.in_undo_group = true;
+        }
         try self.editor.insertChar(c);
         self.highlight_dirty = true;
     }
 
     pub fn insertNewline(self: *GrimEditorWidget) !void {
+        try self.editor.saveUndoState();
         try self.editor.rope.insert(self.editor.cursor.offset, "\n");
         self.editor.cursor.offset += 1;
         self.highlight_dirty = true;
@@ -546,6 +586,7 @@ pub const GrimEditorWidget = struct {
 
     pub fn deleteCharBackward(self: *GrimEditorWidget) !void {
         if (self.editor.cursor.offset > 0) {
+            try self.editor.saveUndoState();
             const prev_offset = self.editor.cursor.offset - 1;
             try self.editor.rope.delete(prev_offset, 1);
             self.editor.cursor.offset = prev_offset;
@@ -555,6 +596,7 @@ pub const GrimEditorWidget = struct {
 
     pub fn deleteCharForward(self: *GrimEditorWidget) !void {
         if (self.editor.cursor.offset < self.editor.rope.len()) {
+            try self.editor.saveUndoState();
             try self.editor.rope.delete(self.editor.cursor.offset, 1);
         }
         self.highlight_dirty = true;
@@ -644,6 +686,9 @@ pub const GrimEditorWidget = struct {
         const end = range.end;
 
         if (start >= end) return;
+
+        // Save undo state before deletion
+        try self.editor.saveUndoState();
 
         // Delete the selected range
         try self.editor.rope.delete(start, end - start);
@@ -943,6 +988,121 @@ pub const GrimEditorWidget = struct {
         self.current_match_index = null;
     }
 
+    /// Perform search and replace operation
+    /// pattern: the text to search for
+    /// replacement: the text to replace with
+    /// global_range: if true, replace in entire file; if false, replace only on current line
+    /// global_flag: if true, replace all occurrences on each line; if false, replace only first occurrence
+    /// confirm: if true, ask for confirmation (not implemented yet)
+    pub fn substitute(
+        self: *GrimEditorWidget,
+        pattern: []const u8,
+        replacement: []const u8,
+        global_range: bool,
+        global_flag: bool,
+        confirm: bool,
+    ) !void {
+        _ = confirm; // TODO: Implement confirmation
+
+        if (pattern.len == 0) return;
+
+        // Save undo state before making changes
+        try self.editor.saveUndoState();
+
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        const cursor_offset = self.editor.cursor.offset;
+
+        var replace_count: usize = 0;
+        var offset_adjustment: isize = 0;
+
+        if (global_range) {
+            // Replace in entire file
+            var search_offset: usize = 0;
+            while (search_offset < content.len) {
+                const remaining = content[search_offset..];
+                if (std.mem.indexOf(u8, remaining, pattern)) |match_pos| {
+                    const absolute_pos = search_offset + match_pos;
+                    const adjusted_pos = @as(usize, @intCast(@as(isize, @intCast(absolute_pos)) + offset_adjustment));
+
+                    // Delete the pattern
+                    try self.editor.rope.delete(adjusted_pos, pattern.len);
+                    // Insert the replacement
+                    try self.editor.rope.insert(adjusted_pos, replacement);
+
+                    // Track offset adjustment
+                    offset_adjustment += @as(isize, @intCast(replacement.len)) - @as(isize, @intCast(pattern.len));
+                    replace_count += 1;
+
+                    // Move search position forward
+                    if (global_flag) {
+                        search_offset = absolute_pos + pattern.len;
+                    } else {
+                        // Skip to next line
+                        const newline_pos = std.mem.indexOfScalar(u8, remaining[match_pos..], '\n');
+                        search_offset = if (newline_pos) |pos|
+                            absolute_pos + pos + 1
+                        else
+                            content.len;
+                    }
+                } else {
+                    break;
+                }
+            }
+        } else {
+            // Replace only on current line
+            const line_start = blk: {
+                var pos = cursor_offset;
+                while (pos > 0 and content[pos - 1] != '\n') {
+                    pos -= 1;
+                }
+                break :blk pos;
+            };
+
+            const line_end = blk: {
+                var pos = cursor_offset;
+                while (pos < content.len and content[pos] != '\n') {
+                    pos += 1;
+                }
+                break :blk pos;
+            };
+
+            const line = content[line_start..line_end];
+            var search_offset: usize = 0;
+
+            while (search_offset < line.len) {
+                if (std.mem.indexOf(u8, line[search_offset..], pattern)) |match_pos| {
+                    const absolute_pos = line_start + search_offset + match_pos;
+                    const adjusted_pos = @as(usize, @intCast(@as(isize, @intCast(absolute_pos)) + offset_adjustment));
+
+                    // Delete the pattern
+                    try self.editor.rope.delete(adjusted_pos, pattern.len);
+                    // Insert the replacement
+                    try self.editor.rope.insert(adjusted_pos, replacement);
+
+                    // Track offset adjustment
+                    offset_adjustment += @as(isize, @intCast(replacement.len)) - @as(isize, @intCast(pattern.len));
+                    replace_count += 1;
+
+                    if (global_flag) {
+                        search_offset = search_offset + match_pos + pattern.len;
+                    } else {
+                        break; // Only replace first occurrence
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+
+        // Update cursor position if it was affected
+        const new_cursor_offset = @as(usize, @intCast(@as(isize, @intCast(cursor_offset)) + offset_adjustment));
+        self.editor.cursor.offset = @min(new_cursor_offset, self.editor.rope.len());
+
+        self.highlight_dirty = true;
+
+        std.log.info("Replaced {d} occurrence(s)", .{replace_count});
+    }
+
     fn highlightStyleFromType(self: *GrimEditorWidget, hl_type: syntax.HighlightType) phantom.Style {
         _ = self;
         return switch (hl_type) {
@@ -999,6 +1159,7 @@ pub const GrimEditorWidget = struct {
     /// Paste from register at cursor
     pub fn paste(self: *GrimEditorWidget, register: ?u8) !void {
         const text = self.getRegister(register) orelse return;
+        try self.editor.saveUndoState();
         try self.editor.rope.insert(self.editor.cursor.offset, text);
         self.editor.cursor.offset += text.len;
         self.highlight_dirty = true;
@@ -1047,6 +1208,9 @@ pub const GrimEditorWidget = struct {
         const line_text = content[line_start..line_end];
         try self.setRegister(register, line_text);
 
+        // Save undo state before deletion
+        try self.editor.saveUndoState();
+
         // Delete the line
         try self.editor.rope.delete(line_start, line_end - line_start);
         self.editor.cursor.offset = line_start;
@@ -1089,6 +1253,25 @@ pub const GrimEditorWidget = struct {
         _ = try child.wait();
     }
 
+    // === Undo/Redo operations ===
+
+    /// Undo last change
+    pub fn undo(self: *GrimEditorWidget) !void {
+        try self.editor.undo();
+        self.highlight_dirty = true;
+    }
+
+    /// Redo last undone change
+    pub fn redo(self: *GrimEditorWidget) !void {
+        try self.editor.redo();
+        self.highlight_dirty = true;
+    }
+
+    /// End undo grouping (call when leaving insert mode)
+    pub fn endUndoGroup(self: *GrimEditorWidget) void {
+        self.editor.in_undo_group = false;
+    }
+
     // === Macro operations ===
 
     /// Start recording macro to register (a-z)
@@ -1127,14 +1310,16 @@ pub const GrimEditorWidget = struct {
     }
 
     /// Replay macro from register (a-z)
-    pub fn replayMacro(self: *GrimEditorWidget, register: u8) !void {
+    /// Returns the list of keys to replay (caller is responsible for injecting them)
+    pub fn replayMacro(self: *GrimEditorWidget, register: u8) !?[]const phantom.Key {
         const key = [_]u8{register};
-        const macro = self.macros.get(&key) orelse return;
+        const macro = self.macros.get(&key) orelse {
+            std.log.warn("No macro recorded in register '{c}'", .{register});
+            return null;
+        };
 
-        // TODO: Implement macro replay by processing recorded keys
-        // This requires access to the app's event handling system
-        _ = macro;
-        std.log.info("Macro replay for register '{c}' not yet fully implemented", .{register});
+        std.log.info("Replaying macro '{c}' ({d} keys)", .{ register, macro.len });
+        return macro;
     }
 
     /// Check if currently recording

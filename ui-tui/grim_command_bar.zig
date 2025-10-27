@@ -155,6 +155,7 @@ pub const CommandBar = struct {
             "buffers",  "ls",
             "LspDiagnostics",
             "lspdiag",
+            "%s/",      "s/",
         };
 
         // Find matches
