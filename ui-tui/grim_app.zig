@@ -17,6 +17,7 @@ const grim_editor_widget = @import("grim_editor_widget.zig");
 const grim_layout = @import("grim_layout.zig");
 const grim_command_bar = @import("grim_command_bar.zig");
 const powerline_status = @import("powerline_status.zig");
+const tab_bar = @import("tab_bar.zig");
 
 // LSP widgets
 const lsp_completion_menu = @import("lsp_completion_menu.zig");
@@ -62,6 +63,7 @@ pub const GrimApp = struct {
     layout_manager: *grim_layout.LayoutManager,
     command_bar: *grim_command_bar.CommandBar,
     status_bar: *powerline_status.PowerlineStatus,
+    tab_bar: tab_bar.TabBar,
 
     // State
     mode: Mode,
@@ -153,6 +155,7 @@ pub const GrimApp = struct {
             .layout_manager = layout_manager,
             .command_bar = command_bar,
             .status_bar = status_bar,
+            .tab_bar = tab_bar.TabBar.init(layout_manager),
             .mode = .normal,
             .running = true,
             .waiting_for_window_command = false,
@@ -843,12 +846,22 @@ pub const GrimApp = struct {
         // Calculate layout areas
         const term_size = self.phantom_app.terminal.size;
 
-        // Editor area (everything except bottom 2 lines)
-        const editor_area = phantom.Rect{
+        // Tab bar area (top line if multiple tabs exist)
+        const has_multiple_tabs = self.layout_manager.tabs.items.len > 1;
+        const tab_bar_height: u16 = if (has_multiple_tabs) 1 else 0;
+        const tab_bar_area = phantom.Rect{
             .x = 0,
             .y = 0,
             .width = term_size.width,
-            .height = if (term_size.height > 2) term_size.height - 2 else 0,
+            .height = tab_bar_height,
+        };
+
+        // Editor area (below tab bar, above status line)
+        const editor_area = phantom.Rect{
+            .x = 0,
+            .y = tab_bar_height,
+            .width = term_size.width,
+            .height = if (term_size.height > (2 + tab_bar_height)) term_size.height - 2 - tab_bar_height else 0,
         };
 
         // Command bar area (bottom line if in command/search mode)
@@ -866,6 +879,12 @@ pub const GrimApp = struct {
             .width = term_size.width,
             .height = 1,
         };
+
+        // Render tab bar if multiple tabs
+        if (has_multiple_tabs) {
+            var tab_bar_widget = &self.tab_bar;
+            tab_bar_widget.render(buffer, tab_bar_area);
+        }
 
         // Render layout manager (handles all editor windows/splits/tabs)
         self.layout_manager.render(buffer, editor_area);

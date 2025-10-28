@@ -314,6 +314,9 @@ pub const LayoutManager = struct {
         const tab = self.getActiveTab() orelse return false;
         if (tab.root.getEditorAt(area, mouse.position.x, mouse.position.y)) |editor| {
             tab.active_editor = editor;
+
+            // Handle mouse actions on the editor
+            try editor.handleMouseEvent(mouse, area);
             return true;
         }
         return false;

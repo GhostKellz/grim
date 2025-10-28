@@ -1602,6 +1602,81 @@ pub const GrimEditorWidget = struct {
         return self.recording_macro != null;
     }
 
+    // === Mouse handling ===
+
+    const MouseEvent = @typeInfo(phantom.Event).@"union".fields[1].type;
+
+    /// Handle mouse events (click, scroll, drag)
+    pub fn handleMouseEvent(self: *GrimEditorWidget, mouse: MouseEvent, area: phantom.Rect) !void {
+        // Handle scroll wheel
+        if (mouse.button == .wheel_up) {
+            // Scroll up 3 lines
+            if (self.viewport_top_line >= 3) {
+                self.viewport_top_line -= 3;
+            } else {
+                self.viewport_top_line = 0;
+            }
+            return;
+        } else if (mouse.button == .wheel_down) {
+            // Scroll down 3 lines
+            const content = self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() }) catch return;
+            var total_lines: usize = 1;
+            for (content) |ch| {
+                if (ch == '\n') total_lines += 1;
+            }
+            if (self.viewport_top_line + 3 < total_lines) {
+                self.viewport_top_line += 3;
+            }
+            return;
+        }
+
+        // Handle left/right click
+        if (mouse.pressed) {
+            // Press event
+            if (mouse.button == .left) {
+                // Left click - position cursor
+                try self.handleMouseClick(mouse.position.x, mouse.position.y, area);
+            }
+        }
+        // TODO: Handle drag for visual selection when phantom supports it
+    }
+
+    /// Convert mouse click coordinates to buffer offset and position cursor
+    fn handleMouseClick(self: *GrimEditorWidget, x: u16, y: u16, area: phantom.Rect) !void {
+        // Calculate which line was clicked (accounting for viewport)
+        const clicked_line = self.viewport_top_line + y;
+
+        // Get line range
+        const line_range = self.editor.rope.lineRange(clicked_line) catch return;
+
+        // Find column position (accounting for line numbers + gutter)
+        const content_start_x: usize = 6; // Line number width
+        if (x < content_start_x) {
+            // Clicked in gutter - go to line start
+            self.editor.cursor.offset = line_range.start;
+            return;
+        }
+
+        const col_clicked = if (x >= content_start_x) x - content_start_x else 0;
+
+        // Get line content
+        const line_content = self.editor.rope.slice(line_range) catch return;
+
+        // Walk through line content to find byte offset at clicked column
+        var col: usize = 0;
+        var offset = line_range.start;
+        var iter = (try std.unicode.Utf8View.init(line_content)).iterator();
+
+        while (iter.nextCodepoint()) |_| {
+            if (col >= col_clicked) break;
+            col += 1;
+            offset = line_range.start + iter.i;
+        }
+
+        self.editor.cursor.offset = offset;
+        _ = area;
+    }
+
     /// Attach LSP client to this editor widget
     pub fn attachLSP(self: *GrimEditorWidget, lsp_client: *editor_lsp_mod.EditorLSP) void {
         self.lsp_client = lsp_client;

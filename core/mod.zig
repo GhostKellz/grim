@@ -13,6 +13,8 @@ pub const ansi = @import("ansi.zig");
 pub const platform = @import("platform.zig");
 pub const tmux = @import("tmux.zig");
 pub const undo = @import("undo.zig");
+pub const simd_utf8 = @import("simd_utf8.zig");
+pub const io_uring_file = @import("io_uring_file.zig");
 
 pub const Rope = rope.Rope;
 pub const Range = rope.Range;
@@ -36,3 +38,4 @@ pub const ScreenBuffer = ansi.ScreenBuffer;
 pub const PlatformCapabilities = platform.PlatformCapabilities;
 pub const TmuxIntegration = tmux.TmuxIntegration;
 pub const UndoStack = undo.UndoStack;
+pub const IoUringFileManager = io_uring_file.IoUringFileManager;
