@@ -638,6 +638,10 @@ pub const EditorLSP = struct {
         return self.hover_info;
     }
 
+    pub fn isLoading(self: *EditorLSP) bool {
+        return self.pending_completion != null or self.pending_definition != null;
+    }
+
     pub fn takeDefinitionResult(self: *EditorLSP) ?DefinitionResult {
         if (self.pending_definition) |result| {
             self.pending_definition = null;

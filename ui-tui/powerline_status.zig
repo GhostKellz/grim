@@ -18,6 +18,7 @@ const ICON_LOCK = "";
 const ICON_MODIFIED = "";
 const ICON_READONLY = "";
 const ICON_RECORDING = "";
+const ICON_LSP_LOADING = "󰔟"; // LSP loading spinner icon
 
 pub const PowerlineStatus = struct {
     allocator: std.mem.Allocator,
@@ -54,12 +55,19 @@ pub const PowerlineStatus = struct {
             try self.renderRecordingSegment(editor_widget.recording_macro.?);
         }
 
-        // Segment 3: Modified indicator
+        // Segment 3: LSP Loading indicator
+        if (editor_widget.lsp_client) |lsp| {
+            if (lsp.isLoading()) {
+                try self.renderLSPLoadingSegment();
+            }
+        }
+
+        // Segment 4: Modified indicator
         if (editor_widget.is_modified) {
             try self.renderModifiedSegment();
         }
 
-        // Segment 4: File path
+        // Segment 5: File path
         const filename = editor_widget.editor.current_filename orelse "[No Name]";
         try self.renderFileSegment(filename);
 
@@ -168,6 +176,12 @@ pub const PowerlineStatus = struct {
         const arrow = try std.fmt.allocPrint(self.allocator, "\x1b[41m{s}\x1b[0m ", .{POWERLINE_RIGHT_ARROW});
         defer self.allocator.free(arrow);
         try self.buffer.appendSlice(self.allocator, arrow);
+    }
+
+    fn renderLSPLoadingSegment(self: *PowerlineStatus) !void {
+        const text = try std.fmt.allocPrint(self.allocator, "\x1b[46m\x1b[30m {s} LSP \x1b[0m ", .{ICON_LSP_LOADING});
+        defer self.allocator.free(text);
+        try self.buffer.appendSlice(self.allocator, text);
     }
 
     fn renderModifiedSegment(self: *PowerlineStatus) !void {
