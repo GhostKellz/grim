@@ -25,6 +25,9 @@ const lsp_hover_widget = @import("lsp_hover_widget.zig");
 const lsp_diagnostics_panel = @import("lsp_diagnostics_panel.zig");
 const lsp_loading_spinner = @import("lsp_loading_spinner.zig");
 
+// Terminal widget
+const terminal_widget = @import("terminal_widget.zig");
+
 pub const GrimConfig = struct {
     // Editor settings
     tab_size: u8 = 4,
@@ -1061,6 +1064,14 @@ pub const GrimApp = struct {
             for (buffers, 0..) |buffer, i| {
                 std.log.info("  [{d}] {s}", .{ i + 1, buffer.name });
             }
+        } else if (std.mem.eql(u8, command, "term") or std.mem.eql(u8, command, "terminal")) {
+            // Open terminal in horizontal split
+            try self.openTerminal(null);
+        } else if (std.mem.startsWith(u8, command, "term ") or std.mem.startsWith(u8, command, "terminal ")) {
+            // Open terminal with specific command
+            const cmd_start = std.mem.indexOfScalar(u8, command, ' ') orelse command.len;
+            const term_cmd = std.mem.trim(u8, command[cmd_start..], " ");
+            try self.openTerminal(term_cmd);
         } else if (std.mem.startsWith(u8, command, "%s/") or std.mem.startsWith(u8, command, "s/")) {
             // Substitute command: :%s/pattern/replacement/flags or :s/pattern/replacement/flags
             try self.handleSubstitute(command);
@@ -1161,6 +1172,28 @@ pub const GrimApp = struct {
     fn saveCurrentBuffer(self: *GrimApp) !void {
         const editor = self.layout_manager.getActiveEditor() orelse return error.NoActiveEditor;
         try editor.saveFile();
+    }
+
+    fn openTerminal(self: *GrimApp, cmd: ?[]const u8) !void {
+        // Get terminal size from layout manager
+        const term_rows: u16 = @max(self.layout_manager.height / 2, 10);
+        const term_cols: u16 = self.layout_manager.width;
+
+        // Create terminal widget
+        const term = try terminal_widget.TerminalWidget.init(self.allocator, term_rows, term_cols);
+        errdefer term.deinit();
+
+        // Spawn shell or command
+        try term.spawn(cmd);
+
+        // Store in layout manager's terminal list
+        try self.layout_manager.terminals.append(self.allocator, term);
+
+        std.log.info("Terminal opened{s}", .{if (cmd) |c| blk: {
+            var buf: [128]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, " with command: {s}", .{c}) catch "";
+            break :blk msg;
+        } else ""});
     }
 
     fn hideSystemCursor(_: *GrimApp) !void {

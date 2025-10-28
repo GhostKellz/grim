@@ -211,6 +211,9 @@ pub const LayoutManager = struct {
     // Buffer management
     buffers: std.ArrayList(Buffer),
 
+    // Terminal management
+    terminals: std.ArrayList(*@import("terminal_widget.zig").TerminalWidget),
+
     // Rendering area
     width: u16,
     height: u16,
@@ -239,11 +242,14 @@ pub const LayoutManager = struct {
             .name = try allocator.dupe(u8, "[No Name]"),
         });
 
+        const terminals = std.ArrayList(*@import("terminal_widget.zig").TerminalWidget){};
+
         self.* = .{
             .allocator = allocator,
             .tabs = tabs,
             .active_tab_index = 0,
             .buffers = buffers,
+            .terminals = terminals,
             .width = width,
             .height = height,
         };
@@ -265,6 +271,12 @@ pub const LayoutManager = struct {
             }
         }
         self.buffers.deinit(self.allocator);
+
+        // Free terminals
+        for (self.terminals.items) |term| {
+            term.deinit();
+        }
+        self.terminals.deinit(self.allocator);
 
         self.allocator.destroy(self);
     }

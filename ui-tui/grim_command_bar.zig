@@ -153,6 +153,7 @@ pub const CommandBar = struct {
             "bprev",    "bp",
             "bdelete",  "bd",
             "buffers",  "ls",
+            "term",     "terminal",
             "LspDiagnostics",
             "lspdiag",
             "%s/",      "s/",
