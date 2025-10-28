@@ -1,6 +1,7 @@
 const std = @import("std");
 const runtime = @import("mod.zig");
 const host = @import("host");
+const plugin_dependency = @import("plugin_dependency.zig");
 
 const PLUGIN_EXTENSION = ".gza";
 const PLUGIN_MANIFEST_FILE = "plugin.json";
@@ -655,6 +656,61 @@ pub const PluginManager = struct {
         }
 
         return discovered_plugins.toOwnedSlice(self.allocator);
+    }
+
+    /// Load plugins in dependency order using topological sort
+    pub fn loadPluginsInDependencyOrder(self: *PluginManager, plugins: []PluginInfo) !void {
+        // Build dependency graph
+        var graph = try plugin_dependency.DependencyGraph.init(self.allocator);
+        defer graph.deinit();
+
+        // Create a map of plugin ID to PluginInfo
+        var plugin_map = std.StringHashMap(*PluginInfo).init(self.allocator);
+        defer plugin_map.deinit();
+
+        // Add all plugins to the graph
+        for (plugins) |*plugin_info| {
+            try plugin_map.put(plugin_info.manifest.id, plugin_info);
+
+            // Convert dependencies to the format expected by DependencyGraph
+            var deps = std.ArrayList(plugin_dependency.PluginNode.Dependency){};
+            defer deps.deinit(self.allocator);
+
+            for (plugin_info.manifest.dependencies) |dep_name| {
+                // Dependencies in manifest are just names, we use "*" as version constraint (any version)
+                try deps.append(self.allocator, .{
+                    .name = dep_name,
+                    .version_constraint = "*",
+                });
+            }
+
+            try graph.addPlugin(
+                plugin_info.manifest.id,
+                plugin_info.manifest.version,
+                deps.items,
+            );
+        }
+
+        // Resolve dependencies to get load order
+        const load_order = try graph.resolve();
+        defer {
+            for (load_order) |name| {
+                self.allocator.free(name);
+            }
+            self.allocator.free(load_order);
+        }
+
+        // Load plugins in dependency order
+        for (load_order) |plugin_id| {
+            if (plugin_map.get(plugin_id)) |plugin_info| {
+                if (!plugin_info.loaded) {
+                    std.log.info("Loading plugin: {s} (v{s})", .{ plugin_info.manifest.name, plugin_info.manifest.version });
+                    try self.loadPlugin(plugin_info);
+                }
+            }
+        }
+
+        std.log.info("Loaded {d} plugins in dependency order", .{load_order.len});
     }
 
     fn discoverPluginsInDirectory(self: *PluginManager, directory: []const u8, plugins: *std.ArrayList(PluginInfo)) !void {

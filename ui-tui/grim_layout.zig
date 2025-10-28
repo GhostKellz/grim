@@ -213,6 +213,7 @@ pub const LayoutManager = struct {
 
     // Terminal management
     terminals: std.ArrayList(*@import("terminal_widget.zig").TerminalWidget),
+    active_terminal_index: ?usize, // Track which terminal is focused
 
     // Rendering area
     width: u16,
@@ -250,6 +251,7 @@ pub const LayoutManager = struct {
             .active_tab_index = 0,
             .buffers = buffers,
             .terminals = terminals,
+            .active_terminal_index = null,
             .width = width,
             .height = height,
         };
@@ -308,10 +310,59 @@ pub const LayoutManager = struct {
         return self.tabs.items[self.active_tab_index];
     }
 
-    /// Render all editor windows
+    /// Render all editor windows and terminals
     pub fn render(self: *LayoutManager, buffer: anytype, area: phantom.Rect) void {
         const tab = self.getActiveTab() orelse return;
-        tab.root.render(buffer, area);
+
+        // Calculate split between editor and terminal
+        if (self.active_terminal_index) |term_idx| {
+            if (term_idx < self.terminals.items.len) {
+                // Split area: top 50% for editor, bottom 50% for terminal
+                const editor_height = area.height / 2;
+                const terminal_height = area.height - editor_height;
+
+                // Render editor in top half
+                const editor_area = phantom.Rect{
+                    .x = area.x,
+                    .y = area.y,
+                    .width = area.width,
+                    .height = editor_height,
+                };
+                tab.root.render(buffer, editor_area);
+
+                // Render horizontal divider
+                if (editor_height > 0) {
+                    var x: u16 = area.x;
+                    while (x < area.x + area.width) : (x += 1) {
+                        buffer.setCell(x, area.y + editor_height, .{
+                            .char = '─',
+                            .style = phantom.Style.default()
+                        });
+                    }
+                }
+
+                // Render terminal in bottom half
+                const terminal_area = phantom.Rect{
+                    .x = area.x,
+                    .y = area.y + editor_height + 1,
+                    .width = area.width,
+                    .height = if (terminal_height > 1) terminal_height - 1 else 0,
+                };
+
+                if (terminal_area.height > 0) {
+                    const term = self.terminals.items[term_idx];
+                    term.render(buffer, terminal_area) catch |err| {
+                        std.log.warn("Terminal render error: {}", .{err});
+                    };
+                }
+            } else {
+                // Invalid terminal index, just render editor
+                tab.root.render(buffer, area);
+            }
+        } else {
+            // No active terminal, render full editor area
+            tab.root.render(buffer, area);
+        }
     }
 
     /// Handle window resize
@@ -986,5 +1037,51 @@ pub const LayoutManager = struct {
     /// Get list of all buffers (for display)
     pub fn getBufferList(self: *LayoutManager) []const Buffer {
         return self.buffers.items;
+    }
+
+    // === Terminal management ===
+
+    /// Get active terminal (if any)
+    pub fn getActiveTerminal(self: *LayoutManager) ?*@import("terminal_widget.zig").TerminalWidget {
+        if (self.active_terminal_index) |idx| {
+            if (idx < self.terminals.items.len) {
+                return self.terminals.items[idx];
+            }
+        }
+        return null;
+    }
+
+    /// Activate terminal at index
+    pub fn activateTerminal(self: *LayoutManager, index: usize) void {
+        if (index < self.terminals.items.len) {
+            self.active_terminal_index = index;
+        }
+    }
+
+    /// Hide active terminal (focus back to editor)
+    pub fn hideTerminal(self: *LayoutManager) void {
+        self.active_terminal_index = null;
+    }
+
+    /// Check if terminal is focused
+    pub fn isTerminalFocused(self: *LayoutManager) bool {
+        return self.active_terminal_index != null;
+    }
+
+    /// Close terminal at index
+    pub fn closeTerminal(self: *LayoutManager, index: usize) void {
+        if (index < self.terminals.items.len) {
+            const term = self.terminals.orderedRemove(index);
+            term.deinit();
+
+            // Adjust active terminal index
+            if (self.active_terminal_index) |active_idx| {
+                if (active_idx == index) {
+                    self.active_terminal_index = null;
+                } else if (active_idx > index) {
+                    self.active_terminal_index = active_idx - 1;
+                }
+            }
+        }
     }
 };

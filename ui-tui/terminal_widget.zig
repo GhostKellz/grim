@@ -73,7 +73,7 @@ pub const TerminalWidget = struct {
             const style = phantom.Style.default()
                 .withFg(phantom.Color.red)
                 .withBg(phantom.Color.black)
-                .withBold(true);
+                .withBold();
 
             for (msg, 0..) |ch, i| {
                 if (msg_x + @as(u16, @intCast(i)) < area.x + area.width) {
@@ -96,12 +96,14 @@ pub const TerminalWidget = struct {
                 const cell = screen.getCell(@intCast(row), @intCast(col));
 
                 // Convert ANSI cell to Phantom style
-                const style = phantom.Style.default()
+                var style = phantom.Style.default()
                     .withFg(ansiColorToPhantom(cell.fg))
-                    .withBg(ansiColorToPhantom(cell.bg))
-                    .withBold(cell.attrs.bold)
-                    .withItalic(cell.attrs.italic)
-                    .withUnderline(cell.attrs.underline);
+                    .withBg(ansiColorToPhantom(cell.bg));
+
+                // Conditionally apply attributes
+                if (cell.attrs.bold) style = style.withBold();
+                if (cell.attrs.italic) style = style.withItalic();
+                if (cell.attrs.underline) style = style.withUnderline();
 
                 buffer.setCell(
                     area.x + @as(u16, @intCast(col)),
@@ -137,13 +139,13 @@ pub const TerminalWidget = struct {
     fn renderScrollback(self: *TerminalWidget, buffer: anytype, area: phantom.Rect) !void {
         const scrollback = self.terminal.getScrollback();
 
-        var lines = std.ArrayList([]const u8).init(self.allocator);
-        defer lines.deinit();
+        var lines = std.ArrayList([]const u8){};
+        defer lines.deinit(self.allocator);
 
         // Split scrollback into lines
         var iter = std.mem.splitScalar(u8, scrollback, '\n');
         while (iter.next()) |line| {
-            try lines.append(line);
+            try lines.append(self.allocator, line);
         }
 
         // Calculate visible lines with scroll offset

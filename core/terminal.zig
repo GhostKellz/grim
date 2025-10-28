@@ -397,7 +397,9 @@ pub const Terminal = struct {
         var pfd = &self.poll_fd.?;
         pfd.revents = 0;
 
-        const n = try posix.poll(@as([*]posix.pollfd, @ptrCast(pfd)), 1, timeout_ms);
+        // Zig 0.16 API: poll now takes a slice and timeout (no length parameter)
+        const pfd_slice = @as([*]posix.pollfd, @ptrCast(pfd))[0..1];
+        const n = try posix.poll(pfd_slice, timeout_ms);
 
         if (n > 0) {
             // Check for data available
@@ -407,7 +409,7 @@ pub const Terminal = struct {
 
                 if (bytes_read > 0 and self.parser != null) {
                     // Parse ANSI and update screen buffer
-                    try self.parser.?.parse(buf[0..bytes_read]);
+                    try self.parser.?.process(buf[0..bytes_read]);
                     return true;
                 }
             }

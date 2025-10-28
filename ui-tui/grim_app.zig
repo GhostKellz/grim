@@ -285,6 +285,34 @@ pub const GrimApp = struct {
             return try self.command_bar.handleKey(key, self);
         }
 
+        // Terminal input routing - if terminal is focused
+        if (self.layout_manager.isTerminalFocused()) {
+            if (self.layout_manager.getActiveTerminal()) |term| {
+                // Ctrl+X exits terminal focus (back to editor)
+                if (key == .ctrl_x) {
+                    self.layout_manager.hideTerminal();
+                    return true;
+                }
+
+                // Page Up/Down for scrollback navigation
+                switch (key) {
+                    .page_up => {
+                        term.scrollUp(10);
+                        return true;
+                    },
+                    .page_down => {
+                        term.scrollDown(10);
+                        return true;
+                    },
+                    else => {},
+                }
+
+                // Route all other keys to terminal
+                try term.handleInput(key);
+                return true;
+            }
+        }
+
         // Process the actual key
         const handled = try self.processKey(key);
 
@@ -1072,6 +1100,27 @@ pub const GrimApp = struct {
             const cmd_start = std.mem.indexOfScalar(u8, command, ' ') orelse command.len;
             const term_cmd = std.mem.trim(u8, command[cmd_start..], " ");
             try self.openTerminal(term_cmd);
+        } else if (std.mem.startsWith(u8, command, "vsplit term://")) {
+            // Vertical split with terminal
+            const term_cmd_prefix = "vsplit term://";
+            const term_cmd = if (command.len > term_cmd_prefix.len)
+                std.mem.trim(u8, command[term_cmd_prefix.len..], " ")
+            else
+                null;
+            try self.layout_manager.verticalSplit();
+            try self.openTerminal(if (term_cmd != null and term_cmd.?.len > 0) term_cmd else null);
+        } else if (std.mem.startsWith(u8, command, "split term://") or std.mem.startsWith(u8, command, "hsplit term://")) {
+            // Horizontal split with terminal
+            const term_cmd_prefix = if (std.mem.startsWith(u8, command, "split term://"))
+                "split term://"
+            else
+                "hsplit term://";
+            const term_cmd = if (command.len > term_cmd_prefix.len)
+                std.mem.trim(u8, command[term_cmd_prefix.len..], " ")
+            else
+                null;
+            try self.layout_manager.horizontalSplit();
+            try self.openTerminal(if (term_cmd != null and term_cmd.?.len > 0) term_cmd else null);
         } else if (std.mem.startsWith(u8, command, "%s/") or std.mem.startsWith(u8, command, "s/")) {
             // Substitute command: :%s/pattern/replacement/flags or :s/pattern/replacement/flags
             try self.handleSubstitute(command);
@@ -1188,6 +1237,10 @@ pub const GrimApp = struct {
 
         // Store in layout manager's terminal list
         try self.layout_manager.terminals.append(self.allocator, term);
+
+        // Activate the newly created terminal
+        const term_index = self.layout_manager.terminals.items.len - 1;
+        self.layout_manager.activateTerminal(term_index);
 
         std.log.info("Terminal opened{s}", .{if (cmd) |c| blk: {
             var buf: [128]u8 = undefined;
