@@ -25,7 +25,8 @@ pub fn main() !void {
 
     // Parse command line options
     var theme_name: ?[]const u8 = null;
-    var file_to_load: ?[]const u8 = null;
+    var files_to_load: std.ArrayList([]const u8) = .empty;
+    defer files_to_load.deinit(allocator);
     var use_zigzag = false;
 
     var i: usize = 1;
@@ -41,7 +42,7 @@ pub fn main() !void {
                 theme_name = args[i];
             } else {
                 std.debug.print("Error: --theme requires a theme name\n", .{});
-                std.debug.print("Usage: grim [--theme <name>] [file]\n", .{});
+                std.debug.print("Usage: grim [--theme <name>] [files...]\n", .{});
                 std.debug.print("Available themes: ghost-hacker-blue, tokyonight-moon\n", .{});
                 return;
             }
@@ -49,7 +50,7 @@ pub fn main() !void {
             std.debug.print(
                 \\Grim - A modal text editor
                 \\
-                \\Usage: grim [options] [file]
+                \\Usage: grim [options] [files...]
                 \\
                 \\Options:
                 \\  -t, --theme <name>    Set theme (default: ghost-hacker-blue)
@@ -60,22 +61,26 @@ pub fn main() !void {
                 \\  tokyonight-moon       Tokyo Night Moon theme
                 \\
                 \\Examples:
-                \\  grim                            # Start with default theme
-                \\  grim myfile.zig                 # Open file with default theme
-                \\  grim --theme tokyonight-moon    # Start with Tokyo Night theme
-                \\  grim -t gruvbox myfile.rs       # Open file with custom theme
+                \\  grim                                # Start with default theme
+                \\  grim myfile.zig                     # Open file with default theme
+                \\  grim file1.zig file2.zig file3.zig  # Open multiple files
+                \\  grim --theme tokyonight-moon        # Start with Tokyo Night theme
+                \\  grim -t gruvbox myfile.rs           # Open file with custom theme
                 \\
             , .{});
             return;
         } else if (!std.mem.startsWith(u8, arg, "-")) {
-            // Non-option argument is the file to load
-            file_to_load = arg;
+            // Non-option argument is a file to load
+            try files_to_load.append(allocator, arg);
         } else {
             std.debug.print("Unknown option: {s}\n", .{arg});
             std.debug.print("Use --help for usage information\n", .{});
             return;
         }
     }
+
+    // Use first file for backwards compatibility
+    const file_to_load: ?[]const u8 = if (files_to_load.items.len > 0) files_to_load.items[0] else null;
 
     // Choose event loop: ZigZag (high-performance) or Phantom (simple)
     if (use_zigzag) {
@@ -198,12 +203,19 @@ pub fn main() !void {
             };
         }
 
-        // Load file if provided
-        if (file_to_load) |file_path| {
-            app.loadFile(file_path) catch |err| {
-                std.debug.print("Failed to load file {s}: {}\n", .{ file_path, err });
-                // Continue with empty buffer
+        // Load all files provided on command line
+        if (files_to_load.items.len > 0) {
+            // Load first file into current tab
+            app.loadFile(files_to_load.items[0]) catch |err| {
+                std.debug.print("Failed to load file {s}: {}\n", .{ files_to_load.items[0], err });
             };
+
+            // Load remaining files into new tabs
+            for (files_to_load.items[1..]) |file_path| {
+                app.openFileInNewTab(file_path) catch |err| {
+                    std.debug.print("Failed to load file {s}: {}\n", .{ file_path, err });
+                };
+            }
         } else {
             // Load a sample file for testing
             try active_editor.editor.rope.insert(0,

@@ -4,6 +4,7 @@
 const std = @import("std");
 const phantom = @import("phantom");
 const syntax = @import("syntax");
+const core = @import("core");
 const Editor = @import("editor.zig").Editor;
 const editor_lsp_mod = @import("editor_lsp.zig");
 
@@ -67,6 +68,7 @@ pub const GrimEditorWidget = struct {
     // Register system (for yank/paste)
     unnamed_register: ?[]const u8, // "" register
     named_registers: std.StringHashMap([]const u8), // Named registers (a-z)
+    clipboard: ?*core.Clipboard, // System clipboard (+ register)
 
     // Macro system
     recording_macro: ?u8, // Register being recorded to (a-z)
@@ -147,6 +149,7 @@ pub const GrimEditorWidget = struct {
             .visual_anchor = null,
             .unnamed_register = null,
             .named_registers = std.StringHashMap([]const u8).init(allocator),
+            .clipboard = null,
             .recording_macro = null,
             .macro_buffer = std.ArrayList(phantom.Key){},
             .macros = std.StringHashMap([]phantom.Key).init(allocator),
@@ -1397,6 +1400,12 @@ pub const GrimEditorWidget = struct {
     /// Set register content (null for unnamed register)
     pub fn setRegister(self: *GrimEditorWidget, register: ?u8, text: []const u8) !void {
         if (register) |reg| {
+            // '+' register = system clipboard
+            if (reg == '+') {
+                try self.copyToClipboard(text);
+                return;
+            }
+
             // Named register (a-z)
             const key = [_]u8{reg};
             const owned_text = try self.allocator.dupe(u8, text);
@@ -1418,9 +1427,19 @@ pub const GrimEditorWidget = struct {
         }
     }
 
-    /// Get register content (null for unnamed register)
+    /// Get register content (null for unnamed register, '+' for system clipboard)
     pub fn getRegister(self: *GrimEditorWidget, register: ?u8) ?[]const u8 {
         if (register) |reg| {
+            // '+' register = system clipboard
+            if (reg == '+') {
+                if (self.pasteFromClipboard()) |clipboard_text| {
+                    return clipboard_text;
+                } else |_| {
+                    std.log.warn("Failed to paste from clipboard", .{});
+                    return null;
+                }
+            }
+
             const key = [_]u8{reg};
             return self.named_registers.get(&key);
         } else {
@@ -1493,38 +1512,25 @@ pub const GrimEditorWidget = struct {
 
     /// Copy text to system clipboard
     fn copyToClipboard(self: *GrimEditorWidget, text: []const u8) !void {
-        // Try different clipboard commands based on platform
-        // xclip (Linux/X11)
-        const argv_xclip = [_][]const u8{ "xclip", "-selection", "clipboard" };
-        var child = std.process.Child.init(&argv_xclip, self.allocator);
-        child.stdin_behavior = .Pipe;
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-
-        child.spawn() catch {
-            // Try wl-copy (Wayland)
-            const argv_wl = [_][]const u8{"wl-copy"};
-            var child_wl = std.process.Child.init(&argv_wl, self.allocator);
-            child_wl.stdin_behavior = .Pipe;
-            child_wl.stdout_behavior = .Ignore;
-            child_wl.stderr_behavior = .Ignore;
-            child_wl.spawn() catch return error.ClipboardNotAvailable;
-
-            if (child_wl.stdin) |stdin| {
-                try stdin.writeAll(text);
-                stdin.close();
-                child_wl.stdin = null;
-            }
-            _ = try child_wl.wait();
-            return;
-        };
-
-        if (child.stdin) |stdin| {
-            try stdin.writeAll(text);
-            stdin.close();
-            child.stdin = null;
+        if (self.clipboard) |clipboard| {
+            try clipboard.copy(text);
+        } else {
+            return error.ClipboardNotAvailable;
         }
-        _ = try child.wait();
+    }
+
+    /// Get text from system clipboard
+    fn pasteFromClipboard(self: *GrimEditorWidget) ![]u8 {
+        if (self.clipboard) |clipboard| {
+            return try clipboard.paste();
+        } else {
+            return error.ClipboardNotAvailable;
+        }
+    }
+
+    /// Set clipboard reference (called by parent app)
+    pub fn setClipboard(self: *GrimEditorWidget, clipboard: *core.Clipboard) void {
+        self.clipboard = clipboard;
     }
 
     // === Undo/Redo operations ===

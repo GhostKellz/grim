@@ -1,0 +1,35 @@
+{
+  "editor": {
+    "tab_width": 4,
+    "use_spaces": true,
+    "line_numbers": true,
+    "relative_line_numbers": false,
+    "wrap_lines": false,
+    "auto_indent": true,
+    "show_trailing_whitespace": true,
+    "trim_trailing_whitespace_on_save": false,
+    "insert_final_newline": true,
+    "max_line_length": 120
+  },
+  "ui": {
+    "theme": "ghost-hacker-blue",
+    "show_status_line": true,
+    "show_command_bar": true,
+    "show_line_numbers": true,
+    "cursor_style": "block"
+  },
+  "lsp": {
+    "enabled": true,
+    "auto_completion": true,
+    "signature_help": true,
+    "hover_documentation": true,
+    "diagnostics": true,
+    "format_on_save": false
+  },
+  "performance": {
+    "use_io_uring": true,
+    "use_simd": true,
+    "lazy_redraw": true,
+    "scroll_cache_size": 1000
+  }
+}

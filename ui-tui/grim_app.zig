@@ -99,6 +99,12 @@ pub const GrimApp = struct {
     // Fuzzy finder
     fuzzy: core.FuzzyFinder,
 
+    // Clipboard integration
+    clipboard: core.Clipboard,
+
+    // Config management
+    config_manager: core.ConfigManager,
+
     pub fn init(allocator: std.mem.Allocator, config: GrimConfig) !*GrimApp {
         const self = try allocator.create(GrimApp);
         errdefer allocator.destroy(self);
@@ -141,6 +147,12 @@ pub const GrimApp = struct {
         // Initialize Fuzzy finder
         const fuzzy = core.FuzzyFinder.init(allocator);
 
+        // Initialize Clipboard
+        const clipboard = try core.Clipboard.init(allocator);
+
+        // Initialize Config Manager (load or create default config)
+        const config_manager = try core.ConfigManager.init(allocator);
+
         // Initialize theme registry
         var theme_registry = theme_mod.ThemeRegistry.init(allocator);
         errdefer theme_registry.deinit();
@@ -172,10 +184,17 @@ pub const GrimApp = struct {
             .git = git,
             .harpoon = harpoon,
             .fuzzy = fuzzy,
+            .clipboard = clipboard,
+            .config_manager = config_manager,
         };
 
         // Create initial editor (needed even if opening a file)
         try self.layout_manager.createInitialEditor();
+
+        // Wire clipboard to all editors
+        if (self.layout_manager.getActiveEditor()) |editor| {
+            editor.setClipboard(&self.clipboard);
+        }
 
         // Load initial file if specified
         if (config.initial_file) |file_path| {
@@ -186,6 +205,8 @@ pub const GrimApp = struct {
     }
 
     pub fn deinit(self: *GrimApp) void {
+        self.config_manager.deinit();
+        self.clipboard.deinit();
         self.theme_registry.deinit();
         self.fuzzy.deinit();
         self.harpoon.deinit();
@@ -971,6 +992,29 @@ pub const GrimApp = struct {
             // Handle :set commands
             const set_args = std.mem.trim(u8, command[4..], " ");
             try self.handleSetCommand(set_args);
+        } else if (std.mem.eql(u8, command, "config") or std.mem.eql(u8, command, "editconfig")) {
+            // Open config file for editing
+            const config_path = try core.Config.getDefaultPath(self.allocator);
+            defer self.allocator.free(config_path);
+            try self.openFile(config_path);
+            std.log.info("Opened config file: {s}", .{config_path});
+        } else if (std.mem.eql(u8, command, "reload") or std.mem.eql(u8, command, "reloadconfig")) {
+            // Reload config from disk
+            if (try self.config_manager.checkAndReload()) {
+                std.log.info("Config reloaded successfully", .{});
+                try self.applyConfig();
+            } else {
+                std.log.info("Config unchanged", .{});
+            }
+        } else if (std.mem.eql(u8, command, "saveconfig")) {
+            // Save current config to disk
+            try self.config_manager.saveConfig();
+            std.log.info("Config saved", .{});
+        } else if (std.mem.startsWith(u8, command, "theme ")) {
+            // Set theme: :theme ghost-hacker-blue
+            const theme_name = std.mem.trim(u8, command[6..], " ");
+            try self.setTheme(theme_name);
+            std.log.info("Theme set to: {s}", .{theme_name});
         } else {
             // Unknown command
             std.log.warn("Unknown command: {s}", .{command});
@@ -1076,6 +1120,27 @@ pub const GrimApp = struct {
         self.active_theme = try theme_mod.Theme.get(name);
     }
 
+    /// Apply configuration settings to the editor
+    pub fn applyConfig(self: *GrimApp) !void {
+        const config = self.config_manager.getConfig();
+
+        // Apply theme if configured
+        if (config.ui.theme.len > 0) {
+            self.setTheme(config.ui.theme) catch |err| {
+                std.log.warn("Failed to apply theme from config: {}", .{err});
+            };
+        }
+
+        // Apply editor settings to all active editors
+        if (self.layout_manager.getActiveEditor()) |editor| {
+            editor.tab_size = @intCast(config.editor.tab_width);
+            editor.expand_tab = config.editor.use_spaces;
+            // More editor settings can be applied here
+        }
+
+        std.log.info("Applied configuration", .{});
+    }
+
     pub fn attachPluginManager(self: *GrimApp, manager: *runtime.PluginManager) void {
         self.plugin_manager = manager;
         manager.setThemeCallbacks(
@@ -1139,6 +1204,15 @@ pub const GrimApp = struct {
     }
 
     pub fn loadFile(self: *GrimApp, filepath: []const u8) !void {
+        try self.openFile(filepath);
+    }
+
+    /// Open a file in a new tab
+    pub fn openFileInNewTab(self: *GrimApp, filepath: []const u8) !void {
+        // Create new tab
+        try self.layout_manager.newTab();
+
+        // Load file into the new tab's editor
         try self.openFile(filepath);
     }
 };

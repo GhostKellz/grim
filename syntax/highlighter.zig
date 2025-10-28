@@ -193,8 +193,9 @@ const LineCol = struct {
 };
 
 fn byteOffsetToLineCol(rope: *core.Rope, offset: usize) LineCol {
+    // Note: rope.slice() returns memory from rope's arena allocator or zero-copy slice
+    // Do NOT manually free - rope.deinit() handles cleanup
     const content = rope.slice(.{ .start = 0, .end = @min(offset + 1, rope.len()) }) catch return .{ .line = 0, .col = 0 };
-    defer if (content.len > 0) std.heap.page_allocator.free(content);
 
     var line: usize = 0;
     var col: usize = 0;
