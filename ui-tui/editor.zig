@@ -27,20 +27,14 @@ pub const Editor = struct {
     // Search state
     search_pattern: ?[]u8,
     last_search_forward: bool,
-    // Undo/redo system
-    undo_stack: std.ArrayList(UndoEntry),
-    redo_stack: std.ArrayList(UndoEntry),
-    in_undo_group: bool, // Track if we're in a multi-change group
-
-    pub const UndoEntry = struct {
-        content: []const u8, // Full content snapshot
-        cursor_offset: usize,
-        allocator: std.mem.Allocator,
-
-        pub fn deinit(self: *UndoEntry) void {
-            self.allocator.free(self.content);
-        }
-    };
+    search_matches: std.ArrayList(usize), // All match offsets
+    current_match_index: ?usize, // Index into search_matches
+    // Character find state (for f/F/t/T and ; commands)
+    last_find_char: ?u21,
+    last_find_forward: bool,
+    last_find_till: bool, // true for t/T, false for f/F
+    // Undo/redo system (using core.UndoStack)
+    undo_stack: core.UndoStack,
 
     pub const Mode = enum {
         normal,
@@ -51,8 +45,10 @@ pub const Editor = struct {
 
     pub const Position = struct {
         offset: usize = 0, // Byte offset in the rope
+        desired_column: ?usize = null, // Virtual column for vertical movement
 
         pub fn moveLeft(self: *Position, rope: *core.Rope) void {
+            self.desired_column = null; // Horizontal movement clears desired column
             if (self.offset == 0) return;
 
             // Move to previous UTF-8 character boundary
@@ -63,6 +59,7 @@ pub const Editor = struct {
         }
 
         pub fn moveRight(self: *Position, rope: *core.Rope) void {
+            self.desired_column = null; // Horizontal movement clears desired column
             if (self.offset >= rope.len()) return;
 
             // Move to next UTF-8 character boundary
@@ -73,6 +70,7 @@ pub const Editor = struct {
         }
 
         pub fn moveToLineStart(self: *Position, rope: *core.Rope) void {
+            self.desired_column = null; // Horizontal movement clears desired column
             if (self.offset == 0) return;
 
             // Find previous newline
@@ -85,6 +83,7 @@ pub const Editor = struct {
         }
 
         pub fn moveToLineEnd(self: *Position, rope: *core.Rope) void {
+            self.desired_column = null; // Horizontal movement clears desired column
             const len = rope.len();
             if (self.offset >= len) return;
 
@@ -163,9 +162,12 @@ pub const Editor = struct {
             .yank_linewise = false,
             .search_pattern = null,
             .last_search_forward = true,
-            .undo_stack = std.ArrayList(UndoEntry){},
-            .redo_stack = std.ArrayList(UndoEntry){},
-            .in_undo_group = false,
+            .search_matches = std.ArrayList(usize){},
+            .current_match_index = null,
+            .last_find_char = null,
+            .last_find_forward = true,
+            .last_find_till = false,
+            .undo_stack = core.UndoStack.init(allocator, 1000),
         };
     }
 
@@ -187,16 +189,10 @@ pub const Editor = struct {
         if (self.search_pattern) |pattern| {
             self.allocator.free(pattern);
         }
-        // Free undo/redo stacks
-        for (self.undo_stack.items) |*entry| {
-            entry.deinit();
-        }
-        self.undo_stack.deinit(self.allocator);
-        for (self.redo_stack.items) |*entry| {
-            entry.deinit();
-        }
-        self.redo_stack.deinit(self.allocator);
+        // Free undo stack
+        self.undo_stack.deinit();
         self.cursors.deinit(self.allocator);
+        self.search_matches.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -447,8 +443,9 @@ pub const Editor = struct {
     }
 
     pub fn moveCursorUp(self: *Editor) void {
-        // Save current column position
-        const current_col = self.getColumnPosition();
+        // Save or use desired column
+        const target_col = self.cursor.desired_column orelse self.getColumnPosition();
+        self.cursor.desired_column = target_col;
 
         // Move to previous line
         self.cursor.moveToLineStart(&self.rope);
@@ -456,22 +453,23 @@ pub const Editor = struct {
             self.cursor.offset -= 1; // Move past previous newline
             self.cursor.moveToLineStart(&self.rope);
 
-            // Restore column position
-            self.moveToColumn(current_col);
+            // Restore column position (using desired column)
+            self.moveToColumn(target_col);
         }
     }
 
     pub fn moveCursorDown(self: *Editor) void {
-        // Save current column position
-        const current_col = self.getColumnPosition();
+        // Save or use desired column
+        const target_col = self.cursor.desired_column orelse self.getColumnPosition();
+        self.cursor.desired_column = target_col;
 
         // Move to next line
         self.cursor.moveToLineEnd(&self.rope);
         if (self.cursor.offset < self.rope.len()) {
             self.cursor.offset += 1; // Move past newline
 
-            // Restore column position
-            self.moveToColumn(current_col);
+            // Restore column position (using desired column)
+            self.moveToColumn(target_col);
         }
     }
 
@@ -535,6 +533,110 @@ pub const Editor = struct {
         while (i > 0 and (std.ascii.isAlphanumeric(slice[i - 1]) or slice[i - 1] == '_')) : (i -= 1) {}
 
         self.cursor.offset = i;
+    }
+
+    // Character find motions (f/F/t/T and ;/,)
+    pub fn findCharForward(self: *Editor, ch: u21) void {
+        self.last_find_char = ch;
+        self.last_find_forward = true;
+        self.last_find_till = false;
+
+        const slice = self.rope.slice(.{ .start = self.cursor.offset + 1, .end = self.rope.len() }) catch return;
+        for (slice, 0..) |byte, i| {
+            if (byte == ch) {
+                self.cursor.offset += i + 1;
+                return;
+            }
+            // Stop at newline (f only searches current line)
+            if (byte == '\n') return;
+        }
+    }
+
+    pub fn findCharBackward(self: *Editor, ch: u21) void {
+        self.last_find_char = ch;
+        self.last_find_forward = false;
+        self.last_find_till = false;
+
+        if (self.cursor.offset == 0) return;
+        const slice = self.rope.slice(.{ .start = 0, .end = self.cursor.offset }) catch return;
+        var i = slice.len;
+        while (i > 0) {
+            i -= 1;
+            if (slice[i] == ch) {
+                self.cursor.offset = i;
+                return;
+            }
+            // Stop at newline (F only searches current line)
+            if (slice[i] == '\n') return;
+        }
+    }
+
+    pub fn tillCharForward(self: *Editor, ch: u21) void {
+        self.last_find_char = ch;
+        self.last_find_forward = true;
+        self.last_find_till = true;
+
+        const slice = self.rope.slice(.{ .start = self.cursor.offset + 1, .end = self.rope.len() }) catch return;
+        for (slice, 0..) |byte, i| {
+            if (byte == ch) {
+                self.cursor.offset += i; // Stop before the character
+                return;
+            }
+            if (byte == '\n') return;
+        }
+    }
+
+    pub fn tillCharBackward(self: *Editor, ch: u21) void {
+        self.last_find_char = ch;
+        self.last_find_forward = false;
+        self.last_find_till = true;
+
+        if (self.cursor.offset == 0) return;
+        const slice = self.rope.slice(.{ .start = 0, .end = self.cursor.offset }) catch return;
+        var i = slice.len;
+        while (i > 0) {
+            i -= 1;
+            if (slice[i] == ch) {
+                self.cursor.offset = i + 1; // Stop after the character
+                return;
+            }
+            if (slice[i] == '\n') return;
+        }
+    }
+
+    pub fn repeatLastFind(self: *Editor) void {
+        const ch = self.last_find_char orelse return;
+        if (self.last_find_forward) {
+            if (self.last_find_till) {
+                self.tillCharForward(ch);
+            } else {
+                self.findCharForward(ch);
+            }
+        } else {
+            if (self.last_find_till) {
+                self.tillCharBackward(ch);
+            } else {
+                self.findCharBackward(ch);
+            }
+        }
+    }
+
+    pub fn repeatLastFindReverse(self: *Editor) void {
+        const ch = self.last_find_char orelse return;
+        // Reverse direction
+        if (self.last_find_forward) {
+            if (self.last_find_till) {
+                self.tillCharBackward(ch);
+            } else {
+                self.findCharBackward(ch);
+            }
+        } else {
+            if (self.last_find_till) {
+                self.tillCharForward(ch);
+            } else {
+                self.findCharForward(ch);
+            }
+        }
     }
 
     // Public interface aliases for SimpleTUI
@@ -764,73 +866,90 @@ pub const Editor = struct {
             self.allocator.free(old_pattern);
         }
         self.search_pattern = try self.allocator.dupe(u8, pattern);
+
+        // Find all matches
+        try self.findAllMatches();
+    }
+
+    /// Find all occurrences of the current search pattern
+    fn findAllMatches(self: *Editor) !void {
+        self.search_matches.clearRetainingCapacity();
+        self.current_match_index = null;
+
+        const pattern = self.search_pattern orelse return;
+        if (pattern.len == 0) return;
+
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+
+        var offset: usize = 0;
+        while (offset < content.len) {
+            if (std.mem.indexOf(u8, content[offset..], pattern)) |rel_pos| {
+                const match_pos = offset + rel_pos;
+                try self.search_matches.append(self.allocator, match_pos);
+                offset = match_pos + 1; // Move past this match
+            } else {
+                break;
+            }
+        }
+
+        // Set current match index to the one at or after cursor
+        if (self.search_matches.items.len > 0) {
+            for (self.search_matches.items, 0..) |match_pos, i| {
+                if (match_pos >= self.cursor.offset) {
+                    self.current_match_index = i;
+                    break;
+                }
+            }
+            // If no match after cursor, wrap to first
+            if (self.current_match_index == null) {
+                self.current_match_index = 0;
+            }
+        }
+    }
+
+    /// Go to next search match (n command)
+    pub fn nextMatch(self: *Editor) bool {
+        if (self.search_matches.items.len == 0) return false;
+
+        if (self.current_match_index) |idx| {
+            // Go to next match, wrap around if at end
+            const next_idx = (idx + 1) % self.search_matches.items.len;
+            self.current_match_index = next_idx;
+            self.cursor.offset = self.search_matches.items[next_idx];
+            self.last_search_forward = true;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// Go to previous search match (N command)
+    pub fn previousMatch(self: *Editor) bool {
+        if (self.search_matches.items.len == 0) return false;
+
+        if (self.current_match_index) |idx| {
+            // Go to previous match, wrap around if at beginning
+            const prev_idx = if (idx == 0)
+                self.search_matches.items.len - 1
+            else
+                idx - 1;
+            self.current_match_index = prev_idx;
+            self.cursor.offset = self.search_matches.items[prev_idx];
+            self.last_search_forward = false;
+            return true;
+        }
+
+        return false;
     }
 
     pub fn searchForward(self: *Editor) !bool {
-        const pattern = self.search_pattern orelse return false;
-        if (pattern.len == 0) return false;
-
-        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        const search_start = self.cursor.offset + 1;
-
-        if (search_start >= content.len) {
-            // Wrap around to beginning
-            if (std.mem.indexOf(u8, content[0..], pattern)) |pos| {
-                self.cursor.offset = pos;
-                self.last_search_forward = true;
-                return true;
-            }
-            return false;
-        }
-
-        // Search from current position to end
-        if (std.mem.indexOf(u8, content[search_start..], pattern)) |rel_pos| {
-            self.cursor.offset = search_start + rel_pos;
-            self.last_search_forward = true;
-            return true;
-        }
-
-        // Wrap around to beginning
-        if (std.mem.indexOf(u8, content[0..self.cursor.offset], pattern)) |pos| {
-            self.cursor.offset = pos;
-            self.last_search_forward = true;
-            return true;
-        }
-
-        return false;
+        // Use nextMatch for forward navigation
+        return self.nextMatch();
     }
 
     pub fn searchBackward(self: *Editor) !bool {
-        const pattern = self.search_pattern orelse return false;
-        if (pattern.len == 0) return false;
-
-        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-
-        if (self.cursor.offset == 0) {
-            // Wrap around to end
-            if (std.mem.lastIndexOf(u8, content, pattern)) |pos| {
-                self.cursor.offset = pos;
-                self.last_search_forward = false;
-                return true;
-            }
-            return false;
-        }
-
-        // Search from beginning to current position (exclusive)
-        if (std.mem.lastIndexOf(u8, content[0..self.cursor.offset], pattern)) |pos| {
-            self.cursor.offset = pos;
-            self.last_search_forward = false;
-            return true;
-        }
-
-        // Wrap around to end
-        if (std.mem.lastIndexOf(u8, content[self.cursor.offset..], pattern)) |rel_pos| {
-            self.cursor.offset = self.cursor.offset + rel_pos;
-            self.last_search_forward = false;
-            return true;
-        }
-
-        return false;
+        // Use previousMatch for backward navigation
+        return self.previousMatch();
     }
 
     pub fn repeatLastSearch(self: *Editor) !bool {
@@ -1092,84 +1211,36 @@ pub const Editor = struct {
     // === Undo/Redo System ===
 
     /// Save current state to undo stack (call before making changes)
-    pub fn saveUndoState(self: *Editor) !void {
-        // Get current content
-        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        const owned_content = try self.allocator.dupe(u8, content);
-
-        const entry = UndoEntry{
-            .content = owned_content,
-            .cursor_offset = self.cursor.offset,
-            .allocator = self.allocator,
-        };
-
-        try self.undo_stack.append(self.allocator, entry);
-
-        // Clear redo stack when new change is made
-        for (self.redo_stack.items) |*redo_entry| {
-            redo_entry.deinit();
-        }
-        self.redo_stack.clearRetainingCapacity();
-
-        // Limit undo stack size to 100 entries
-        if (self.undo_stack.items.len > 100) {
-            var old_entry = self.undo_stack.orderedRemove(0);
-            old_entry.deinit();
-        }
+    pub fn saveUndoState(self: *Editor, description: []const u8) !void {
+        try self.undo_stack.recordUndo(&self.rope, self.cursor.offset, description);
     }
 
     /// Undo last change
     pub fn undo(self: *Editor) !void {
-        if (self.undo_stack.items.len == 0) return;
-
-        // Save current state to redo stack
-        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        const owned_content = try self.allocator.dupe(u8, content);
-        const redo_entry = UndoEntry{
-            .content = owned_content,
-            .cursor_offset = self.cursor.offset,
-            .allocator = self.allocator,
-        };
-        try self.redo_stack.append(self.allocator, redo_entry);
-
-        // Restore previous state
-        var entry = self.undo_stack.pop() orelse return;
-        defer entry.deinit();
+        const snapshot = self.undo_stack.undo() orelse return;
 
         // Replace rope content
         const rope_len = self.rope.len();
         if (rope_len > 0) {
             try self.rope.delete(0, rope_len);
         }
-        try self.rope.insert(0, entry.content);
-        self.cursor.offset = entry.cursor_offset;
+        try self.rope.insert(0, snapshot.content);
+        self.cursor.offset = snapshot.cursor_offset;
+        self.cursor.desired_column = null;
     }
 
     /// Redo last undone change
     pub fn redo(self: *Editor) !void {
-        if (self.redo_stack.items.len == 0) return;
-
-        // Save current state to undo stack
-        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
-        const owned_content = try self.allocator.dupe(u8, content);
-        const undo_entry = UndoEntry{
-            .content = owned_content,
-            .cursor_offset = self.cursor.offset,
-            .allocator = self.allocator,
-        };
-        try self.undo_stack.append(self.allocator, undo_entry);
-
-        // Restore redo state
-        var entry = self.redo_stack.pop() orelse return;
-        defer entry.deinit();
+        const snapshot = self.undo_stack.redo() orelse return;
 
         // Replace rope content
         const rope_len = self.rope.len();
         if (rope_len > 0) {
             try self.rope.delete(0, rope_len);
         }
-        try self.rope.insert(0, entry.content);
-        self.cursor.offset = entry.cursor_offset;
+        try self.rope.insert(0, snapshot.content);
+        self.cursor.offset = snapshot.cursor_offset;
+        self.cursor.desired_column = null;
     }
 };
 

@@ -10,6 +10,9 @@ pub const collaboration = @import("collaboration.zig");
 pub const websocket = @import("websocket.zig");
 pub const websocket_server = @import("websocket_server.zig");
 pub const ansi = @import("ansi.zig");
+pub const platform = @import("platform.zig");
+pub const tmux = @import("tmux.zig");
+pub const undo = @import("undo.zig");
 
 pub const Rope = rope.Rope;
 pub const Range = rope.Range;
@@ -30,3 +33,6 @@ pub const WebSocketClient = websocket.WebSocketClient;
 pub const CollaborationServer = websocket_server.CollaborationServer;
 pub const AnsiParser = ansi.AnsiParser;
 pub const ScreenBuffer = ansi.ScreenBuffer;
+pub const PlatformCapabilities = platform.PlatformCapabilities;
+pub const TmuxIntegration = tmux.TmuxIntegration;
+pub const UndoStack = undo.UndoStack;

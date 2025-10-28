@@ -2,6 +2,7 @@ const std = @import("std");
 const phantom = @import("phantom");
 const Editor = @import("editor.zig").Editor;
 const GrimEditorWidget = @import("grim_editor_widget.zig").GrimEditorWidget;
+const core = @import("core");
 
 pub const StatusBar = struct {
     flex_row: *phantom.widgets.FlexRow,
@@ -36,7 +37,7 @@ pub const StatusBar = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn update(self: *StatusBar, editor_widget: *GrimEditorWidget, grim_mode: anytype) !void {
+    pub fn update(self: *StatusBar, editor_widget: *GrimEditorWidget, grim_mode: anytype, git: *core.Git) !void {
         // Clean up old widgets before creating new ones
         for (self.flex_row.children.items) |child| {
             child.widget.vtable.deinit(child.widget);
@@ -75,8 +76,7 @@ pub const StatusBar = struct {
         }
 
         // File modification indicator
-        const modified = false; // TODO: Track modification state
-        if (modified) {
+        if (editor_widget.is_modified) {
             const modified_widget = try phantom.widgets.Text.initWithStyle(
                 self.allocator,
                 "[+]",
@@ -148,11 +148,26 @@ pub const StatusBar = struct {
         );
         try self.flex_row.addChild(.{ .widget = &percent_widget.widget, .flex_basis =5 });
 
-        // LSP status is managed by GrimApp, not Editor
-        // TODO: Pass LSP status from GrimApp if needed
-
-        // Git branch info is managed by GrimApp, not Editor
-        // TODO: Pass git_branch from GrimApp if needed
+        // Git branch display
+        if (git.getCurrentBranch()) |branch| {
+            defer self.allocator.free(branch);
+            const branch_text = try std.fmt.allocPrint(
+                self.allocator,
+                "  {s}",
+                .{branch},
+            );
+            defer self.allocator.free(branch_text);
+            const branch_widget = try phantom.widgets.Text.initWithStyle(
+                self.allocator,
+                branch_text,
+                phantom.Style.default()
+                    .withFg(phantom.Color.cyan)
+                    .withBold(),
+            );
+            try self.flex_row.addChild(.{ .widget = &branch_widget.widget, .flex_basis =@intCast(branch_text.len) });
+        } else |_| {
+            // Not in a git repo or branch detection failed - silently ignore
+        }
     }
 
     pub fn resize(self: *StatusBar, new_width: u16) void {

@@ -273,27 +273,57 @@ pub const CommandBar = struct {
     pub fn render(self: *CommandBar, buffer: anytype, area: phantom.Rect) void {
         if (!self.visible) return;
 
-        // Render prompt
+        // Clear the command bar line
+        const bg_style = phantom.Style.default()
+            .withBg(phantom.Color.black);
+        var x: u16 = 0;
+        while (x < area.width) : (x += 1) {
+            buffer.setCell(area.x + x, area.y, .{ .char = ' ', .style = bg_style });
+        }
+
+        // Render "Cmdline:" label with styled background
+        const label_style = phantom.Style.default()
+            .withFg(phantom.Color.black)
+            .withBg(phantom.Color.cyan)
+            .withBold();
+
+        const label = " Cmdline ";
+        var label_x = area.x;
+        for (label) |c| {
+            buffer.setCell(label_x, area.y, .{ .char = c, .style = label_style });
+            label_x += 1;
+        }
+
+        // Render prompt character
         const prompt = switch (self.mode) {
-            .command => ":",
-            .search => "/",
-            .search_backward => "?",
+            .command => " : ",
+            .search => " / ",
+            .search_backward => " ? ",
         };
 
-        const style = phantom.Style.default()
+        const prompt_style = phantom.Style.default()
+            .withFg(phantom.Color.bright_yellow)
+            .withBg(phantom.Color.black)
+            .withBold();
+
+        var prompt_x = label_x;
+        for (prompt) |c| {
+            buffer.setCell(prompt_x, area.y, .{ .char = c, .style = prompt_style });
+            prompt_x += 1;
+        }
+
+        // Render input text
+        const text_start_x = prompt_x;
+        const text_style = phantom.Style.default()
             .withFg(phantom.Color.white)
             .withBg(phantom.Color.black);
 
-        buffer.writeText(area.x, area.y, prompt, style);
-
-        // Render input text
-        const text_start_x = area.x + 1;
         var current_x = text_start_x;
         var i: usize = 0;
 
         while (i < self.buffer.items.len and current_x < area.x + area.width) : (i += 1) {
             const c = self.buffer.items[i];
-            buffer.setCell(current_x, area.y, .{ .char = c, .style = style });
+            buffer.setCell(current_x, area.y, .{ .char = c, .style = text_style });
             current_x += 1;
         }
 
@@ -307,7 +337,7 @@ pub const CommandBar = struct {
 
             const cursor_style = phantom.Style.default()
                 .withFg(phantom.Color.black)
-                .withBg(phantom.Color.white);
+                .withBg(phantom.Color.bright_white);
 
             buffer.setCell(cursor_x, area.y, .{ .char = cursor_char, .style = cursor_style });
         }

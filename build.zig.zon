@@ -84,6 +84,10 @@
             .url = "https://github.com/ghostkellz/zigzag/archive/refs/heads/main.tar.gz",
             .hash = "zigzag-0.1.0-NmTasN9ICAAVgsLxNF42rJLLmh8SnQWU8zcEFitzH2EI",
         },
+        .wzl = .{
+            .url = "https://github.com/ghostkellz/wzl/archive/refs/heads/main.tar.gz",
+            .hash = "wzl-0.0.0-027x-DvjBwAub4UwhEP379YR6rfBxydQ09bUvREqa6BV",
+        },
     },
     .paths = .{
         "build.zig",

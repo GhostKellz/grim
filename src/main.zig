@@ -2,6 +2,7 @@ const std = @import("std");
 const grim = @import("grim");
 const runtime = grim.runtime;
 const EditorLSP = @import("ui_tui").EditorLSP;
+const core = grim.core;
 
 pub fn main() !void {
     const start_time = std.time.nanoTimestamp();
@@ -9,6 +10,14 @@ pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
     const allocator = gpa.allocator();
+
+    // Detect platform capabilities
+    var platform_caps = try core.PlatformCapabilities.detect(allocator);
+    defer platform_caps.deinit(allocator);
+
+    // Log detected capabilities
+    std.log.info("=== Grim Platform Detection ===", .{});
+    platform_caps.print();
 
     // Get command line arguments
     const args = try std.process.argsAlloc(allocator);

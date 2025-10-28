@@ -40,6 +40,10 @@ pub const GrimEditorWidget = struct {
     highlight_cache: []syntax.HighlightRange,
     highlight_dirty: bool,
 
+    // Dirty line tracking for rendering optimization
+    dirty_lines: std.DynamicBitSet,
+    full_redraw_needed: bool,
+
     // Viewport (scrolling)
     viewport_top_line: usize,
     viewport_left_col: usize,
@@ -68,6 +72,13 @@ pub const GrimEditorWidget = struct {
     recording_macro: ?u8, // Register being recorded to (a-z)
     macro_buffer: std.ArrayList(phantom.Key), // Current recording
     macros: std.StringHashMap([]phantom.Key), // Recorded macros (a-z)
+
+    // File state
+    is_modified: bool, // Track if buffer has unsaved changes
+
+    // Tab configuration
+    tab_size: u8, // Number of spaces for a tab
+    expand_tab: bool, // Convert tabs to spaces
 
     const SearchMatch = struct {
         start_offset: usize,
@@ -108,6 +119,10 @@ pub const GrimEditorWidget = struct {
         const lsp_diagnostics = try lsp_diagnostics_panel_mod.LSPDiagnosticsPanel.init(allocator, 80, 20);
         errdefer lsp_diagnostics.deinit();
 
+        // Initialize dirty line tracking
+        var dirty_lines = try std.DynamicBitSet.initEmpty(allocator, 1024); // Start with 1024 lines capacity
+        errdefer dirty_lines.deinit(allocator);
+
         self.* = .{
             .widget = .{ .vtable = &vtable },
             .allocator = allocator,
@@ -118,6 +133,8 @@ pub const GrimEditorWidget = struct {
             .lsp_diagnostics_panel = lsp_diagnostics,
             .highlight_cache = &.{},
             .highlight_dirty = true,
+            .dirty_lines = dirty_lines,
+            .full_redraw_needed = true,
             .viewport_top_line = 0,
             .viewport_left_col = 0,
             .area = phantom.Rect.init(0, 0, 80, 24),
@@ -133,6 +150,9 @@ pub const GrimEditorWidget = struct {
             .recording_macro = null,
             .macro_buffer = std.ArrayList(phantom.Key){},
             .macros = std.StringHashMap([]phantom.Key).init(allocator),
+            .is_modified = false,
+            .tab_size = 4, // Default to 4 spaces
+            .expand_tab = true, // Default to spaces, not tabs
         };
 
         return self;
@@ -148,6 +168,7 @@ pub const GrimEditorWidget = struct {
         if (self.highlight_cache.len > 0) self.allocator.free(self.highlight_cache);
         if (self.search_pattern) |pattern| self.allocator.free(pattern);
         self.search_matches.deinit(self.allocator);
+        self.dirty_lines.deinit();
 
         // Free registers
         if (self.unnamed_register) |reg| self.allocator.free(reg);
@@ -507,6 +528,10 @@ pub const GrimEditorWidget = struct {
     fn resize(widget: *phantom.Widget, new_area: phantom.Rect) void {
         const self: *GrimEditorWidget = @fieldParentPtr("widget", widget);
         self.area = new_area;
+        // Mark all as dirty on resize to force full redraw
+        self.full_redraw_needed = true;
+        // Re-scroll to ensure cursor stays in viewport with new dimensions
+        self.scrollToCursor();
     }
 
     // === Public API ===
@@ -516,12 +541,36 @@ pub const GrimEditorWidget = struct {
         self.highlight_dirty = true;
         self.viewport_top_line = 0;
         self.viewport_left_col = 0;
+        self.is_modified = false; // Clear modified flag on fresh load
 
         // Detect language and trigger syntax highlighting
         try self.activateSyntaxHighlighting(filepath);
 
         // Initialize LSP if needed
-        // TODO: Start LSP client for detected language
+        self.startLSPForLanguage(filepath);
+    }
+
+    fn startLSPForLanguage(self: *GrimEditorWidget, filepath: []const u8) void {
+        // Only start LSP if we have a client instance
+        if (self.lsp_client) |lsp| {
+            // Get absolute path for LSP
+            const abs_path = std.fs.cwd().realpathAlloc(self.allocator, filepath) catch {
+                // If we can't get absolute path, try with the relative path
+                lsp.openFile(filepath) catch |err| {
+                    std.log.warn("Failed to open file in LSP: {}", .{err});
+                };
+                return;
+            };
+            defer self.allocator.free(abs_path);
+
+            // Open the file in LSP - this will auto-start the appropriate server
+            lsp.openFile(abs_path) catch |err| {
+                std.log.warn("Failed to open file in LSP: {}", .{err});
+                return;
+            };
+
+            std.log.info("LSP: Opened {s} for language support", .{filepath});
+        }
     }
 
     fn activateSyntaxHighlighting(self: *GrimEditorWidget, filepath: []const u8) !void {
@@ -551,87 +600,167 @@ pub const GrimEditorWidget = struct {
     pub fn saveFile(self: *GrimEditorWidget) !void {
         if (self.editor.current_filename) |filepath| {
             const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+            // Count lines
+            var line_count: usize = 1; // Start at 1 for the first line
+            for (content) |ch| {
+                if (ch == '\n') line_count += 1;
+            }
+
             const file = try std.fs.cwd().createFile(filepath, .{});
             defer file.close();
             try file.writeAll(content);
+            self.is_modified = false; // Clear modified flag after successful save
+
+            // Show save confirmation
+            std.log.info("\"{s}\" {d}L, {d}B written", .{ filepath, line_count, content.len });
         } else {
             return error.NoFilename;
         }
     }
 
     pub fn insertChar(self: *GrimEditorWidget, c: u21) !void {
-        // Save undo state for first char of insert sequence
-        if (!self.editor.in_undo_group) {
-            try self.editor.saveUndoState();
-            self.editor.in_undo_group = true;
-        }
+        // Save undo state for each character
+        try self.editor.saveUndoState("insert character");
+        const line = (self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset) catch return).line;
         try self.editor.insertChar(c);
         self.highlight_dirty = true;
+        self.is_modified = true;
+        self.markLineDirty(line);
     }
 
     pub fn insertNewline(self: *GrimEditorWidget) !void {
-        try self.editor.saveUndoState();
+        try self.editor.saveUndoState("insert newline");
+        const line = (self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset) catch return).line;
         try self.editor.rope.insert(self.editor.cursor.offset, "\n");
         self.editor.cursor.offset += 1;
         self.highlight_dirty = true;
+        self.is_modified = true;
+        // Mark current and next lines as dirty (newline affects both)
+        self.markLinesDirty(line, line + 1);
     }
 
     pub fn insertTab(self: *GrimEditorWidget) !void {
-        // TODO: Respect config (tabs vs spaces)
-        try self.insertChar(' ');
-        try self.insertChar(' ');
-        try self.insertChar(' ');
-        try self.insertChar(' ');
+        if (self.expand_tab) {
+            // Insert spaces based on tab_size
+            var i: u8 = 0;
+            while (i < self.tab_size) : (i += 1) {
+                try self.insertChar(' ');
+            }
+        } else {
+            // Insert actual tab character
+            try self.insertChar('\t');
+        }
     }
 
     pub fn deleteCharBackward(self: *GrimEditorWidget) !void {
         if (self.editor.cursor.offset > 0) {
-            try self.editor.saveUndoState();
+            try self.editor.saveUndoState("backspace");
+            const line = (self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset) catch return).line;
             const prev_offset = self.editor.cursor.offset - 1;
             try self.editor.rope.delete(prev_offset, 1);
             self.editor.cursor.offset = prev_offset;
+            self.is_modified = true;
+            self.markLineDirty(line);
         }
         self.highlight_dirty = true;
     }
 
     pub fn deleteCharForward(self: *GrimEditorWidget) !void {
         if (self.editor.cursor.offset < self.editor.rope.len()) {
-            try self.editor.saveUndoState();
+            try self.editor.saveUndoState("delete");
+            const line = (self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset) catch return).line;
             try self.editor.rope.delete(self.editor.cursor.offset, 1);
+            self.is_modified = true;
+            self.markLineDirty(line);
         }
         self.highlight_dirty = true;
     }
 
     pub fn moveCursorLeft(self: *GrimEditorWidget) !void {
         self.editor.cursor.moveLeft(&self.editor.rope);
+        self.scrollToCursor();
     }
 
     pub fn moveCursorRight(self: *GrimEditorWidget) !void {
         self.editor.cursor.moveRight(&self.editor.rope);
+        self.scrollToCursor();
     }
 
     pub fn moveCursorUp(self: *GrimEditorWidget) !void {
         self.editor.moveCursorUp();
+        self.scrollToCursor();
     }
 
     pub fn moveCursorDown(self: *GrimEditorWidget) !void {
         self.editor.moveCursorDown();
+        self.scrollToCursor();
     }
 
     pub fn moveWordForward(self: *GrimEditorWidget) !void {
         self.editor.moveWordForward();
+        self.scrollToCursor();
     }
 
     pub fn moveWordBackward(self: *GrimEditorWidget) !void {
         self.editor.moveWordBackward();
+        self.scrollToCursor();
     }
 
     pub fn moveToLineStart(self: *GrimEditorWidget) !void {
         self.editor.cursor.moveToLineStart(&self.editor.rope);
+        self.scrollToCursor();
     }
 
     pub fn moveToLineEnd(self: *GrimEditorWidget) !void {
         self.editor.cursor.moveToLineEnd(&self.editor.rope);
+        self.scrollToCursor();
+    }
+
+    pub fn scrollHalfPageDown(self: *GrimEditorWidget) !void {
+        const half_page = self.area.height / 2;
+        var i: usize = 0;
+        while (i < half_page) : (i += 1) {
+            self.editor.moveCursorDown();
+        }
+        self.scrollToCursor();
+    }
+
+    pub fn scrollHalfPageUp(self: *GrimEditorWidget) !void {
+        const half_page = self.area.height / 2;
+        var i: usize = 0;
+        while (i < half_page) : (i += 1) {
+            self.editor.moveCursorUp();
+        }
+        self.scrollToCursor();
+    }
+
+    pub fn scrollFullPageDown(self: *GrimEditorWidget) !void {
+        const full_page = self.area.height;
+        var i: usize = 0;
+        while (i < full_page) : (i += 1) {
+            self.editor.moveCursorDown();
+        }
+        self.scrollToCursor();
+    }
+
+    pub fn scrollFullPageUp(self: *GrimEditorWidget) !void {
+        const full_page = self.area.height;
+        var i: usize = 0;
+        while (i < full_page) : (i += 1) {
+            self.editor.moveCursorUp();
+        }
+        self.scrollToCursor();
+    }
+
+    pub fn gotoFirstLine(self: *GrimEditorWidget) !void {
+        self.editor.cursor.offset = 0;
+        self.scrollToCursor();
+    }
+
+    pub fn gotoLastLine(self: *GrimEditorWidget) !void {
+        self.editor.cursor.offset = self.editor.rope.len();
+        self.scrollToCursor();
     }
 
     // Visual mode operations
@@ -688,7 +817,7 @@ pub const GrimEditorWidget = struct {
         if (start >= end) return;
 
         // Save undo state before deletion
-        try self.editor.saveUndoState();
+        try self.editor.saveUndoState("delete selection");
 
         // Delete the selected range
         try self.editor.rope.delete(start, end - start);
@@ -698,6 +827,7 @@ pub const GrimEditorWidget = struct {
         self.visual_mode = .none;
         self.visual_anchor = null;
         self.highlight_dirty = true;
+        self.is_modified = true;
     }
 
     pub fn yankSelection(self: *GrimEditorWidget) !void {
@@ -719,6 +849,113 @@ pub const GrimEditorWidget = struct {
         // Exit visual mode
         self.visual_mode = .none;
         self.visual_anchor = null;
+    }
+
+    pub fn indentSelection(self: *GrimEditorWidget) !void {
+        if (self.visual_mode == .none) return;
+
+        const range = self.getSelectionRange() orelse return;
+        const start = range.start;
+        const end = range.end;
+
+        if (start >= end) return;
+
+        // Save undo state before indenting
+        try self.editor.saveUndoState("indent");
+
+        // Get the content
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        // Find all lines in the selection
+        const start_line_col = self.offsetToLineCol(content, start);
+        const end_line_col = self.offsetToLineCol(content, end);
+
+        // Indent each line in the selection (from bottom to top to maintain offsets)
+        var line = end_line_col.line;
+        while (true) : (line -= 1) {
+            const line_start = self.getOffsetForLine(line);
+
+            // Insert indentation (spaces or tab based on expand_tab setting)
+            if (self.expand_tab) {
+                // Insert spaces
+                var i: u8 = 0;
+                while (i < self.tab_size) : (i += 1) {
+                    try self.editor.rope.insert(line_start, " ");
+                }
+            } else {
+                // Insert tab character
+                try self.editor.rope.insert(line_start, "\t");
+            }
+
+            // Mark line as dirty
+            self.markLineDirty(line);
+
+            if (line == start_line_col.line) break;
+            if (line == 0) break;
+        }
+
+        // Exit visual mode
+        self.visual_mode = .none;
+        self.visual_anchor = null;
+        self.highlight_dirty = true;
+        self.is_modified = true;
+    }
+
+    pub fn dedentSelection(self: *GrimEditorWidget) !void {
+        if (self.visual_mode == .none) return;
+
+        const range = self.getSelectionRange() orelse return;
+        const start = range.start;
+        const end = range.end;
+
+        if (start >= end) return;
+
+        // Save undo state before dedenting
+        try self.editor.saveUndoState("dedent");
+
+        // Get the content
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        // Find all lines in the selection
+        const start_line_col = self.offsetToLineCol(content, start);
+        const end_line_col = self.offsetToLineCol(content, end);
+
+        // Dedent each line in the selection (from bottom to top to maintain offsets)
+        var line = end_line_col.line;
+        while (true) : (line -= 1) {
+            const line_start = self.getOffsetForLine(line);
+
+            // Check what's at the start of the line and remove it
+            const line_content = content[line_start..];
+            if (line_content.len > 0) {
+                if (line_content[0] == '\t') {
+                    // Remove one tab
+                    try self.editor.rope.delete(line_start, 1);
+                    self.markLineDirty(line);
+                } else if (line_content[0] == ' ') {
+                    // Remove up to tab_size spaces
+                    var spaces_to_remove: u8 = 0;
+                    var i: usize = 0;
+                    while (i < self.tab_size and i < line_content.len and line_content[i] == ' ') {
+                        spaces_to_remove += 1;
+                        i += 1;
+                    }
+                    if (spaces_to_remove > 0) {
+                        try self.editor.rope.delete(line_start, spaces_to_remove);
+                        self.markLineDirty(line);
+                    }
+                }
+            }
+
+            if (line == start_line_col.line) break;
+            if (line == 0) break;
+        }
+
+        // Exit visual mode
+        self.visual_mode = .none;
+        self.visual_anchor = null;
+        self.highlight_dirty = true;
+        self.is_modified = true;
     }
 
     fn getSelectionRange(self: *GrimEditorWidget) ?struct { start: usize, end: usize } {
@@ -857,6 +1094,36 @@ pub const GrimEditorWidget = struct {
     }
 
     // Scrolling
+    /// Mark a single line as dirty (needs redraw)
+    pub fn markLineDirty(self: *GrimEditorWidget, line: usize) void {
+        // Ensure bitset has enough capacity
+        if (line >= self.dirty_lines.capacity()) {
+            const new_capacity = @max(line + 1, self.dirty_lines.capacity() * 2);
+            self.dirty_lines.resize(new_capacity, false) catch return;
+        }
+        self.dirty_lines.set(line);
+    }
+
+    /// Mark a range of lines as dirty
+    pub fn markLinesDirty(self: *GrimEditorWidget, start_line: usize, end_line: usize) void {
+        const last_line = @min(end_line, self.editor.rope.lineCount());
+        var line = start_line;
+        while (line <= last_line) : (line += 1) {
+            self.markLineDirty(line);
+        }
+    }
+
+    /// Mark all visible lines as dirty (force full redraw)
+    pub fn markAllDirty(self: *GrimEditorWidget) void {
+        self.full_redraw_needed = true;
+    }
+
+    /// Clear all dirty flags after rendering
+    fn clearDirtyFlags(self: *GrimEditorWidget) void {
+        self.dirty_lines.setRangeValue(.{ .start = 0, .end = self.dirty_lines.capacity() }, false);
+        self.full_redraw_needed = false;
+    }
+
     fn scrollToCursor(self: *GrimEditorWidget) void {
         const cursor_line_col = self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset) catch return;
         const cursor_line = cursor_line_col.line;
@@ -935,21 +1202,23 @@ pub const GrimEditorWidget = struct {
     }
 
     pub fn searchNext(self: *GrimEditorWidget) !void {
-        if (self.search_matches.items.len == 0) return;
-
-        const idx = self.current_match_index orelse 0;
-        const next = (idx + 1) % self.search_matches.items.len;
-        self.current_match_index = next;
-        try self.jumpToMatch(next, true);
+        // Use editor's nextMatch method
+        if (self.editor.nextMatch()) {
+            // Update widget's search match index to match editor's
+            if (self.editor.current_match_index) |idx| {
+                self.current_match_index = idx;
+            }
+        }
     }
 
     pub fn searchPrev(self: *GrimEditorWidget) !void {
-        if (self.search_matches.items.len == 0) return;
-
-        const idx = self.current_match_index orelse 0;
-        const prev = if (idx == 0) self.search_matches.items.len - 1 else idx - 1;
-        self.current_match_index = prev;
-        try self.jumpToMatch(prev, false);
+        // Use editor's previousMatch method
+        if (self.editor.previousMatch()) {
+            // Update widget's search match index to match editor's
+            if (self.editor.current_match_index) |idx| {
+                self.current_match_index = idx;
+            }
+        }
     }
 
     fn jumpToMatch(self: *GrimEditorWidget, index: usize, forward: bool) !void {
@@ -1007,7 +1276,7 @@ pub const GrimEditorWidget = struct {
         if (pattern.len == 0) return;
 
         // Save undo state before making changes
-        try self.editor.saveUndoState();
+        try self.editor.saveUndoState("substitute");
 
         const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
         const cursor_offset = self.editor.cursor.offset;
@@ -1099,6 +1368,9 @@ pub const GrimEditorWidget = struct {
         self.editor.cursor.offset = @min(new_cursor_offset, self.editor.rope.len());
 
         self.highlight_dirty = true;
+        if (replace_count > 0) {
+            self.is_modified = true;
+        }
 
         std.log.info("Replaced {d} occurrence(s)", .{replace_count});
     }
@@ -1159,10 +1431,11 @@ pub const GrimEditorWidget = struct {
     /// Paste from register at cursor
     pub fn paste(self: *GrimEditorWidget, register: ?u8) !void {
         const text = self.getRegister(register) orelse return;
-        try self.editor.saveUndoState();
+        try self.editor.saveUndoState("paste");
         try self.editor.rope.insert(self.editor.cursor.offset, text);
         self.editor.cursor.offset += text.len;
         self.highlight_dirty = true;
+        self.is_modified = true;
     }
 
     /// Yank current line to register
@@ -1209,12 +1482,13 @@ pub const GrimEditorWidget = struct {
         try self.setRegister(register, line_text);
 
         // Save undo state before deletion
-        try self.editor.saveUndoState();
+        try self.editor.saveUndoState("delete line");
 
         // Delete the line
         try self.editor.rope.delete(line_start, line_end - line_start);
         self.editor.cursor.offset = line_start;
         self.highlight_dirty = true;
+        self.is_modified = true;
     }
 
     /// Copy text to system clipboard
@@ -1269,7 +1543,8 @@ pub const GrimEditorWidget = struct {
 
     /// End undo grouping (call when leaving insert mode)
     pub fn endUndoGroup(self: *GrimEditorWidget) void {
-        self.editor.in_undo_group = false;
+        // No-op now, undo is automatic per-operation
+        _ = self;
     }
 
     // === Macro operations ===
@@ -1325,5 +1600,15 @@ pub const GrimEditorWidget = struct {
     /// Check if currently recording
     pub fn isRecording(self: *GrimEditorWidget) bool {
         return self.recording_macro != null;
+    }
+
+    /// Attach LSP client to this editor widget
+    pub fn attachLSP(self: *GrimEditorWidget, lsp_client: *editor_lsp_mod.EditorLSP) void {
+        self.lsp_client = lsp_client;
+    }
+
+    /// Detach LSP client from this editor widget
+    pub fn detachLSP(self: *GrimEditorWidget) void {
+        self.lsp_client = null;
     }
 };

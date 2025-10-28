@@ -55,6 +55,10 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
         // Keep io_uring enabled to avoid compile errors, but use epoll at runtime
     });
+    const wzl = b.dependency("wzl", .{
+        .target = target,
+        .optimize = optimize,
+    });
 
     // Grove dependency for Ghostlang integration
     const ghostlang_enabled = b.option(bool, "ghostlang", "Enable Ghostlang (.gza) support via Grove") orelse false;
@@ -135,6 +139,7 @@ pub fn build(b: *std.Build) void {
         .imports = &.{
             .{ .name = "phantom", .module = phantom.module("phantom") },
             .{ .name = "zigzag", .module = zigzag.module("zigzag") },
+            .{ .name = "wzl", .module = wzl.module("wzl") },
             .{ .name = "core", .module = core_mod },
             .{ .name = "syntax", .module = syntax_mod },
             .{ .name = "runtime", .module = runtime_mod },

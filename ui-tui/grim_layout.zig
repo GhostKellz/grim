@@ -57,6 +57,23 @@ pub const SplitNode = union(enum) {
         }
     }
 
+    /// Collect all editors in this split tree
+    pub fn collectEditors(self: *SplitNode, editors: *std.ArrayList(*grim_editor_widget.GrimEditorWidget), allocator: std.mem.Allocator) !void {
+        switch (self.*) {
+            .leaf => |editor| {
+                try editors.append(allocator, editor);
+            },
+            .vsplit => |vsplit| {
+                try vsplit.left.collectEditors(editors, allocator);
+                try vsplit.right.collectEditors(editors, allocator);
+            },
+            .hsplit => |hsplit| {
+                try hsplit.top.collectEditors(editors, allocator);
+                try hsplit.bottom.collectEditors(editors, allocator);
+            },
+        }
+    }
+
     /// Get the editor at the given position, or null if out of bounds
     pub fn getEditorAt(self: *SplitNode, area: phantom.Rect, x: u16, y: u16) ?*grim_editor_widget.GrimEditorWidget {
         switch (self.*) {
@@ -262,6 +279,15 @@ pub const LayoutManager = struct {
     pub fn getActiveEditor(self: *LayoutManager) ?*grim_editor_widget.GrimEditorWidget {
         if (self.tabs.items.len == 0) return null;
         return self.tabs.items[self.active_tab_index].active_editor;
+    }
+
+    /// Get all editor widgets across all tabs (for LSP attachment, etc.)
+    pub fn getAllEditors(self: *LayoutManager) []*grim_editor_widget.GrimEditorWidget {
+        var editors = std.ArrayList(*grim_editor_widget.GrimEditorWidget){};
+        for (self.tabs.items) |tab| {
+            tab.root.collectEditors(&editors, self.allocator) catch {};
+        }
+        return editors.toOwnedSlice(self.allocator) catch &[_]*grim_editor_widget.GrimEditorWidget{};
     }
 
     /// Get currently active tab

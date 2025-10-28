@@ -362,6 +362,17 @@ pub const GrimApp = struct {
                         return true;
                     },
 
+                    // File navigation
+                    'g' => {
+                        // Enter pending operator mode for gg
+                        self.pending_operator = 'g';
+                        return true;
+                    },
+                    'G' => {
+                        try self.layout_manager.getActiveEditor().?.gotoLastLine();
+                        return true;
+                    },
+
                     // LSP features
                     'K' => {
                         try self.layout_manager.getActiveEditor().?.triggerHover();
@@ -375,6 +386,36 @@ pub const GrimApp = struct {
                     },
                     'N' => {
                         try self.layout_manager.getActiveEditor().?.searchPrev();
+                        return true;
+                    },
+
+                    // Character find motions
+                    'f' => {
+                        self.pending_operator = 'f';
+                        return true;
+                    },
+                    'F' => {
+                        self.pending_operator = 'F';
+                        return true;
+                    },
+                    't' => {
+                        self.pending_operator = 't';
+                        return true;
+                    },
+                    'T' => {
+                        self.pending_operator = 'T';
+                        return true;
+                    },
+                    ';' => {
+                        if (editor) |ed| {
+                            ed.editor.repeatLastFind();
+                        }
+                        return true;
+                    },
+                    ',' => {
+                        if (editor) |ed| {
+                            ed.editor.repeatLastFindReverse();
+                        }
                         return true;
                     },
 
@@ -463,6 +504,42 @@ pub const GrimApp = struct {
                             }
                             self.pending_operator = 0;
                             return true;
+                        } else if (self.pending_operator == 'g') {
+                            // gg - goto first line
+                            if (c == 'g') {
+                                try self.layout_manager.getActiveEditor().?.gotoFirstLine();
+                                self.pending_operator = 0;
+                                return true;
+                            }
+                            self.pending_operator = 0;
+                        } else if (self.pending_operator == 'f') {
+                            // f<char> - find character forward
+                            if (editor) |ed| {
+                                ed.editor.findCharForward(c);
+                            }
+                            self.pending_operator = 0;
+                            return true;
+                        } else if (self.pending_operator == 'F') {
+                            // F<char> - find character backward
+                            if (editor) |ed| {
+                                ed.editor.findCharBackward(c);
+                            }
+                            self.pending_operator = 0;
+                            return true;
+                        } else if (self.pending_operator == 't') {
+                            // t<char> - till character forward
+                            if (editor) |ed| {
+                                ed.editor.tillCharForward(c);
+                            }
+                            self.pending_operator = 0;
+                            return true;
+                        } else if (self.pending_operator == 'T') {
+                            // T<char> - till character backward
+                            if (editor) |ed| {
+                                ed.editor.tillCharBackward(c);
+                            }
+                            self.pending_operator = 0;
+                            return true;
                         }
 
                         // Check if 'q' followed by register for macro recording
@@ -487,6 +564,26 @@ pub const GrimApp = struct {
             .ctrl_r => {
                 // Redo
                 try self.layout_manager.getActiveEditor().?.redo();
+                return true;
+            },
+            .ctrl_d => {
+                // Half page down
+                try self.layout_manager.getActiveEditor().?.scrollHalfPageDown();
+                return true;
+            },
+            .ctrl_u => {
+                // Half page up
+                try self.layout_manager.getActiveEditor().?.scrollHalfPageUp();
+                return true;
+            },
+            .ctrl_f => {
+                // Full page down
+                try self.layout_manager.getActiveEditor().?.scrollFullPageDown();
+                return true;
+            },
+            .ctrl_b => {
+                // Full page up
+                try self.layout_manager.getActiveEditor().?.scrollFullPageUp();
                 return true;
             },
             else => return false,
@@ -577,6 +674,23 @@ pub const GrimApp = struct {
                     },
                     'y' => {
                         try editor.yankSelection();
+                        self.mode = .normal;
+                        return true;
+                    },
+                    'c' => {
+                        try editor.deleteSelection();
+                        self.mode = .insert;
+                        return true;
+                    },
+
+                    // Indent/dedent
+                    '>' => {
+                        try editor.indentSelection();
+                        self.mode = .normal;
+                        return true;
+                    },
+                    '<' => {
+                        try editor.dedentSelection();
                         self.mode = .normal;
                         return true;
                     },
