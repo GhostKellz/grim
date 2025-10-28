@@ -59,7 +59,7 @@ pub const SyntaxHighlighter = struct {
 
         // Get rope content
         const content_slice = rope.slice(.{ .start = 0, .end = rope.len() }) catch |err| switch (err) {
-            error.OutOfBounds, error.InvalidRange => return Error.HighlightingFailed,
+            error.OutOfBounds, error.InvalidRange, error.InvalidUtf8 => return Error.HighlightingFailed,
             error.OutOfMemory => return error.OutOfMemory,
         };
         const content = try self.allocator.dupe(u8, content_slice);

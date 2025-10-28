@@ -17,6 +17,7 @@ pub const simd_utf8 = @import("simd_utf8.zig");
 pub const io_uring_file = @import("io_uring_file.zig");
 pub const clipboard = @import("clipboard.zig");
 pub const config = @import("config.zig");
+pub const search_history = @import("search_history.zig");
 
 pub const Rope = rope.Rope;
 pub const Range = rope.Range;
@@ -44,3 +45,4 @@ pub const IoUringFileManager = io_uring_file.IoUringFileManager;
 pub const Clipboard = clipboard.Clipboard;
 pub const Config = config.Config;
 pub const ConfigManager = config.ConfigManager;
+pub const SearchHistory = search_history.SearchHistory;

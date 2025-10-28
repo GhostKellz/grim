@@ -105,6 +105,10 @@ pub const GrimApp = struct {
     // Config management
     config_manager: core.ConfigManager,
 
+    // Search history
+    search_history: core.SearchHistory,
+    command_history: core.SearchHistory,
+
     pub fn init(allocator: std.mem.Allocator, config: GrimConfig) !*GrimApp {
         const self = try allocator.create(GrimApp);
         errdefer allocator.destroy(self);
@@ -153,6 +157,10 @@ pub const GrimApp = struct {
         // Initialize Config Manager (load or create default config)
         const config_manager = try core.ConfigManager.init(allocator);
 
+        // Initialize search and command history
+        const search_history = core.SearchHistory.init(allocator, 100);
+        const command_history = core.SearchHistory.init(allocator, 100);
+
         // Initialize theme registry
         var theme_registry = theme_mod.ThemeRegistry.init(allocator);
         errdefer theme_registry.deinit();
@@ -186,6 +194,8 @@ pub const GrimApp = struct {
             .fuzzy = fuzzy,
             .clipboard = clipboard,
             .config_manager = config_manager,
+            .search_history = search_history,
+            .command_history = command_history,
         };
 
         // Create initial editor (needed even if opening a file)
@@ -205,6 +215,8 @@ pub const GrimApp = struct {
     }
 
     pub fn deinit(self: *GrimApp) void {
+        self.command_history.deinit();
+        self.search_history.deinit();
         self.config_manager.deinit();
         self.clipboard.deinit();
         self.theme_registry.deinit();
@@ -535,6 +547,30 @@ pub const GrimApp = struct {
                                 self.pending_operator = 0;
                                 return true;
                             }
+                            // gd - go to definition (LSP)
+                            else if (c == 'd') {
+                                if (self.editor_lsp) |lsp| {
+                                    if (editor) |ed| {
+                                        const pos = ed.editor.offsetToLineCol(ed.editor.cursor.offset) catch {
+                                            std.log.warn("Failed to convert cursor position", .{});
+                                            self.pending_operator = 0;
+                                            return true;
+                                        };
+
+                                        lsp.requestDefinition(ed.editor.current_filename orelse "untitled", pos.line, pos.col) catch |err| {
+                                            std.log.warn("LSP go-to-definition request failed: {}", .{err});
+                                        };
+                                    }
+                                }
+                                self.pending_operator = 0;
+                                return true;
+                            }
+                            // gr - find references (LSP) - placeholder for now
+                            else if (c == 'r') {
+                                std.log.info("LSP find references not yet implemented", .{});
+                                self.pending_operator = 0;
+                                return true;
+                            }
                             self.pending_operator = 0;
                         } else if (self.pending_operator == 'f') {
                             // f<char> - find character forward
@@ -583,6 +619,11 @@ pub const GrimApp = struct {
             .ctrl_w => {
                 // Enter window command mode - wait for next key
                 self.waiting_for_window_command = true;
+                return true;
+            },
+            .ctrl_v => {
+                self.mode = .visual_block;
+                try self.layout_manager.getActiveEditor().?.startVisualBlockMode();
                 return true;
             },
             .ctrl_r => {
@@ -692,19 +733,49 @@ pub const GrimApp = struct {
 
                     // Operations on selection
                     'd' => {
-                        try editor.deleteSelection();
+                        if (self.mode == .visual_block) {
+                            try editor.deleteBlockSelection();
+                        } else {
+                            try editor.deleteSelection();
+                        }
                         self.mode = .normal;
                         return true;
                     },
                     'y' => {
-                        try editor.yankSelection();
+                        if (self.mode == .visual_block) {
+                            try editor.yankBlockSelection();
+                        } else {
+                            try editor.yankSelection();
+                        }
                         self.mode = .normal;
                         return true;
                     },
                     'c' => {
-                        try editor.deleteSelection();
+                        if (self.mode == .visual_block) {
+                            try editor.deleteBlockSelection();
+                        } else {
+                            try editor.deleteSelection();
+                        }
                         self.mode = .insert;
                         return true;
+                    },
+
+                    // Block insert/append (only for visual_block)
+                    'I' => {
+                        if (self.mode == .visual_block) {
+                            try editor.blockInsert();
+                            self.mode = .insert;
+                            return true;
+                        }
+                        return false;
+                    },
+                    'A' => {
+                        if (self.mode == .visual_block) {
+                            try editor.blockAppend();
+                            self.mode = .insert;
+                            return true;
+                        }
+                        return false;
                     },
 
                     // Indent/dedent
@@ -927,6 +998,11 @@ pub const GrimApp = struct {
     /// Execute a command (from :command mode)
     pub fn executeCommand(self: *GrimApp, command: []const u8) !void {
         if (command.len == 0) return;
+
+        // Add to command history
+        self.command_history.add(command) catch |err| {
+            std.log.warn("Failed to add command to history: {}", .{err});
+        };
 
         // Parse command
         if (std.mem.eql(u8, command, "q") or std.mem.eql(u8, command, "quit")) {

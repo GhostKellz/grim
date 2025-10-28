@@ -89,11 +89,18 @@ pub const GrimEditorWidget = struct {
         col: usize,
     };
 
+    const BlockSelection = struct {
+        start_line: usize,
+        end_line: usize,
+        start_col: usize,
+        end_col: usize,
+    };
+
     pub const VisualMode = enum {
         none,
         character, // v
         line, // V
-        block, // Ctrl-V (not implemented yet)
+        block, // Ctrl-V
     };
 
     const vtable = phantom.Widget.WidgetVTable{
@@ -789,6 +796,17 @@ pub const GrimEditorWidget = struct {
         }
     }
 
+    pub fn startVisualBlockMode(self: *GrimEditorWidget) !void {
+        if (self.visual_mode == .none) {
+            self.visual_mode = .block;
+            self.visual_anchor = self.editor.cursor.offset;
+        } else {
+            // Toggle off if already in visual mode
+            self.visual_mode = .none;
+            self.visual_anchor = null;
+        }
+    }
+
     pub fn clearSelection(self: *GrimEditorWidget) !void {
         self.visual_mode = .none;
         self.visual_anchor = null;
@@ -990,9 +1008,162 @@ pub const GrimEditorWidget = struct {
             const start = @min(anchor_line_start, anchor_line_start);
             const end = @max(cursor_line_end, cursor_line_end);
             return .{ .start = start, .end = end };
+        } else if (self.visual_mode == .block) {
+            // For block mode, return the full range - actual column logic handled in operations
+            const start = @min(anchor, cursor);
+            const end = @max(anchor, cursor) + 1;
+            return .{ .start = start, .end = end };
         }
 
         return null;
+    }
+
+    /// Get block selection coordinates for visual block mode
+    fn getBlockSelection(self: *GrimEditorWidget) ?BlockSelection {
+        if (self.visual_mode != .block) return null;
+        const anchor = self.visual_anchor orelse return null;
+        const cursor = self.editor.cursor.offset;
+
+        const content = self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() }) catch return null;
+
+        // Convert offsets to line/col
+        const anchor_pos = self.offsetToLineCol(content, anchor);
+        const cursor_pos = self.offsetToLineCol(content, cursor);
+
+        return BlockSelection{
+            .start_line = @min(anchor_pos.line, cursor_pos.line),
+            .end_line = @max(anchor_pos.line, cursor_pos.line),
+            .start_col = @min(anchor_pos.col, cursor_pos.col),
+            .end_col = @max(anchor_pos.col, cursor_pos.col),
+        };
+    }
+
+    /// Delete block selection (column-wise delete)
+    pub fn deleteBlockSelection(self: *GrimEditorWidget) !void {
+        const block = self.getBlockSelection() orelse return;
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        // Delete from bottom to top to preserve offsets
+        var line = block.end_line;
+        while (true) : (line -= 1) {
+            const delete_start = self.lineColToOffset(content, line, block.start_col);
+            const delete_end = self.lineColToOffset(content, line, block.end_col + 1);
+
+            if (delete_start < delete_end and delete_end <= content.len) {
+                try self.editor.rope.delete(delete_start, delete_end - delete_start);
+            }
+
+            if (line == block.start_line) break;
+            if (line == 0) break;
+        }
+
+        self.visual_mode = .none;
+        self.visual_anchor = null;
+        self.highlight_dirty = true;
+        self.is_modified = true;
+    }
+
+    /// Yank block selection (column-wise yank)
+    pub fn yankBlockSelection(self: *GrimEditorWidget) !void {
+        const block = self.getBlockSelection() orelse return;
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        // Calculate total size needed
+        var total_size: usize = 0;
+        var line = block.start_line;
+        while (line <= block.end_line) : (line += 1) {
+            const yank_start = self.lineColToOffset(content, line, block.start_col);
+            const yank_end = self.lineColToOffset(content, line, block.end_col + 1);
+            if (yank_start < yank_end and yank_end <= content.len) {
+                total_size += yank_end - yank_start;
+            }
+            if (line < block.end_line) {
+                total_size += 1; // newline
+            }
+        }
+
+        // Allocate and build yank buffer
+        const yank_buffer = try self.allocator.alloc(u8, total_size);
+        defer self.allocator.free(yank_buffer);
+
+        var offset: usize = 0;
+        line = block.start_line;
+        while (line <= block.end_line) : (line += 1) {
+            const yank_start = self.lineColToOffset(content, line, block.start_col);
+            const yank_end = self.lineColToOffset(content, line, block.end_col + 1);
+
+            if (yank_start < yank_end and yank_end <= content.len) {
+                const len = yank_end - yank_start;
+                @memcpy(yank_buffer[offset..][0..len], content[yank_start..yank_end]);
+                offset += len;
+            }
+            if (line < block.end_line) {
+                yank_buffer[offset] = '\n';
+                offset += 1;
+            }
+        }
+
+        // Store in clipboard
+        if (self.clipboard) |clip| {
+            try clip.copy(yank_buffer);
+        }
+
+        self.visual_mode = .none;
+        self.visual_anchor = null;
+    }
+
+    /// Convert line/column to byte offset
+    fn lineColToOffset(self: *GrimEditorWidget, content: []const u8, target_line: usize, target_col: usize) usize {
+        _ = self;
+        var line: usize = 0;
+        var col: usize = 0;
+        var i: usize = 0;
+
+        while (i < content.len) : (i += 1) {
+            if (line == target_line and col == target_col) {
+                return i;
+            }
+            if (content[i] == '\n') {
+                if (line == target_line) {
+                    // Reached end of target line
+                    return i;
+                }
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
+            }
+        }
+
+        return i;
+    }
+
+    /// Block insert - enter insert mode at start of block selection
+    pub fn blockInsert(self: *GrimEditorWidget) !void {
+        const block = self.getBlockSelection() orelse return;
+
+        // Move cursor to start of block (top-left corner)
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        const insert_offset = self.lineColToOffset(content, block.start_line, block.start_col);
+        self.editor.cursor.offset = insert_offset;
+
+        self.visual_mode = .none;
+        self.visual_anchor = null;
+        // Note: Caller should switch to insert mode
+    }
+
+    /// Block append - enter insert mode at end of block selection
+    pub fn blockAppend(self: *GrimEditorWidget) !void {
+        const block = self.getBlockSelection() orelse return;
+
+        // Move cursor to end of block (top-right corner + 1)
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+        const append_offset = self.lineColToOffset(content, block.start_line, block.end_col + 1);
+        self.editor.cursor.offset = append_offset;
+
+        self.visual_mode = .none;
+        self.visual_anchor = null;
+        // Note: Caller should switch to insert mode
     }
 
     // Update LSP widgets with latest data from LSP client

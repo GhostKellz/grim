@@ -35,6 +35,8 @@ pub const Editor = struct {
     last_find_till: bool, // true for t/T, false for f/F
     // Undo/redo system (using core.UndoStack)
     undo_stack: core.UndoStack,
+    // io_uring async file I/O manager
+    io_uring_manager: core.IoUringFileManager,
 
     pub const Mode = enum {
         normal,
@@ -168,10 +170,12 @@ pub const Editor = struct {
             .last_find_forward = true,
             .last_find_till = false,
             .undo_stack = core.UndoStack.init(allocator, 1000),
+            .io_uring_manager = try core.IoUringFileManager.init(allocator),
         };
     }
 
     pub fn deinit(self: *Editor) void {
+        self.io_uring_manager.deinit();
         self.rope.deinit();
         self.highlighter.deinit();
         if (self.fold_regions.len > 0) {
@@ -196,32 +200,31 @@ pub const Editor = struct {
         self.* = undefined;
     }
 
-    pub fn loadFile(self: *Editor, path: []const u8) !void {
-        // Try to open the file - if it doesn't exist, create new buffer
-        const file = std.fs.cwd().openFile(path, .{}) catch |err| {
-            if (err == error.FileNotFound) {
-                // File doesn't exist - create new empty buffer with this name
-                const rope_len = self.rope.len();
-                if (rope_len > 0) {
-                    try self.rope.delete(0, rope_len);
-                }
+    /// Convert byte offset to line and column (0-indexed)
+    pub fn offsetToLineCol(self: *Editor, offset: usize) !struct { line: u32, col: u32 } {
+        const content = try self.rope.slice(.{ .start = 0, .end = @min(offset, self.rope.len()) });
+        var line: u32 = 0;
+        var col: u32 = 0;
 
-                if (self.current_filename) |old_filename| {
-                    self.allocator.free(old_filename);
-                }
-                self.current_filename = try self.allocator.dupe(u8, path);
-                try self.highlighter.setLanguage(path);
-                return;
+        for (content) |ch| {
+            if (ch == '\n') {
+                line += 1;
+                col = 0;
+            } else {
+                col += 1;
             }
-            return err;
-        };
-        defer file.close();
+        }
 
-        const stat = try file.stat();
-        const content = try self.allocator.alloc(u8, stat.size);
+        return .{ .line = line, .col = col };
+    }
+
+    pub fn loadFile(self: *Editor, path: []const u8) !void {
+        // Use io_uring if available, fallback to synchronous I/O
+        const content = if (self.io_uring_manager.available)
+            try self.loadFileAsync(path)
+        else
+            try self.loadFileSync(path);
         defer self.allocator.free(content);
-
-        const bytes_read = try file.readAll(content);
 
         // Clear rope before loading new content
         const rope_len = self.rope.len();
@@ -229,7 +232,7 @@ pub const Editor = struct {
             try self.rope.delete(0, rope_len);
         }
 
-        try self.rope.insert(0, content[0..bytes_read]);
+        try self.rope.insert(0, content);
 
         // Update filename and initialize syntax highlighting
         if (self.current_filename) |old_filename| {
@@ -243,6 +246,32 @@ pub const Editor = struct {
             self.features.setParser(parser);
             try self.updateFoldRegions();
         }
+    }
+
+    /// Load file using io_uring (async, zero-copy)
+    fn loadFileAsync(self: *Editor, path: []const u8) ![]u8 {
+        // TODO: Implement full io_uring integration
+        // For now, fallback to sync
+        return self.loadFileSync(path);
+    }
+
+    /// Load file using synchronous I/O (fallback)
+    fn loadFileSync(self: *Editor, path: []const u8) ![]u8 {
+        const file = std.fs.cwd().openFile(path, .{}) catch |err| {
+            if (err == error.FileNotFound) {
+                // Return empty buffer for new files
+                return try self.allocator.alloc(u8, 0);
+            }
+            return err;
+        };
+        defer file.close();
+
+        const stat = try file.stat();
+        const content = try self.allocator.alloc(u8, stat.size);
+        errdefer self.allocator.free(content);
+
+        const bytes_read = try file.readAll(content);
+        return content[0..bytes_read];
     }
 
     pub fn saveFile(self: *Editor, path: []const u8) !void {
