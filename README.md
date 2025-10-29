@@ -94,4 +94,36 @@ zig build run -Dghostlang=true
 ```
 ---
 
-### Configuration 
+### Configuration
+
+Grim can be configured via JSON. Create `~/.config/grim/config.json`:
+
+```bash
+# Copy the example configuration
+mkdir -p ~/.config/grim
+cp config.example.json ~/.config/grim/config.json
+
+# Edit to your preferences
+$EDITOR ~/.config/grim/config.json
+```
+
+See [`config.example.json`](config.example.json) for all available options.
+
+**Key Configuration Options:**
+- **Editor**: Tab width, line numbers, auto-save
+- **Theme**: Color scheme and syntax highlighting
+- **LSP**: Language server configuration per filetype
+- **Keybindings**: Custom keymaps and leader key
+- **Plugins**: Enable/disable Ghostlang plugins
+
+---
+
+### Contributing
+
+We welcome contributions! See [`CONTRIBUTING.md`](CONTRIBUTING.md) for:
+- Development setup
+- Code style guidelines
+- Architecture overview
+- Pull request process
+
+ 
