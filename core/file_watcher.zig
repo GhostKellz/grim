@@ -22,7 +22,7 @@ pub const FileWatcher = struct {
         return FileWatcher{
             .allocator = allocator,
             .watched_files = std.StringHashMap(WatchedFile).init(allocator),
-            .callbacks = std.ArrayList(Callback).init(allocator),
+            .callbacks = std.ArrayList(Callback){},
         };
     }
 
@@ -32,12 +32,12 @@ pub const FileWatcher = struct {
             self.allocator.free(entry.key_ptr.*);
         }
         self.watched_files.deinit();
-        self.callbacks.deinit();
+        self.callbacks.deinit(self.allocator);
     }
 
     /// Register a callback to be invoked when files change
     pub fn registerCallback(self: *FileWatcher, ctx: *anyopaque, callback: *const fn (ctx: *anyopaque, path: []const u8) anyerror!void) !void {
-        try self.callbacks.append(.{
+        try self.callbacks.append(self.allocator, .{
             .ctx = ctx,
             .fn_ptr = callback,
         });

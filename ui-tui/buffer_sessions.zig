@@ -158,8 +158,8 @@ pub const BufferSessions = struct {
 
     /// List all saved sessions
     pub fn listSessions(self: *BufferSessions) ![]const []const u8 {
-        var sessions = std.ArrayList([]const u8).init(self.allocator);
-        defer sessions.deinit();
+        var sessions = std.ArrayList([]const u8){};
+        defer sessions.deinit(self.allocator);
 
         var dir = try std.fs.cwd().openDir(self.sessions_dir, .{ .iterate = true });
         defer dir.close();
@@ -170,12 +170,12 @@ pub const BufferSessions = struct {
                 const name = entry.name;
                 if (std.mem.endsWith(u8, name, ".json")) {
                     const session_name = name[0 .. name.len - 5]; // Remove .json
-                    try sessions.append(try self.allocator.dupe(u8, session_name));
+                    try sessions.append(self.allocator, try self.allocator.dupe(u8, session_name));
                 }
             }
         }
 
-        return sessions.toOwnedSlice();
+        return sessions.toOwnedSlice(self.allocator);
     }
 
     /// Get session info without loading
@@ -221,11 +221,11 @@ pub const BufferSessions = struct {
     // Serialization
 
     fn serializeSession(self: *BufferSessions, session: *const Session) ![]const u8 {
-        var string = std.ArrayList(u8).init(self.allocator);
-        defer string.deinit();
+        var string = std.ArrayList(u8){};
+        defer string.deinit(self.allocator);
 
         try std.json.stringify(session, .{}, string.writer());
-        return string.toOwnedSlice();
+        return string.toOwnedSlice(self.allocator);
     }
 
     fn deserializeSession(self: *BufferSessions, json: []const u8) !Session {

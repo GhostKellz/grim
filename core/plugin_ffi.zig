@@ -318,15 +318,15 @@ pub const PluginLoader = struct {
 
     /// List all loaded plugins
     pub fn listPlugins(self: *PluginLoader) ![]const []const u8 {
-        var list = std.ArrayList([]const u8).init(self.allocator);
-        defer list.deinit();
+        var list = std.ArrayList([]const u8){};
+        defer list.deinit(self.allocator);
 
         var iter = self.plugins.iterator();
         while (iter.next()) |entry| {
-            try list.append(entry.key_ptr.*);
+            try list.append(self.allocator, entry.key_ptr.*);
         }
 
-        return try list.toOwnedSlice();
+        return try list.toOwnedSlice(self.allocator);
     }
 };
 

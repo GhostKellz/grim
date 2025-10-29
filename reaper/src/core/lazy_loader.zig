@@ -160,7 +160,7 @@ pub const LazyPluginManager = struct {
             .event_triggers = std.AutoHashMap(EventTriggerKey, std.ArrayList([]const u8)).init(allocator),
             .cmd_triggers = std.StringHashMap([]const u8).init(allocator),
             .key_triggers = std.AutoHashMap(KeyTriggerKey, []const u8).init(allocator),
-            .load_queue = std.ArrayList([]const u8).init(allocator),
+            .load_queue = std.ArrayList([]const u8){},
         };
 
         return manager;
@@ -202,7 +202,7 @@ pub const LazyPluginManager = struct {
         }
         self.key_triggers.deinit();
 
-        self.load_queue.deinit();
+        self.load_queue.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 
@@ -290,7 +290,7 @@ pub const LazyPluginManager = struct {
 
             const gop = try self.event_triggers.getOrPut(key);
             if (!gop.found_existing) {
-                gop.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+                gop.value_ptr.* = std.ArrayList([]const u8){};
             }
 
             const name = try self.allocator.dupe(u8, plugin_name);

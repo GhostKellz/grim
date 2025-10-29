@@ -29,30 +29,30 @@ pub const FileManager = struct {
 
         self.* = .{
             .allocator = allocator,
-            .current_dir = std.ArrayList(u8).init(allocator),
-            .recent_files = std.ArrayList([]u8).init(allocator),
+            .current_dir = std.ArrayList(u8){},
+            .recent_files = std.ArrayList([]u8){},
             .project_root = null,
         };
 
         // Initialize with current working directory
         const cwd = try std.process.getCwdAlloc(allocator);
         errdefer allocator.free(cwd);
-        try self.current_dir.appendSlice(cwd);
+        try self.current_dir.appendSlice(allocator, cwd);
         allocator.free(cwd);
 
         return self;
     }
 
     pub fn deinit(self: *FileManager) void {
-        self.current_dir.deinit();
+        self.current_dir.deinit(self.allocator);
 
         for (self.recent_files.items) |path| {
             self.allocator.free(path);
         }
-        self.recent_files.deinit();
+        self.recent_files.deinit(self.allocator);
 
         if (self.project_root) |*root| {
-            root.deinit();
+            root.deinit(self.allocator);
         }
 
         self.allocator.destroy(self);
@@ -74,22 +74,22 @@ pub const FileManager = struct {
         defer dir.close();
 
         // Update current directory
-        self.current_dir.clearAndFree();
+        self.current_dir.clearAndFree(self.allocator);
 
         if (std.fs.path.isAbsolute(path)) {
-            try self.current_dir.appendSlice(path);
+            try self.current_dir.appendSlice(self.allocator, path);
         } else {
-            try self.current_dir.appendSlice(self.current_dir.items);
-            try self.current_dir.append('/');
-            try self.current_dir.appendSlice(path);
+            try self.current_dir.appendSlice(self.allocator, self.current_dir.items);
+            try self.current_dir.append(self.allocator, '/');
+            try self.current_dir.appendSlice(self.allocator, path);
         }
 
         // Normalize path
         const normalized = try std.fs.path.resolve(self.allocator, &[_][]const u8{self.current_dir.items});
         defer self.allocator.free(normalized);
 
-        self.current_dir.clearAndFree();
-        try self.current_dir.appendSlice(normalized);
+        self.current_dir.clearAndFree(self.allocator);
+        try self.current_dir.appendSlice(self.allocator, normalized);
     }
 
     pub fn listDirectory(self: *FileManager, allocator: std.mem.Allocator, path: ?[]const u8) Error![]FileEntry {
@@ -104,13 +104,13 @@ pub const FileManager = struct {
         };
         defer dir.close();
 
-        var entries = std.ArrayList(FileEntry).init(allocator);
+        var entries = std.ArrayList(FileEntry){};
         errdefer {
             for (entries.items) |entry| {
                 allocator.free(entry.name);
                 allocator.free(entry.path);
             }
-            entries.deinit();
+            entries.deinit(allocator);
         }
 
         var iterator = dir.iterate();
@@ -126,7 +126,7 @@ pub const FileManager = struct {
                 }
             };
 
-            try entries.append(.{
+            try entries.append(allocator, .{
                 .name = try allocator.dupe(u8, entry.name),
                 .path = full_path,
                 .is_directory = entry.kind == .directory,
@@ -147,7 +147,7 @@ pub const FileManager = struct {
         };
         std.mem.sort(FileEntry, entries.items, {}, SortContext.lessThan);
 
-        return entries.toOwnedSlice();
+        return entries.toOwnedSlice(allocator);
     }
 
     pub fn readFile(self: *FileManager, path: []const u8, allocator: std.mem.Allocator) Error![]u8 {
@@ -194,7 +194,7 @@ pub const FileManager = struct {
 
         // Add new entry at front
         const path_copy = try self.allocator.dupe(u8, path);
-        try self.recent_files.insert(0, path_copy);
+        try self.recent_files.insert(self.allocator, 0, path_copy);
 
         // Trim to max size
         while (self.recent_files.items.len > MAX_RECENT) {
@@ -225,9 +225,10 @@ pub const FileManager = struct {
             ".project",
         };
 
-        var current = try std.ArrayList(u8).initCapacity(self.allocator, self.current_dir.items.len);
-        defer current.deinit();
-        try current.appendSlice(self.current_dir.items);
+        var current = std.ArrayList(u8){};
+        try current.ensureTotalCapacity(self.allocator, self.current_dir.items.len);
+        defer current.deinit(self.allocator);
+        try current.appendSlice(self.allocator, self.current_dir.items);
 
         while (current.items.len > 1) {
             // Check if any marker exists in current directory
@@ -240,8 +241,9 @@ pub const FileManager = struct {
                 file_or_dir.close();
 
                 // Found project root
-                self.project_root = try std.ArrayList(u8).initCapacity(self.allocator, current.items.len);
-                try self.project_root.?.appendSlice(current.items);
+                self.project_root = std.ArrayList(u8){};
+                try self.project_root.?.ensureTotalCapacity(self.allocator, current.items.len);
+                try self.project_root.?.appendSlice(self.allocator, current.items);
                 return self.project_root.?.items;
             }
 
@@ -251,27 +253,27 @@ pub const FileManager = struct {
                 break; // Reached filesystem root
             }
 
-            current.clearAndFree();
-            try current.appendSlice(parent.?);
+            current.clearAndFree(self.allocator);
+            try current.appendSlice(self.allocator, parent.?);
         }
 
         return null;
     }
 
     pub fn searchFiles(self: *FileManager, allocator: std.mem.Allocator, pattern: []const u8, dir: ?[]const u8) Error![][]const u8 {
-        var results = std.ArrayList([]const u8).init(allocator);
+        var results = std.ArrayList([]const u8){};
         errdefer {
             for (results.items) |path| {
                 allocator.free(path);
             }
-            results.deinit();
+            results.deinit(allocator);
         }
 
         const search_dir = dir orelse ".";
 
         try self.searchFilesRecursive(allocator, search_dir, pattern, &results);
 
-        return results.toOwnedSlice();
+        return results.toOwnedSlice(allocator);
     }
 
     fn searchFilesRecursive(self: *FileManager, allocator: std.mem.Allocator, dir_path: []const u8, pattern: []const u8, results: *std.ArrayList([]const u8)) Error!void {
@@ -300,7 +302,7 @@ pub const FileManager = struct {
             } else {
                 // Check if filename matches pattern (simple substring match for now)
                 if (std.mem.indexOf(u8, entry.name, pattern) != null) {
-                    try results.append(full_path);
+                    try results.append(allocator, full_path);
                 } else {
                     allocator.free(full_path);
                 }
@@ -410,21 +412,21 @@ pub const FileFinder = struct {
         }
 
         // Fuzzy search
-        var matches = std.ArrayList([]const u8).init(allocator);
+        var matches = std.ArrayList([]const u8){};
         errdefer {
             for (matches.items) |path| {
                 allocator.free(path);
             }
-            matches.deinit();
+            matches.deinit(allocator);
         }
 
         for (self.cached_files) |path| {
             if (self.fuzzyMatch(std.fs.path.basename(path), query)) {
-                try matches.append(try allocator.dupe(u8, path));
+                try matches.append(allocator, try allocator.dupe(u8, path));
             }
         }
 
-        return matches.toOwnedSlice();
+        return matches.toOwnedSlice(allocator);
     }
 
     fn fuzzyMatch(self: *FileFinder, text: []const u8, query: []const u8) bool {

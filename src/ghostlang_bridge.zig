@@ -90,7 +90,7 @@ pub const GhostlangBridge = struct {
         bridge.fuzzy.?.findFiles(path_slice, max_depth) catch return "[]";
 
         // Return JSON array of file paths
-        var json = std.ArrayList(u8).init(bridge.allocator);
+        var json = std.ArrayList(u8){};
         json.append('[') catch return "[]";
 
         const entries = bridge.fuzzy.?.entries.items;
@@ -119,7 +119,7 @@ pub const GhostlangBridge = struct {
         bridge.fuzzy.?.filter(query_slice) catch return "[]";
 
         // Return JSON array of scored results
-        var json = std.ArrayList(u8).init(bridge.allocator);
+        var json = std.ArrayList(u8){};
         json.append('[') catch return "[]";
 
         const results = bridge.fuzzy.?.getResults();
@@ -201,7 +201,7 @@ pub const GhostlangBridge = struct {
         const blame = bridge.git.?.getBlame(path_slice) catch return "[]";
 
         // Return JSON array
-        var json = std.ArrayList(u8).init(bridge.allocator);
+        var json = std.ArrayList(u8){};
         json.append('[') catch return "[]";
 
         for (blame, 0..) |info, i| {
@@ -277,7 +277,7 @@ pub const GhostlangBridge = struct {
         const path_slice = std.mem.span(filepath);
         const hunks = bridge.git.?.getHunks(path_slice) catch return "[]";
 
-        var json = std.ArrayList(u8).init(bridge.allocator);
+        var json = std.ArrayList(u8){};
         json.append('[') catch return "[]";
 
         for (hunks, 0..) |hunk, i| {
@@ -375,7 +375,7 @@ pub const GhostlangBridge = struct {
         const regions = bridge.features.?.getFoldRegionsSimple(source_slice) catch return "[]";
         defer bridge.allocator.free(regions);
 
-        var json = std.ArrayList(u8).init(bridge.allocator);
+        var json = std.ArrayList(u8){};
         json.append('[') catch return "[]";
 
         for (regions, 0..) |region, i| {

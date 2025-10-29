@@ -160,8 +160,8 @@ pub const EditorPerformanceMonitor = struct {
             return try allocator.dupe(u8, "Performance monitoring is disabled");
         }
 
-        var report = std.ArrayList(u8).init(allocator);
-        defer report.deinit();
+        var report = std.ArrayList(u8){};
+        defer report.deinit(allocator);
 
         const writer = report.writer();
 
@@ -224,7 +224,7 @@ pub const EditorPerformanceMonitor = struct {
             }
         }
 
-        return report.toOwnedSlice();
+        return report.toOwnedSlice(allocator);
     }
 
     /// System health assessment
@@ -306,8 +306,8 @@ pub const EditorPerformanceMonitor = struct {
 
     /// Performance optimization suggestions
     pub fn getOptimizationSuggestions(self: *const EditorPerformanceMonitor, allocator: std.mem.Allocator) ![][]const u8 {
-        var suggestions = try std.ArrayList([]const u8).initCapacity(allocator, 0);
-        errdefer suggestions.deinit();
+        var suggestions = std.ArrayList([]const u8){};
+        errdefer suggestions.deinit(allocator);
 
         if (self.rope_optimizer.needsOptimization()) {
             const strategy = self.rope_optimizer.suggestStrategy();
@@ -327,7 +327,7 @@ pub const EditorPerformanceMonitor = struct {
             try suggestions.append(allocator, try allocator.dupe(u8, "Review plugin performance or consider plugin optimization"));
         }
 
-        return suggestions.toOwnedSlice();
+        return suggestions.toOwnedSlice(allocator);
     }
 };
 

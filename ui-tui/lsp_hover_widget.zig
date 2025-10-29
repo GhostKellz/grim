@@ -128,8 +128,8 @@ pub fn createFromLSPHover(
                 }
             },
             .markedStringArray => |arr| {
-                var content = std.ArrayList(u8).init(allocator);
-                defer content.deinit();
+                var content = std.ArrayList(u8){};
+                defer content.deinit(allocator);
 
                 for (arr) |ms| {
                     if (ms.language) |lang| {

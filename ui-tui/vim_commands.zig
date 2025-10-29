@@ -109,7 +109,7 @@ pub const VimState = struct {
             .dot_command = null,
             .visual_start = null,
             .mark_positions = std.HashMap(u8, usize).init(allocator),
-            .jump_list = std.ArrayList(usize).init(allocator),
+            .jump_list = std.ArrayList(usize){},
             .jump_index = null,
         };
     }
@@ -117,7 +117,7 @@ pub const VimState = struct {
     pub fn deinit(self: *VimState, allocator: std.mem.Allocator) void {
         if (self.search_pattern) |pattern| allocator.free(pattern);
         self.mark_positions.deinit();
-        self.jump_list.deinit();
+        self.jump_list.deinit(allocator);
     }
 };
 
@@ -146,7 +146,7 @@ pub const VimEngine = struct {
             .state = VimState.init(allocator),
             .rope = rope,
             .registers = std.HashMap(u8, []u8).init(allocator),
-            .last_insert_text = std.ArrayList(u8).init(allocator),
+            .last_insert_text = std.ArrayList(u8){},
             .find_char = null,
             .find_forward = true,
             .cursor = 0,
@@ -164,7 +164,7 @@ pub const VimEngine = struct {
         }
         self.registers.deinit();
 
-        self.last_insert_text.deinit();
+        self.last_insert_text.deinit(self.allocator);
         self.allocator.destroy(self);
     }
 

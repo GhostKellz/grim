@@ -138,8 +138,9 @@ pub const Optimization = struct {
             max_items: usize,
 
             fn init(allocator: std.mem.Allocator, item_size: usize, max_items: usize) Pool {
+                _ = allocator;
                 return .{
-                    .items = std.ArrayList([]u8).init(allocator),
+                    .items = std.ArrayList([]u8){},
                     .item_size = item_size,
                     .max_items = max_items,
                 };
@@ -149,7 +150,7 @@ pub const Optimization = struct {
                 for (self.items.items) |item| {
                     allocator.free(item);
                 }
-                self.items.deinit();
+                self.items.deinit(allocator);
             }
         };
 
@@ -267,10 +268,10 @@ pub const Optimization = struct {
         }
 
         pub fn getMetrics(self: *const PerformanceMonitor, allocator: std.mem.Allocator) ![]u8 {
-            var result = std.ArrayList(u8).init(allocator);
-            defer result.deinit();
+            var result = std.ArrayList(u8){};
+            defer result.deinit(allocator);
 
-            try result.appendSlice("Performance Metrics:\n");
+            try result.appendSlice(allocator, "Performance Metrics:\n");
 
             var iterator = self.metrics.iterator();
             while (iterator.next()) |entry| {
@@ -282,7 +283,7 @@ pub const Optimization = struct {
                 try result.writer().print("  {s}: {d} calls, avg: {d:.2}ms, min: {d:.2}ms, max: {d:.2}ms\n", .{ entry.key_ptr.*, metric.count, avg_ms, min_ms, max_ms });
             }
 
-            return result.toOwnedSlice();
+            return result.toOwnedSlice(allocator);
         }
 
         const Timer = struct {

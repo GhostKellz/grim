@@ -49,17 +49,17 @@ pub const BufferEditAPI = struct {
 
         pub fn init(allocator: std.mem.Allocator) MultiCursorEdit {
             return .{
-                .cursors = std.ArrayList(VirtualCursor).init(allocator),
+                .cursors = std.ArrayList(VirtualCursor){},
                 .allocator = allocator,
             };
         }
 
         pub fn deinit(self: *MultiCursorEdit) void {
-            self.cursors.deinit();
+            self.cursors.deinit(self.allocator);
         }
 
         pub fn addCursor(self: *MultiCursorEdit, cursor: VirtualCursor) !void {
-            try self.cursors.append(cursor);
+            try self.cursors.append(self.allocator, cursor);
         }
 
         pub fn clearCursors(self: *MultiCursorEdit) void {
@@ -133,8 +133,8 @@ pub const BufferEditAPI = struct {
         cursors: *const MultiCursorEdit,
         operation: *const fn (rope: *core.Rope, cursor: VirtualCursor) anyerror!EditOperation,
     ) !std.ArrayList(EditOperation) {
-        var operations = std.ArrayList(EditOperation).init(self.allocator);
-        errdefer operations.deinit();
+        var operations = std.ArrayList(EditOperation){};
+        errdefer operations.deinit(self.allocator);
 
         // Sort cursors by position (descending) to avoid offset invalidation
         const sorted_cursors = try self.allocator.dupe(VirtualCursor, cursors.cursors.items);
@@ -149,7 +149,7 @@ pub const BufferEditAPI = struct {
         // Apply operations in reverse order
         for (sorted_cursors) |cursor| {
             const op = try operation(rope, cursor);
-            try operations.append(op);
+            try operations.append(self.allocator, op);
         }
 
         return operations;

@@ -67,8 +67,8 @@ pub const CommandReplayAPI = struct {
     pub fn init(allocator: std.mem.Allocator) CommandReplayAPI {
         return .{
             .allocator = allocator,
-            .pending_commands = std.ArrayList(PendingCommand).init(allocator),
-            .pending_keys = std.ArrayList(PendingKeySequence).init(allocator),
+            .pending_commands = std.ArrayList(PendingCommand){},
+            .pending_keys = std.ArrayList(PendingKeySequence){},
         };
     }
 
@@ -76,12 +76,12 @@ pub const CommandReplayAPI = struct {
         for (self.pending_commands.items) |*cmd| {
             cmd.deinit(self.allocator);
         }
-        self.pending_commands.deinit();
+        self.pending_commands.deinit(self.allocator);
 
         for (self.pending_keys.items) |*keys| {
             keys.deinit(self.allocator);
         }
-        self.pending_keys.deinit();
+        self.pending_keys.deinit(self.allocator);
     }
 
     /// Set the command executor
@@ -127,7 +127,7 @@ pub const CommandReplayAPI = struct {
             args_copy[i] = try self.allocator.dupe(u8, arg);
         }
 
-        try self.pending_commands.append(.{
+        try self.pending_commands.append(self.allocator, .{
             .command = cmd_copy,
             .args = args_copy,
             .mode = mode,
@@ -158,7 +158,7 @@ pub const CommandReplayAPI = struct {
         remap: bool,
     ) !void {
         const keys_copy = try self.allocator.dupe(u8, keys);
-        try self.pending_keys.append(.{
+        try self.pending_keys.append(self.allocator, .{
             .keys = keys_copy,
             .mode = mode,
             .remap = remap,
@@ -225,16 +225,16 @@ pub const CommandReplayAPI = struct {
             cmd = cmd[0 .. cmd.len - 1];
         }
 
-        var args = std.ArrayList([]const u8).init(self.allocator);
-        errdefer args.deinit();
+        var args = std.ArrayList([]const u8){};
+        errdefer args.deinit(self.allocator);
 
         while (it.next()) |arg| {
-            try args.append(try self.allocator.dupe(u8, arg));
+            try args.append(self.allocator, try self.allocator.dupe(u8, arg));
         }
 
         return .{
             .command = try self.allocator.dupe(u8, cmd),
-            .args = try args.toOwnedSlice(),
+            .args = try args.toOwnedSlice(self.allocator),
             .bang = bang,
         };
     }
@@ -244,8 +244,8 @@ pub const CommandReplayAPI = struct {
         self: *CommandReplayAPI,
         keys: []const u8,
     ) ![]const u8 {
-        var result = std.ArrayList(u8).init(self.allocator);
-        errdefer result.deinit();
+        var result = std.ArrayList(u8){};
+        errdefer result.deinit(self.allocator);
 
         var i: usize = 0;
         while (i < keys.len) {
@@ -267,50 +267,49 @@ pub const CommandReplayAPI = struct {
                 }
             }
 
-            try result.append(keys[i]);
+            try result.append(self.allocator, keys[i]);
             i += 1;
         }
 
-        return result.toOwnedSlice();
+        return result.toOwnedSlice(self.allocator);
     }
 
     fn appendSpecialKey(self: *CommandReplayAPI, result: *std.ArrayList(u8), special: []const u8) !void {
-        _ = self;
 
         // Map special keys to internal representation
         if (std.mem.eql(u8, special, "CR") or std.mem.eql(u8, special, "Enter")) {
-            try result.append('\n');
+            try result.append(self.allocator, '\n');
         } else if (std.mem.eql(u8, special, "Esc")) {
-            try result.append(0x1b);
+            try result.append(self.allocator, 0x1b);
         } else if (std.mem.eql(u8, special, "Tab")) {
-            try result.append('\t');
+            try result.append(self.allocator, '\t');
         } else if (std.mem.eql(u8, special, "BS") or std.mem.eql(u8, special, "Backspace")) {
-            try result.append(0x08);
+            try result.append(self.allocator, 0x08);
         } else if (std.mem.eql(u8, special, "Space")) {
-            try result.append(' ');
+            try result.append(self.allocator, ' ');
         } else if (std.mem.startsWith(u8, special, "C-")) {
             // Control key: C-x -> Ctrl+X
             if (special.len == 3) {
                 const ch = special[2];
                 if (ch >= 'a' and ch <= 'z') {
-                    try result.append(ch - 'a' + 1);
+                    try result.append(self.allocator, ch - 'a' + 1);
                 } else if (ch >= 'A' and ch <= 'Z') {
-                    try result.append(ch - 'A' + 1);
+                    try result.append(self.allocator, ch - 'A' + 1);
                 }
             }
         } else if (std.mem.startsWith(u8, special, "M-") or std.mem.startsWith(u8, special, "A-")) {
             // Meta/Alt key: M-x -> Alt+X
             if (special.len == 3) {
-                try result.append(0x1b); // Escape prefix for meta
-                try result.append(special[2]);
+                try result.append(self.allocator, 0x1b); // Escape prefix for meta
+                try result.append(self.allocator, special[2]);
             }
         } else if (std.mem.eql(u8, special, "leader")) {
-            try result.append('\\'); // Default leader
+            try result.append(self.allocator, '\\'); // Default leader
         } else {
             // Unknown special key, keep as-is
-            try result.append('<');
-            try result.appendSlice(special);
-            try result.append('>');
+            try result.append(self.allocator, '<');
+            try result.appendSlice(self.allocator, special);
+            try result.append(self.allocator, '>');
         }
     }
 };

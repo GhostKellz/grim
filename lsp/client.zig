@@ -953,15 +953,15 @@ const MockTransport = struct {
     fn init(allocator: std.mem.Allocator) MockTransport {
         return .{
             .allocator = allocator,
-            .written = std.ArrayList(u8).init(allocator),
-            .incoming = std.ArrayList(u8).init(allocator),
+            .written = std.ArrayList(u8){},
+            .incoming = std.ArrayList(u8){},
             .read_cursor = 0,
         };
     }
 
     fn deinit(self: *MockTransport) void {
-        self.written.deinit();
-        self.incoming.deinit();
+        self.written.deinit(self.allocator);
+        self.incoming.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -978,7 +978,7 @@ const MockTransport = struct {
     }
 
     fn queueIncoming(self: *MockTransport, data: []const u8) void {
-        self.incoming.appendSlice(data) catch unreachable;
+        self.incoming.appendSlice(self.allocator, data) catch unreachable;
     }
 
     fn read(ctx: *anyopaque, buffer: []u8) TransportError!usize {
@@ -993,7 +993,7 @@ const MockTransport = struct {
 
     fn write(ctx: *anyopaque, buffer: []const u8) TransportError!usize {
         const self = fromCtx(ctx);
-        self.written.appendSlice(buffer) catch return TransportError.WriteFailure;
+        self.written.appendSlice(self.allocator, buffer) catch return TransportError.WriteFailure;
         return buffer.len;
     }
 

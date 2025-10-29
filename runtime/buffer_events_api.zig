@@ -205,23 +205,23 @@ pub const BufferEventsAPI = struct {
     pub fn init(allocator: std.mem.Allocator) BufferEventsAPI {
         var listeners = std.EnumArray(BufferEventType, std.ArrayList(EventListener)).initUndefined();
         for (std.meta.tags(BufferEventType)) |event_type| {
-            listeners.set(event_type, std.ArrayList(EventListener).init(allocator));
+            listeners.set(event_type, std.ArrayList(EventListener){});
         }
 
         return .{
             .allocator = allocator,
             .listeners = listeners,
             .batching_enabled = false,
-            .batch_queue = std.ArrayList(BatchedEvent).init(allocator),
+            .batch_queue = std.ArrayList(BatchedEvent){},
             .batch_depth = 0,
         };
     }
 
     pub fn deinit(self: *BufferEventsAPI) void {
         for (std.meta.tags(BufferEventType)) |event_type| {
-            self.listeners.getPtr(event_type).deinit();
+            self.listeners.getPtr(event_type).deinit(self.allocator);
         }
-        self.batch_queue.deinit();
+        self.batch_queue.deinit(self.allocator);
     }
 
     /// Register an event listener
@@ -263,7 +263,7 @@ pub const BufferEventsAPI = struct {
             .priority = 0,
         };
 
-        try self.listeners.getPtr(event_type).append(listener);
+        try self.listeners.getPtr(event_type).append(self.allocator, listener);
     }
 
     /// Begin batching events (can be nested)
@@ -301,7 +301,7 @@ pub const BufferEventsAPI = struct {
     pub fn emit(self: *BufferEventsAPI, event_type: BufferEventType, payload: EventPayload) !void {
         if (self.batching_enabled) {
             // Queue event for batch processing
-            try self.batch_queue.append(.{
+            try self.batch_queue.append(self.allocator, .{
                 .event_type = event_type,
                 .payload = payload,
             });
@@ -424,28 +424,30 @@ test "BufferEventsAPI priority ordering" {
 
     const TestCtx = struct {
         var execution_order: std.ArrayList(i32) = undefined;
+        var alloc: std.mem.Allocator = undefined;
 
-        fn init_list(alloc: std.mem.Allocator) void {
-            execution_order = std.ArrayList(i32).init(alloc);
+        fn init_list(a: std.mem.Allocator) void {
+            alloc = a;
+            execution_order = std.ArrayList(i32){};
         }
 
         fn deinit_list() void {
-            execution_order.deinit();
+            execution_order.deinit(alloc);
         }
 
         fn handlerHigh(payload: BufferEventsAPI.EventPayload) !void {
             _ = payload;
-            try execution_order.append(100);
+            try execution_order.append(alloc, 100);
         }
 
         fn handlerMedium(payload: BufferEventsAPI.EventPayload) !void {
             _ = payload;
-            try execution_order.append(50);
+            try execution_order.append(alloc, 50);
         }
 
         fn handlerLow(payload: BufferEventsAPI.EventPayload) !void {
             _ = payload;
-            try execution_order.append(10);
+            try execution_order.append(alloc, 10);
         }
     };
 
@@ -538,18 +540,20 @@ test "BufferEventsAPI event batching" {
     const TestCtx = struct {
         var fire_count: usize = 0;
         var events: std.ArrayList(u32) = undefined;
+        var alloc: std.mem.Allocator = undefined;
 
-        fn init_list(alloc: std.mem.Allocator) void {
-            events = std.ArrayList(u32).init(alloc);
+        fn init_list(a: std.mem.Allocator) void {
+            alloc = a;
+            events = std.ArrayList(u32){};
         }
 
         fn deinit_list() void {
-            events.deinit();
+            events.deinit(alloc);
         }
 
         fn handler(payload: BufferEventsAPI.EventPayload) !void {
             fire_count += 1;
-            try events.append(payload.text_changed.buffer_id);
+            try events.append(alloc, payload.text_changed.buffer_id);
         }
     };
 

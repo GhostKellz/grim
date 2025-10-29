@@ -60,8 +60,8 @@ pub const HotReloader = struct {
     pub fn checkForChanges(self: *HotReloader) !void {
         if (!self.enabled) return;
 
-        var to_reload = std.ArrayList([]const u8).init(self.allocator);
-        defer to_reload.deinit();
+        var to_reload = std.ArrayList([]const u8){};
+        defer to_reload.deinit(self.allocator);
 
         var iter = self.watched_files.iterator();
         while (iter.next()) |entry| {
@@ -82,7 +82,7 @@ pub const HotReloader = struct {
             // File was modified?
             if (new_mtime > last_mtime) {
                 std.log.info("Detected change in {s}", .{file_path});
-                try to_reload.append(entry.value_ptr.plugin_id);
+                try to_reload.append(self.allocator, entry.value_ptr.plugin_id);
                 // Update mtime
                 entry.value_ptr.last_modified = new_mtime;
             }

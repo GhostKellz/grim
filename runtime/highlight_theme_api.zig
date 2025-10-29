@@ -205,13 +205,13 @@ pub const HighlightThemeAPI = struct {
             return Namespace{
                 .id = id,
                 .name = try allocator.dupe(u8, name),
-                .highlights = std.ArrayList(NamespaceHighlight).init(allocator),
+                .highlights = std.ArrayList(NamespaceHighlight){},
             };
         }
 
         pub fn deinit(self: *Namespace, allocator: std.mem.Allocator) void {
             allocator.free(self.name);
-            self.highlights.deinit();
+            self.highlights.deinit(allocator);
         }
     };
 
@@ -328,7 +328,7 @@ pub const HighlightThemeAPI = struct {
         var ns = self.namespaces.getPtr(ns_name) orelse return error.NamespaceNotFound;
         const group = self.highlight_groups.get(group_name) orelse return error.GroupNotFound;
 
-        try ns.highlights.append(.{
+        try ns.highlights.append(self.allocator, .{
             .buffer_id = buffer_id,
             .line = line,
             .col_start = col_start,

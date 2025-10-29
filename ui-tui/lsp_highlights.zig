@@ -60,8 +60,8 @@ pub const LSPHighlights = struct {
         self: *LSPHighlights,
         diagnostics: []const editor_lsp.Diagnostic,
     ) ![]GutterSign {
-        var signs = std.ArrayList(GutterSign).init(self.allocator);
-        errdefer signs.deinit();
+        var signs = std.ArrayList(GutterSign){};
+        errdefer signs.deinit(self.allocator);
 
         // Group diagnostics by line (show most severe per line)
         var line_map = std.AutoHashMap(u32, editor_lsp.Diagnostic.Severity).init(self.allocator);
@@ -79,14 +79,14 @@ pub const LSPHighlights = struct {
         // Convert to gutter signs
         var iter = line_map.iterator();
         while (iter.next()) |entry| {
-            try signs.append(.{
+            try signs.append(self.allocator, .{
                 .line = entry.key_ptr.*,
                 .icon = self.getIconForSeverity(entry.value_ptr.*),
                 .highlight_group = self.getHighlightGroupForSeverity(entry.value_ptr.*),
             });
         }
 
-        return signs.toOwnedSlice();
+        return signs.toOwnedSlice(self.allocator);
     }
 
     /// Get diagnostic count for status line

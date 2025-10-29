@@ -28,8 +28,8 @@ fn testLargeFileInsertion(allocator: std.mem.Allocator) !void {
     defer buffer.deinit();
 
     // Generate 10k lines of text
-    var content = std.ArrayList(u8).init(allocator);
-    defer content.deinit();
+    var content = std.ArrayList(u8){};
+    defer content.deinit(allocator);
 
     var i: usize = 0;
     while (i < 10000) : (i += 1) {

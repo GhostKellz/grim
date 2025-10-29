@@ -147,7 +147,7 @@ pub const ProjectSearch = struct {
         try self.search(pattern, cwd);
 
         // Group results by file
-        var file_map = std.StringHashMap(std.ArrayList(*SearchResult)).init(self.allocator);
+        var file_map = std.StringHashMap(std.ArrayList(*SearchResult)).init(self.allocator); // Note: HashMap.init still takes allocator in 0.16
         defer {
             var iter = file_map.valueIterator();
             while (iter.next()) |list| {

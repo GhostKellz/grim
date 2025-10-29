@@ -22,8 +22,8 @@ pub fn testThemeColors() !void {
     const value = calculateValue(number);
 
     // Types should be blue
-    var list = std.ArrayList(u8).init(std.heap.page_allocator);
-    defer list.deinit();
+    var list = std.ArrayList(u8){};
+    defer list.deinit(std.heap.page_allocator);
 }
 
 // Function definition - name should be mint green

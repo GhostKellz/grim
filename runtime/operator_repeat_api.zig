@@ -86,7 +86,7 @@ pub const OperatorRepeatAPI = struct {
             .allocator = allocator,
             .last_operation = null,
             .pending_operator = null,
-            .operation_history = std.ArrayList(RecordedOperation).init(allocator),
+            .operation_history = std.ArrayList(RecordedOperation){},
         };
     }
 
@@ -97,7 +97,7 @@ pub const OperatorRepeatAPI = struct {
         for (self.operation_history.items) |*op| {
             op.deinit(self.allocator);
         }
-        self.operation_history.deinit();
+        self.operation_history.deinit(self.allocator);
     }
 
     /// Start an operator-pending mode
@@ -151,7 +151,7 @@ pub const OperatorRepeatAPI = struct {
         self.last_operation = try recorded.clone(self.allocator);
 
         // Add to history
-        try self.operation_history.append(recorded);
+        try self.operation_history.append(self.allocator, recorded);
 
         // Clear pending operator
         self.pending_operator = null;
@@ -230,7 +230,7 @@ pub const OperatorRepeatAPI = struct {
         }
         self.last_operation = try recorded.clone(self.allocator);
 
-        try self.operation_history.append(recorded);
+        try self.operation_history.append(self.allocator, recorded);
     }
 
     /// Get operation history
@@ -253,8 +253,8 @@ pub const OperatorRepeatAPI = struct {
 
     /// Export operation history as JSON
     pub fn exportHistoryJSON(self: *const OperatorRepeatAPI) ![]const u8 {
-        var buffer = std.ArrayList(u8).init(self.allocator);
-        errdefer buffer.deinit();
+        var buffer = std.ArrayList(u8){};
+        errdefer buffer.deinit(self.allocator);
 
         var writer = buffer.writer();
         try writer.writeAll("[");
@@ -278,7 +278,7 @@ pub const OperatorRepeatAPI = struct {
         }
 
         try writer.writeAll("]");
-        return buffer.toOwnedSlice();
+        return buffer.toOwnedSlice(self.allocator);
     }
 };
 

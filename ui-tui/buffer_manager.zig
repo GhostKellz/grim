@@ -367,16 +367,16 @@ pub const BufferManager = struct {
 
     /// Get list of modified buffers
     pub fn getModifiedBuffers(self: *BufferManager, allocator: std.mem.Allocator) ![]u32 {
-        var modified = std.ArrayList(u32).init(allocator);
-        defer modified.deinit();
+        var modified = std.ArrayList(u32){};
+        defer modified.deinit(allocator);
 
         for (self.buffers.items) |buffer| {
             if (buffer.modified) {
-                try modified.append(buffer.id);
+                try modified.append(allocator, buffer.id);
             }
         }
 
-        return modified.toOwnedSlice();
+        return modified.toOwnedSlice(allocator);
     }
 
     /// Check if there are unsaved changes

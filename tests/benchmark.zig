@@ -159,19 +159,19 @@ fn benchmarkSearchPerformance(allocator: std.mem.Allocator) !void {
     defer finder.deinit();
 
     // Create mock file list
-    var mock_files = std.ArrayList([]const u8).init(allocator);
+    var mock_files = std.ArrayList([]const u8){};
     defer {
         for (mock_files.items) |file| {
             allocator.free(file);
         }
-        mock_files.deinit();
+        mock_files.deinit(allocator);
     }
 
     // Generate test files
     const file_count = 10000;
     for (0..file_count) |i| {
         const filename = try std.fmt.allocPrint(allocator, "src/module_{d}.zig", .{i});
-        try mock_files.append(filename);
+        try mock_files.append(allocator, filename);
     }
 
     // Test search performance
@@ -180,18 +180,18 @@ fn benchmarkSearchPerformance(allocator: std.mem.Allocator) !void {
     for (search_queries) |query| {
         var timer = try std.time.Timer.start();
 
-        var matches = std.ArrayList([]const u8).init(allocator);
+        var matches = std.ArrayList([]const u8){};
         defer {
             for (matches.items) |match| {
                 allocator.free(match);
             }
-            matches.deinit();
+            matches.deinit(allocator);
         }
 
         // Simple fuzzy search simulation
         for (mock_files.items) |file| {
             if (std.mem.indexOf(u8, file, query) != null) {
-                try matches.append(try allocator.dupe(u8, file));
+                try matches.append(allocator, try allocator.dupe(u8, file));
             }
         }
 

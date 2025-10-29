@@ -129,8 +129,8 @@ pub const TestHarness = struct {
             .allocator = allocator,
             .buffers = buffers,
             .plugin_api = api,
-            .command_log = std.ArrayList(LoggedCommand).init(allocator),
-            .event_log = std.ArrayList(LoggedEvent).init(allocator),
+            .command_log = std.ArrayList(LoggedCommand){},
+            .event_log = std.ArrayList(LoggedEvent){},
         };
     }
 
@@ -147,12 +147,12 @@ pub const TestHarness = struct {
         for (self.command_log.items) |*cmd| {
             cmd.deinit(self.allocator);
         }
-        self.command_log.deinit();
+        self.command_log.deinit(self.allocator);
 
         for (self.event_log.items) |*event| {
             event.deinit(self.allocator);
         }
-        self.event_log.deinit();
+        self.event_log.deinit(self.allocator);
 
         self.allocator.destroy(self.plugin_api.editor_context);
     }
@@ -322,7 +322,7 @@ pub const TestHarness = struct {
             args_copy[i] = try self.allocator.dupe(u8, arg);
         }
 
-        try self.command_log.append(.{
+        try self.command_log.append(self.allocator, .{
             .timestamp = std.time.milliTimestamp(),
             .command = try self.allocator.dupe(u8, command),
             .args = args_copy,

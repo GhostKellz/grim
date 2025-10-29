@@ -156,15 +156,15 @@ pub const Parser = struct {
         const tree = self.tree orelse return &[_]Highlight{};
         const root = c.ts_tree_root_node(tree);
 
-        var highlights = std.ArrayList(Highlight).init(allocator);
-        errdefer highlights.deinit();
+        var highlights = std.ArrayList(Highlight){};
+        errdefer highlights.deinit(allocator);
 
-        try self.walkNode(root, &highlights);
+        try self.walkNode(root, &highlights, allocator);
 
-        return highlights.toOwnedSlice();
+        return highlights.toOwnedSlice(allocator);
     }
 
-    fn walkNode(self: *Parser, node: c.TSNode, highlights: *std.ArrayList(Highlight)) Error!void {
+    fn walkNode(self: *Parser, node: c.TSNode, highlights: *std.ArrayList(Highlight), allocator: std.mem.Allocator) Error!void {
         const node_type = c.ts_node_type(node);
         const start_byte = c.ts_node_start_byte(node);
         const end_byte = c.ts_node_end_byte(node);
@@ -172,7 +172,7 @@ pub const Parser = struct {
         // Map node types to highlight types
         const highlight_type = self.mapNodeType(node_type);
         if (highlight_type != .none) {
-            try highlights.append(.{
+            try highlights.append(allocator, .{
                 .start_byte = start_byte,
                 .end_byte = end_byte,
                 .type = highlight_type,
@@ -184,7 +184,7 @@ pub const Parser = struct {
         var i: u32 = 0;
         while (i < child_count) : (i += 1) {
             const child = c.ts_node_child(node, i);
-            try self.walkNode(child, highlights);
+            try self.walkNode(child, highlights, allocator);
         }
     }
 

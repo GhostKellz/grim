@@ -228,14 +228,14 @@ pub const WindowManager = struct {
 
     /// Get all leaf (visible) windows
     pub fn getLeafWindows(self: *WindowManager) ![]const *Window {
-        var leaves = std.ArrayList(*Window).init(self.allocator);
-        defer leaves.deinit();
+        var leaves = std.ArrayList(*Window){};
+        defer leaves.deinit(self.allocator);
 
         if (self.root_window) |root| {
             try self.collectLeaves(root, &leaves);
         }
 
-        return leaves.toOwnedSlice();
+        return leaves.toOwnedSlice(self.allocator);
     }
 
     /// Recalculate layouts after terminal resize
@@ -261,7 +261,7 @@ pub const WindowManager = struct {
 
     fn collectLeaves(self: *WindowManager, window: *Window, list: *std.ArrayList(*Window)) !void {
         if (window.isLeaf()) {
-            try list.append(window);
+            try list.append(self.allocator, window);
         } else if (window.children) |children| {
             try self.collectLeaves(children.left, list);
             try self.collectLeaves(children.right, list);
