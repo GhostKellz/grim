@@ -1,0 +1,55 @@
+{
+  "fn": {
+    "prefix": "fn",
+    "body": [
+      "function ${1:name}(${2:args}) {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "Function definition"
+  },
+  "arrow": {
+    "prefix": "arrow",
+    "body": [
+      "const ${1:name} = (${2:args}) => {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "Arrow function"
+  },
+  "class": {
+    "prefix": "class",
+    "body": [
+      "class ${1:Name} {",
+      "    constructor(${2:args}) {",
+      "        ${3:this.prop = prop;}",
+      "    }",
+      "",
+      "    ${4:method}(${5:args}) {",
+      "        ${0:// TODO}",
+      "    }",
+      "}"
+    ],
+    "description": "Class definition"
+  },
+  "for_of": {
+    "prefix": "forof",
+    "body": [
+      "for (const ${1:item} of ${2:items}) {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "For-of loop"
+  },
+  "try_catch": {
+    "prefix": "try",
+    "body": [
+      "try {",
+      "    ${1:// code}",
+      "} catch (${2:error}) {",
+      "    ${0:console.error(error);}",
+      "}"
+    ],
+    "description": "Try-catch block"
+  }
+}

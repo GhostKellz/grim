@@ -38,6 +38,8 @@ pub const Editor = struct {
     undo_stack: core.UndoStack,
     // io_uring async file I/O manager
     io_uring_manager: core.IoUringFileManager,
+    // Command mode buffer
+    command_buffer: ?[]u8,
 
     pub const Mode = enum {
         normal,
@@ -173,6 +175,7 @@ pub const Editor = struct {
             .last_find_till = false,
             .undo_stack = core.UndoStack.init(allocator, 1000),
             .io_uring_manager = try core.IoUringFileManager.init(allocator),
+            .command_buffer = null,
         };
     }
 
@@ -197,6 +200,9 @@ pub const Editor = struct {
         }
         if (self.selected_word) |word| {
             self.allocator.free(word);
+        }
+        if (self.command_buffer) |buf| {
+            self.allocator.free(buf);
         }
         // Free undo stack
         self.undo_stack.deinit();
@@ -306,14 +312,137 @@ pub const Editor = struct {
             .visual => {
                 if (key == 0x1B) { // ESC
                     self.mode = .normal;
+                    self.selection_start = null;
+                    self.selection_end = null;
+                    return;
                 }
-                // TODO: Implement visual mode commands
+
+                // Visual mode commands
+                switch (key) {
+                    'h' => self.cursor.moveLeft(&self.rope),
+                    'j' => self.cursor.moveDown(&self.rope),
+                    'k' => self.cursor.moveUp(&self.rope),
+                    'l' => self.cursor.moveRight(&self.rope),
+                    'w' => self.cursor.moveWordForward(&self.rope),
+                    'b' => self.cursor.moveWordBackward(&self.rope),
+                    'e' => self.cursor.moveWordEnd(&self.rope),
+                    '0' => self.cursor.moveToLineStart(&self.rope),
+                    '$' => self.cursor.moveToLineEnd(&self.rope),
+                    'g' => {
+                        if (self.pending_key) |pk| {
+                            if (pk == 'g') {
+                                self.cursor.offset = 0;
+                                self.pending_key = null;
+                            }
+                        } else {
+                            self.pending_key = 'g';
+                        }
+                    },
+                    'G' => self.cursor.offset = self.rope.len(),
+                    'd', 'x' => {
+                        // Delete selection
+                        if (self.selection_start) |start| {
+                            const end = self.cursor.offset;
+                            const delete_start = @min(start, end);
+                            const delete_end = @max(start, end);
+                            try self.rope.delete(.{ .start = delete_start, .end = delete_end });
+                            self.cursor.offset = delete_start;
+                            self.mode = .normal;
+                            self.selection_start = null;
+                            self.selection_end = null;
+                        }
+                    },
+                    'y' => {
+                        // Yank selection
+                        if (self.selection_start) |start| {
+                            const end = self.cursor.offset;
+                            const yank_start = @min(start, end);
+                            const yank_end = @max(start, end);
+                            const text = try self.rope.slice(.{ .start = yank_start, .end = yank_end });
+                            if (self.yank_buffer) |old| {
+                                self.allocator.free(old);
+                            }
+                            self.yank_buffer = try self.allocator.dupe(u8, text);
+                            self.yank_linewise = false;
+                            self.mode = .normal;
+                            self.selection_start = null;
+                            self.selection_end = null;
+                        }
+                    },
+                    'V' => {
+                        // Switch to line-wise visual mode
+                        if (self.selection_start) |start| {
+                            // Expand to line boundaries
+                            const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+                            var line_start = start;
+                            while (line_start > 0 and content[line_start - 1] != '\n') {
+                                line_start -= 1;
+                            }
+                            self.selection_start = line_start;
+                            self.cursor.moveToLineEnd(&self.rope);
+                        }
+                    },
+                    'v' => {
+                        // Back to character-wise visual
+                        // Already in visual mode, no-op
+                    },
+                    else => {},
+                }
+
+                // Update selection end
+                self.selection_end = self.cursor.offset;
             },
             .command => {
                 if (key == 0x1B) { // ESC
                     self.mode = .normal;
+                    if (self.command_buffer) |buf| {
+                        self.allocator.free(buf);
+                        self.command_buffer = null;
+                    }
+                    return;
                 }
-                // TODO: Implement command mode
+
+                // Handle backspace
+                if (key == 0x7F or key == 0x08) {
+                    if (self.command_buffer) |buf| {
+                        if (buf.len > 0) {
+                            const new_buf = try self.allocator.alloc(u8, buf.len - 1);
+                            @memcpy(new_buf, buf[0..buf.len - 1]);
+                            self.allocator.free(buf);
+                            self.command_buffer = new_buf;
+                        } else {
+                            self.allocator.free(buf);
+                            self.command_buffer = null;
+                            self.mode = .normal;
+                        }
+                    }
+                    return;
+                }
+
+                // Handle enter - execute command
+                if (key == '\r' or key == '\n') {
+                    if (self.command_buffer) |cmd| {
+                        try self.executeCommand(cmd);
+                        self.allocator.free(cmd);
+                        self.command_buffer = null;
+                    }
+                    self.mode = .normal;
+                    return;
+                }
+
+                // Append character to command buffer
+                if (key >= 32 and key <= 126) {
+                    const new_len = if (self.command_buffer) |buf| buf.len + 1 else 1;
+                    const new_buf = try self.allocator.alloc(u8, new_len);
+
+                    if (self.command_buffer) |buf| {
+                        @memcpy(new_buf[0..buf.len], buf);
+                        self.allocator.free(buf);
+                    }
+
+                    new_buf[new_len - 1] = @intCast(key);
+                    self.command_buffer = new_buf;
+                }
             },
         }
     }
@@ -421,8 +550,44 @@ pub const Editor = struct {
                 break :blk null;
             },
             'p' => .paste_after,
-            'z' => .toggle_fold, // TODO: Handle za, zR, zM properly
-            'Z' => .fold_all, // Fold all regions
+            'z' => blk: {
+                if (self.pending_key) |pk| {
+                    if (pk == 'z') {
+                        self.pending_key = null;
+                        // zz - center screen (not implemented here, would need window context)
+                        break :blk null;
+                    }
+                }
+                self.pending_key = 'z';
+                break :blk null;
+            },
+            'a' => blk: {
+                if (self.pending_key) |pk| {
+                    if (pk == 'z') {
+                        self.pending_key = null;
+                        break :blk .toggle_fold; // za - toggle fold
+                    }
+                }
+                break :blk .enter_insert_after;
+            },
+            'R' => blk: {
+                if (self.pending_key) |pk| {
+                    if (pk == 'z') {
+                        self.pending_key = null;
+                        break :blk .unfold_all; // zR - unfold all
+                    }
+                }
+                break :blk .enter_replace_mode;
+            },
+            'M' => blk: {
+                if (self.pending_key) |pk| {
+                    if (pk == 'z') {
+                        self.pending_key = null;
+                        break :blk .fold_all; // zM - fold all
+                    }
+                }
+                break :blk null;
+            },
             '=' => .expand_selection, // Expand selection (Alt+= in full implementation)
             '-' => .shrink_selection, // Shrink selection (Alt+- in full implementation)
             0x1B => .escape_to_normal,
@@ -1470,6 +1635,67 @@ pub const Editor = struct {
         try self.rope.insert(0, snapshot.content);
         self.cursor.offset = snapshot.cursor_offset;
         self.cursor.desired_column = null;
+    }
+
+    /// Execute command mode command
+    fn executeCommand(self: *Editor, cmd: []const u8) !void {
+        if (cmd.len == 0) return;
+
+        // Parse command
+        if (cmd[0] == 'w') {
+            // Write file
+            if (self.current_filename) |filename| {
+                const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+                const file = try std.fs.cwd().createFile(filename, .{});
+                defer file.close();
+                try file.writeAll(content);
+            }
+        } else if (cmd[0] == 'q') {
+            // Quit - would need integration with app layer
+            // For now, just no-op
+        } else if (std.mem.eql(u8, cmd, "wq")) {
+            // Write and quit
+            if (self.current_filename) |filename| {
+                const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+                const file = try std.fs.cwd().createFile(filename, .{});
+                defer file.close();
+                try file.writeAll(content);
+            }
+        } else if (cmd[0] == '/') {
+            // Search forward
+            if (cmd.len > 1) {
+                const pattern = cmd[1..];
+                if (self.search_pattern) |old| {
+                    self.allocator.free(old);
+                }
+                self.search_pattern = try self.allocator.dupe(u8, pattern);
+                self.last_search_forward = true;
+                try self.searchNext();
+            }
+        } else if (cmd[0] == '?') {
+            // Search backward
+            if (cmd.len > 1) {
+                const pattern = cmd[1..];
+                if (self.search_pattern) |old| {
+                    self.allocator.free(old);
+                }
+                self.search_pattern = try self.allocator.dupe(u8, pattern);
+                self.last_search_forward = false;
+                try self.searchPrev();
+            }
+        } else if (std.mem.startsWith(u8, cmd, "s/")) {
+            // Substitute command: s/pattern/replacement/
+            var parts = std.mem.split(u8, cmd[2..], "/");
+            const pattern = parts.next() orelse return;
+            const replacement = parts.next() orelse return;
+
+            const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+            if (std.mem.indexOf(u8, content, pattern)) |pos| {
+                try self.rope.delete(.{ .start = pos, .end = pos + pattern.len });
+                try self.rope.insert(pos, replacement);
+                self.cursor.offset = pos + replacement.len;
+            }
+        }
     }
 };
 

@@ -57,14 +57,23 @@ Grim bundles Grove's latest tree-sitter toolchain. When you build with `-Dghostl
 
 ## Roadmap
 
-- [x] Rope buffer + undo/redo  
-- [x] Modal engine + keymaps  
-- [x] Tree-sitter highlighting (14 Grove grammars + Ghostlang services)  
-- [ ] LSP client (Zig + Rust servers first)  
-- [ ] Ghostlang plugin runtime  
-- [ ] Fuzzy finder + file explorer  
-- [ ] Multi-cursor and macro improvements  
-- [ ] DAP debugging support  
+- [x] Rope buffer + undo/redo
+- [x] Modal engine + keymaps
+- [x] Tree-sitter highlighting (14 Grove grammars + Ghostlang services)
+- [x] LSP client (hover, diagnostics, goto, completion)
+- [x] Ghostlang plugin runtime + hot reload
+- [x] Plugin system with dependency resolution
+- [x] Multi-cursor editing (select next/all occurrences)
+- [x] Macro recording and playback with persistence
+- [x] Snippet system with tab stops
+- [x] DAP debugging client
+- [x] Visual mode with full command set
+- [x] Command mode (:w, :q, :wq, /search, s/find/replace)
+- [x] Fold operations (za, zR, zM)
+- [x] Git integration (blame, diff panels)
+- [ ] File tree explorer UI
+- [ ] Fuzzy finder
+- [ ] Project-wide search & replace UI  
 
 ---
 

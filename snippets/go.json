@@ -1,0 +1,56 @@
+{
+  "fn": {
+    "prefix": "fn",
+    "body": [
+      "func ${1:name}(${2:args}) ${3:returnType} {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "Function definition"
+  },
+  "method": {
+    "prefix": "meth",
+    "body": [
+      "func (${1:receiver} ${2:Type}) ${3:name}(${4:args}) ${5:returnType} {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "Method definition"
+  },
+  "struct": {
+    "prefix": "struct",
+    "body": [
+      "type ${1:Name} struct {",
+      "    ${2:Field} ${3:Type}",
+      "}"
+    ],
+    "description": "Struct definition"
+  },
+  "interface": {
+    "prefix": "interface",
+    "body": [
+      "type ${1:Name} interface {",
+      "    ${2:Method}(${3:args}) ${4:returnType}",
+      "}"
+    ],
+    "description": "Interface definition"
+  },
+  "if_err": {
+    "prefix": "iferr",
+    "body": [
+      "if err != nil {",
+      "    ${0:return err}",
+      "}"
+    ],
+    "description": "If error check"
+  },
+  "for": {
+    "prefix": "for",
+    "body": [
+      "for ${1:i := 0}; ${2:i < n}; ${3:i++} {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "For loop"
+  }
+}

@@ -1,0 +1,95 @@
+{
+  "fn": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:args}) ${3:!void} {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "Function definition"
+  },
+  "pub_fn": {
+    "prefix": "pfn",
+    "body": [
+      "pub fn ${1:name}(${2:args}) ${3:!void} {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "Public function definition"
+  },
+  "test": {
+    "prefix": "test",
+    "body": [
+      "test \"${1:test name}\" {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "Test block"
+  },
+  "struct": {
+    "prefix": "struct",
+    "body": [
+      "pub const ${1:Name} = struct {",
+      "    ${2:field}: ${3:type},",
+      "",
+      "    pub fn init(${4:args}) ${1:Name} {",
+      "        return .{",
+      "            .${2:field} = ${5:value},",
+      "        };",
+      "    }",
+      "",
+      "    pub fn deinit(self: *${1:Name}) void {",
+      "        ${0:// cleanup}",
+      "    }",
+      "};"
+    ],
+    "description": "Struct with init/deinit"
+  },
+  "enum": {
+    "prefix": "enum",
+    "body": [
+      "pub const ${1:Name} = enum {",
+      "    ${2:variant1},",
+      "    ${3:variant2},",
+      "};"
+    ],
+    "description": "Enum definition"
+  },
+  "for": {
+    "prefix": "for",
+    "body": [
+      "for (${1:items}) |${2:item}| {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "For loop"
+  },
+  "while": {
+    "prefix": "while",
+    "body": [
+      "while (${1:condition}) {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "While loop"
+  },
+  "if": {
+    "prefix": "if",
+    "body": [
+      "if (${1:condition}) {",
+      "    ${0:// TODO}",
+      "}"
+    ],
+    "description": "If statement"
+  },
+  "switch": {
+    "prefix": "switch",
+    "body": [
+      "switch (${1:value}) {",
+      "    .${2:case} => ${3:result},",
+      "    else => ${0:default},",
+      "}"
+    ],
+    "description": "Switch expression"
+  }
+}

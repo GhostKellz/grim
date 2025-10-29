@@ -1,0 +1,58 @@
+{
+  "fn": {
+    "prefix": "fn",
+    "body": [
+      "fn ${1:name}(${2:args}) -> ${3:ReturnType} {",
+      "    ${0:todo!()}",
+      "}"
+    ],
+    "description": "Function definition"
+  },
+  "pub_fn": {
+    "prefix": "pfn",
+    "body": [
+      "pub fn ${1:name}(${2:args}) -> ${3:ReturnType} {",
+      "    ${0:todo!()}",
+      "}"
+    ],
+    "description": "Public function"
+  },
+  "struct": {
+    "prefix": "struct",
+    "body": [
+      "pub struct ${1:Name} {",
+      "    ${2:field}: ${3:Type},",
+      "}"
+    ],
+    "description": "Struct definition"
+  },
+  "impl": {
+    "prefix": "impl",
+    "body": [
+      "impl ${1:Trait} for ${2:Type} {",
+      "    ${0:// methods}",
+      "}"
+    ],
+    "description": "Impl block"
+  },
+  "test": {
+    "prefix": "test",
+    "body": [
+      "#[test]",
+      "fn ${1:test_name}() {",
+      "    ${0:assert_eq!(1, 1);}",
+      "}"
+    ],
+    "description": "Test function"
+  },
+  "match": {
+    "prefix": "match",
+    "body": [
+      "match ${1:value} {",
+      "    ${2:pattern} => ${3:result},",
+      "    _ => ${0:default},",
+      "}"
+    ],
+    "description": "Match expression"
+  }
+}
