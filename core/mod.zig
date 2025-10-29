@@ -18,6 +18,8 @@ pub const io_uring_file = @import("io_uring_file.zig");
 pub const clipboard = @import("clipboard.zig");
 pub const config = @import("config.zig");
 pub const search_history = @import("search_history.zig");
+pub const plugin_ffi = @import("plugin_ffi.zig");
+pub const plugin_hot_reload = @import("plugin_hot_reload.zig");
 
 pub const Rope = rope.Rope;
 pub const Range = rope.Range;
@@ -46,3 +48,7 @@ pub const Clipboard = clipboard.Clipboard;
 pub const Config = config.Config;
 pub const ConfigManager = config.ConfigManager;
 pub const SearchHistory = search_history.SearchHistory;
+pub const PluginLoader = plugin_ffi.PluginLoader;
+pub const PluginHandle = plugin_ffi.PluginHandle;
+pub const PluginContext = plugin_ffi.PluginContext;
+pub const HotReloadManager = plugin_hot_reload.HotReloadManager;

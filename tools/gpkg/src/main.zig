@@ -1,4 +1,6 @@
 const std = @import("std");
+const lockfile_mod = @import("lockfile.zig");
+const pack_mod = @import("pack.zig");
 
 const GPKG_VERSION = "0.1.0";
 
@@ -29,6 +31,14 @@ pub fn main() !void {
         try searchCommand(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "lock")) {
         try lockCommand(allocator);
+    } else if (std.mem.eql(u8, command, "verify")) {
+        try verifyCommand(allocator);
+    } else if (std.mem.eql(u8, command, "pack-install")) {
+        try packInstallCommand(allocator, args[2..]);
+    } else if (std.mem.eql(u8, command, "pack-create")) {
+        try packCreateCommand(allocator, args[2..]);
+    } else if (std.mem.eql(u8, command, "new")) {
+        try newPluginCommand(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "build")) {
         try buildCommand(allocator, args[2..]);
     } else if (std.mem.eql(u8, command, "info")) {
@@ -114,7 +124,11 @@ fn printHelp() !void {
         \\    \x1b[32mbuild\x1b[0m [PATH]        Build a zig plugin (runs zig build)
         \\    \x1b[32minfo\x1b[0m <PLUGIN>       Show detailed info about a plugin
         \\    \x1b[32msearch\x1b[0m <QUERY>      Search for plugins (registry)
-        \\    \x1b[32mlock\x1b[0m                Generate lockfile from current plugins
+        \\    \x1b[32mlock\x1b[0m                Generate lockfile with SHA-256 hashes
+        \\    \x1b[32mverify\x1b[0m              Verify all plugins against lockfile
+        \\    \x1b[32mnew\x1b[0m <NAME> [TYPE]   Create new plugin (native/ghostlang/hybrid)
+        \\    \x1b[32mpack-create\x1b[0m <NAME>  Create a new plugin pack template
+        \\    \x1b[32mpack-install\x1b[0m <FILE> Install plugins from a pack file
         \\    \x1b[32mversion\x1b[0m, -v         Show version
         \\    \x1b[32mhelp\x1b[0m, -h            Show this help
         \\
@@ -123,14 +137,20 @@ fn printHelp() !void {
         \\    gpkg install thanos          \x1b[2m# Install specific plugin\x1b[0m
         \\    gpkg update                  \x1b[2m# Update all plugins\x1b[0m
         \\    gpkg list                    \x1b[2m# List installed plugins\x1b[0m
+        \\    gpkg lock                    \x1b[2m# Generate lockfile\x1b[0m
+        \\    gpkg verify                  \x1b[2m# Verify plugin integrity\x1b[0m
         \\    gpkg build .                 \x1b[2m# Build plugin in current dir\x1b[0m
         \\    gpkg info thanos             \x1b[2m# Show thanos plugin info\x1b[0m
         \\    gpkg remove thanos           \x1b[2m# Remove plugin\x1b[0m
+        \\    gpkg new myplugin native     \x1b[2m# Create new native plugin\x1b[0m
+        \\    gpkg pack-create mypack      \x1b[2m# Create new pack template\x1b[0m
+        \\    gpkg pack-install mypack.reaper.zon  \x1b[2m# Install from pack\x1b[0m
         \\
         \\\x1b[1mFILES:\x1b[0m
-        \\    \x1b[2m~/.config/grim/plugins.zon      \x1b[0m Plugin manifest
-        \\    \x1b[2m~/.config/grim/phantom.lock.zon \x1b[0m Lockfile (versions)
-        \\    \x1b[2m~/.local/share/grim/plugins/    \x1b[0m Installed plugins
+        \\    \x1b[2m~/.config/grim/plugins.zon         \x1b[0m Plugin manifest
+        \\    \x1b[2m~/.local/share/grim/grim.lock.zon  \x1b[0m Lockfile with SHA-256 hashes
+        \\    \x1b[2m~/.local/share/grim/plugins/       \x1b[0m Installed plugins
+        \\    \x1b[2m~/.config/grim/*.reaper.zon        \x1b[0m Plugin packs
         \\
         \\
     , .{GPKG_VERSION});
@@ -437,8 +457,480 @@ fn removePlugin(allocator: std.mem.Allocator, name: []const u8) !void {
 }
 
 fn generateLockfile(allocator: std.mem.Allocator) !void {
-    _ = allocator;
-    std.debug.print("TODO: Generate phantom.lock.zon\n", .{});
+    const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const plugins_dir = try std.fmt.bufPrint(&path_buf, "{s}/.local/share/grim/plugins", .{home});
+
+    var lockfile_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const lockfile_path = try std.fmt.bufPrint(&lockfile_path_buf, "{s}/.local/share/grim/grim.lock.zon", .{home});
+
+    std.debug.print("\n🔒 Generating lockfile from installed plugins...\n\n", .{});
+
+    // Open plugins directory
+    var dir = std.fs.openDirAbsolute(plugins_dir, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("\x1b[33m⚠ No plugins directory found\x1b[0m\n", .{});
+            std.debug.print("   Run 'gpkg install' to install plugins first\n", .{});
+            return;
+        }
+        return err;
+    };
+    defer dir.close();
+
+    // Create lockfile
+    var lockfile = try lockfile_mod.Lockfile.init(allocator);
+    defer lockfile.deinit();
+
+    var count: usize = 0;
+
+    // Iterate through installed plugins
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (entry.kind != .directory) continue;
+
+        const plugin_name = entry.name;
+
+        // Get full plugin path
+        var plugin_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const plugin_path = try std.fmt.bufPrint(&plugin_path_buf, "{s}/{s}", .{ plugins_dir, plugin_name });
+
+        std.debug.print("  Hashing {s}... ", .{plugin_name});
+
+        // Compute hash
+        const hash = lockfile_mod.hashPluginDirectory(allocator, plugin_path) catch |err| {
+            std.debug.print("\x1b[31mfailed: {}\x1b[0m\n", .{err});
+            continue;
+        };
+
+        std.debug.print("\x1b[32m✓\x1b[0m\n", .{});
+
+        // Detect plugin type
+        var plugin_dir = try dir.openDir(plugin_name, .{});
+        defer plugin_dir.close();
+
+        const has_build = blk: {
+            plugin_dir.access("build.zig", .{}) catch break :blk false;
+            break :blk true;
+        };
+
+        const has_lib = blk: {
+            plugin_dir.access("zig-out/lib", .{}) catch break :blk false;
+            break :blk true;
+        };
+
+        const has_gza = blk: {
+            plugin_dir.access("init.gza", .{}) catch {
+                plugin_dir.access("main.gza", .{}) catch break :blk false;
+                break :blk true;
+            };
+            break :blk true;
+        };
+
+        const plugin_type = if (has_lib and has_gza)
+            "hybrid"
+        else if (has_lib or has_build)
+            "zig"
+        else
+            "ghostlang";
+
+        // Try to extract version from plugin.toml or default to "0.0.0"
+        const version = "0.0.0"; // TODO: Parse plugin.toml for version
+
+        // Try to extract dependencies from plugin.toml
+        const dependencies = &[_][]const u8{}; // TODO: Parse plugin.toml for dependencies
+
+        // Add to lockfile
+        try lockfile.addPlugin(
+            plugin_name,
+            version,
+            hash,
+            "local", // TODO: Track actual source URL
+            plugin_type,
+            dependencies,
+        );
+
+        count += 1;
+    }
+
+    if (count == 0) {
+        std.debug.print("\x1b[33m⚠ No plugins found to lock\x1b[0m\n", .{});
+        return;
+    }
+
+    // Write lockfile
+    std.debug.print("\n  Writing lockfile...\n", .{});
+    try lockfile.write(lockfile_path);
+
+    std.debug.print("\n\x1b[32m✓ Lockfile generated successfully\x1b[0m\n", .{});
+    std.debug.print("  Location: {s}\n", .{lockfile_path});
+    std.debug.print("  Plugins locked: {d}\n", .{count});
+    std.debug.print("\n  Use 'gpkg verify' to verify integrity\n", .{});
+}
+
+fn verifyCommand(allocator: std.mem.Allocator) !void {
+    const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const plugins_dir = try std.fmt.bufPrint(&path_buf, "{s}/.local/share/grim/plugins", .{home});
+
+    var lockfile_path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const lockfile_path = try std.fmt.bufPrint(&lockfile_path_buf, "{s}/.local/share/grim/grim.lock.zon", .{home});
+
+    // Check if lockfile exists
+    std.fs.accessAbsolute(lockfile_path, .{}) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("\x1b[31m✗ Lockfile not found\x1b[0m\n", .{});
+            std.debug.print("   Run 'gpkg lock' to generate lockfile\n", .{});
+            return;
+        }
+        return err;
+    };
+
+    try lockfile_mod.verifyLockfile(allocator, lockfile_path, plugins_dir);
+}
+
+fn packInstallCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len == 0) {
+        std.debug.print("\x1b[31m✗ Error: Pack file path required\x1b[0m\n", .{});
+        std.debug.print("   Usage: gpkg pack-install <reaper.zon>\n", .{});
+        return;
+    }
+
+    const pack_path = args[0];
+
+    // Check if file exists
+    std.fs.accessAbsolute(pack_path, .{}) catch |err| {
+        if (err == error.FileNotFound) {
+            std.debug.print("\x1b[31m✗ Pack file not found: {s}\x1b[0m\n", .{pack_path});
+            return;
+        }
+        return err;
+    };
+
+    try pack_mod.installPack(allocator, pack_path);
+}
+
+fn packCreateCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len == 0) {
+        std.debug.print("\x1b[31m✗ Error: Pack name required\x1b[0m\n", .{});
+        std.debug.print("   Usage: gpkg pack-create <name>\n", .{});
+        return;
+    }
+
+    const pack_name = args[0];
+    const home = std.posix.getenv("HOME") orelse return error.NoHomeDir;
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const pack_path = try std.fmt.bufPrint(&path_buf, "{s}/.config/grim/{s}.reaper.zon", .{ home, pack_name });
+
+    try pack_mod.createPackTemplate(allocator, pack_path, pack_name);
+}
+
+fn newPluginCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len == 0) {
+        std.debug.print("\x1b[31m✗ Error: Plugin name required\x1b[0m\n", .{});
+        std.debug.print("   Usage: gpkg new <name> [type]\n", .{});
+        std.debug.print("   Types: native, ghostlang, hybrid (default: native)\n", .{});
+        return;
+    }
+
+    const plugin_name = args[0];
+    const plugin_type = if (args.len > 1) args[1] else "native";
+
+    // Determine plugin type
+    const is_native = std.mem.eql(u8, plugin_type, "native") or std.mem.eql(u8, plugin_type, "hybrid");
+    const is_ghostlang = std.mem.eql(u8, plugin_type, "ghostlang") or std.mem.eql(u8, plugin_type, "hybrid");
+
+    if (!is_native and !is_ghostlang) {
+        std.debug.print("\x1b[31m✗ Error: Invalid plugin type: {s}\x1b[0m\n", .{plugin_type});
+        std.debug.print("   Valid types: native, ghostlang, hybrid\n", .{});
+        return;
+    }
+
+    // Create plugin directory
+    try std.fs.cwd().makePath(plugin_name);
+    var plugin_dir = try std.fs.cwd().openDir(plugin_name, .{});
+    defer plugin_dir.close();
+
+    std.debug.print("\n📦 Creating {s} plugin: {s}\n\n", .{ plugin_type, plugin_name });
+
+    // Create build.zig
+    if (is_native) {
+        const build_zig_content = try std.fmt.allocPrint(allocator,
+            \\const std = @import("std");
+            \\
+            \\pub fn build(b: *std.Build) void {{
+            \\    const target = b.standardTargetOptions(.{{}});
+            \\    const optimize = b.standardOptimizeOption(.{{}});
+            \\
+            \\    const lib = b.addSharedLibrary(.{{
+            \\        .name = "{s}",
+            \\        .root_source_file = b.path("src/main.zig"),
+            \\        .target = target,
+            \\        .optimize = optimize,
+            \\    }});
+            \\
+            \\    lib.linkLibC();
+            \\
+            \\    // Add Grim dependency (adjust path as needed)
+            \\    const grim_dep = b.dependency("grim", .{{
+            \\        .target = target,
+            \\        .optimize = optimize,
+            \\    }});
+            \\    lib.root_module.addImport("grim", grim_dep.module("core"));
+            \\
+            \\    b.installArtifact(lib);
+            \\
+            \\    // Tests
+            \\    const tests = b.addTest(.{{
+            \\        .root_source_file = b.path("src/main.zig"),
+            \\        .target = target,
+            \\        .optimize = optimize,
+            \\    }});
+            \\    tests.root_module.addImport("grim", grim_dep.module("core"));
+            \\
+            \\    const run_tests = b.addRunArtifact(tests);
+            \\    const test_step = b.step("test", "Run plugin tests");
+            \\    test_step.dependOn(&run_tests.step);
+            \\}}
+            \\
+        , .{plugin_name});
+        defer allocator.free(build_zig_content);
+
+        const build_file = try plugin_dir.createFile("build.zig", .{});
+        defer build_file.close();
+        try build_file.writeAll(build_zig_content);
+
+        std.debug.print("  ✓ Created build.zig\n", .{});
+
+        // Create build.zig.zon
+        const build_zon_content = try std.fmt.allocPrint(allocator,
+            \\.{{
+            \\    .name = "{s}",
+            \\    .version = "0.1.0",
+            \\    .minimum_zig_version = "0.16.0",
+            \\
+            \\    .dependencies = .{{
+            \\        .grim = .{{
+            \\            // Adjust path to point to Grim root
+            \\            .path = "../..",
+            \\        }},
+            \\    }},
+            \\
+            \\    .paths = .{{
+            \\        "build.zig",
+            \\        "build.zig.zon",
+            \\        "src",
+            \\    }},
+            \\}}
+            \\
+        , .{plugin_name});
+        defer allocator.free(build_zon_content);
+
+        const zon_file = try plugin_dir.createFile("build.zig.zon", .{});
+        defer zon_file.close();
+        try zon_file.writeAll(build_zon_content);
+
+        std.debug.print("  ✓ Created build.zig.zon\n", .{});
+
+        // Create src directory and main.zig
+        try plugin_dir.makePath("src");
+        var src_dir = try plugin_dir.openDir("src", .{});
+        defer src_dir.close();
+
+        const main_zig_content = try std.fmt.allocPrint(allocator,
+            \\const std = @import("std");
+            \\const grim = @import("grim");
+            \\
+            \\const PluginMetadata = grim.plugin_ffi.PluginMetadata;
+            \\const PluginVTable = grim.plugin_ffi.PluginVTable;
+            \\const PluginContext = grim.plugin_ffi.PluginContext;
+            \\const ABI_VERSION = grim.plugin_ffi.ABI_VERSION;
+            \\
+            \\// Plugin metadata
+            \\const metadata = PluginMetadata{{
+            \\    .abi_version = ABI_VERSION,
+            \\    .name = "{s}",
+            \\    .version = "0.1.0",
+            \\    .description = "A Grim plugin",
+            \\    .author = "Your Name",
+            \\    .min_grim_version = "0.1.0",
+            \\}};
+            \\
+            \\// Plugin vtable
+            \\const vtable = PluginVTable{{
+            \\    .on_load = onLoad,
+            \\    .on_init = onInit,
+            \\    .on_deinit = onDeinit,
+            \\    .on_reload = null,
+            \\}};
+            \\
+            \\// Export plugin metadata
+            \\export fn grim_plugin_metadata() callconv(.C) *const PluginMetadata {{
+            \\    return &metadata;
+            \\}}
+            \\
+            \\// Export plugin vtable
+            \\export fn grim_plugin_vtable() callconv(.C) *const PluginVTable {{
+            \\    return &vtable;
+            \\}}
+            \\
+            \\// Plugin lifecycle hooks
+            \\fn onLoad(ctx: *PluginContext) callconv(.C) c_int {{
+            \\    const api = ctx.api;
+            \\    api.log(.info, "Plugin loaded!");
+            \\    return 0;
+            \\}}
+            \\
+            \\fn onInit(ctx: *PluginContext) callconv(.C) c_int {{
+            \\    const api = ctx.api;
+            \\    api.log(.info, "Plugin initialized!");
+            \\
+            \\    // Register commands here
+            \\    // _ = api.register_command("my-command", myCommand);
+            \\
+            \\    return 0;
+            \\}}
+            \\
+            \\fn onDeinit(ctx: *PluginContext) callconv(.C) void {{
+            \\    const api = ctx.api;
+            \\    api.log(.info, "Plugin deinitialized!");
+            \\}}
+            \\
+            \\// Example command handler
+            \\// fn myCommand(ctx: *PluginContext, args: [*:0]const u8) callconv(.C) c_int {{
+            \\//     _ = ctx;
+            \\//     const api = ctx.api;
+            \\//     api.log(.info, "Command executed!");
+            \\//     api.log(.info, args);
+            \\//     return 0;
+            \\// }}
+            \\
+        , .{plugin_name});
+        defer allocator.free(main_zig_content);
+
+        const main_file = try src_dir.createFile("main.zig", .{});
+        defer main_file.close();
+        try main_file.writeAll(main_zig_content);
+
+        std.debug.print("  ✓ Created src/main.zig\n", .{});
+    }
+
+    // Create Ghostlang file
+    if (is_ghostlang) {
+        const gza_content = try std.fmt.allocPrint(allocator,
+            \\-- {s} Ghostlang Plugin
+            \\-- A simple plugin for Grim editor
+            \\
+            \\local plugin = {{}}
+            \\
+            \\-- Plugin metadata
+            \\plugin.name = "{s}"
+            \\plugin.version = "0.1.0"
+            \\plugin.description = "A Grim plugin"
+            \\plugin.author = "Your Name"
+            \\
+            \\-- Called when plugin is loaded
+            \\function plugin.on_load()
+            \\    print("Plugin loaded!")
+            \\end
+            \\
+            \\-- Called when plugin is initialized
+            \\function plugin.on_init()
+            \\    print("Plugin initialized!")
+            \\
+            \\    -- Register commands here
+            \\    -- grim.register_command("my-command", plugin.my_command)
+            \\end
+            \\
+            \\-- Example command handler
+            \\-- function plugin.my_command(args)
+            \\--     print("Command executed: " .. args)
+            \\-- end
+            \\
+            \\-- Called when plugin is unloaded
+            \\function plugin.on_deinit()
+            \\    print("Plugin deinitialized!")
+            \\end
+            \\
+            \\return plugin
+            \\
+        , .{ plugin_name, plugin_name });
+        defer allocator.free(gza_content);
+
+        const gza_filename = try std.fmt.allocPrint(allocator, "{s}.gza", .{plugin_name});
+        defer allocator.free(gza_filename);
+
+        const gza_file = try plugin_dir.createFile(gza_filename, .{});
+        defer gza_file.close();
+        try gza_file.writeAll(gza_content);
+
+        std.debug.print("  ✓ Created {s}.gza\n", .{plugin_name});
+    }
+
+    // Create README.md
+    const readme_content = try std.fmt.allocPrint(allocator,
+        \\# {s}
+        \\
+        \\A {s} plugin for Grim editor.
+        \\
+        \\## Installation
+        \\
+        \\```bash
+        \\gpkg install .
+        \\```
+        \\
+        \\## Building (for native plugins)
+        \\
+        \\```bash
+        \\zig build
+        \\```
+        \\
+        \\## Testing
+        \\
+        \\```bash
+        \\zig build test
+        \\```
+        \\
+        \\## Description
+        \\
+        \\[Add your plugin description here]
+        \\
+        \\## License
+        \\
+        \\[Add your license here]
+        \\
+    , .{ plugin_name, plugin_type });
+    defer allocator.free(readme_content);
+
+    const readme_file = try plugin_dir.createFile("README.md", .{});
+    defer readme_file.close();
+    try readme_file.writeAll(readme_content);
+
+    std.debug.print("  ✓ Created README.md\n", .{});
+
+    // Create .gitignore
+    const gitignore_content =
+        \\zig-cache/
+        \\zig-out/
+        \\.zig-cache/
+        \\
+    ;
+
+    const gitignore_file = try plugin_dir.createFile(".gitignore", .{});
+    defer gitignore_file.close();
+    try gitignore_file.writeAll(gitignore_content);
+
+    std.debug.print("  ✓ Created .gitignore\n", .{});
+
+    std.debug.print("\n\x1b[32m✓ Plugin '{s}' created successfully!\x1b[0m\n", .{plugin_name});
+    std.debug.print("\nNext steps:\n", .{});
+    std.debug.print("  cd {s}\n", .{plugin_name});
+    if (is_native) {
+        std.debug.print("  zig build        # Build the plugin\n", .{});
+        std.debug.print("  zig build test   # Run tests\n", .{});
+    }
+    std.debug.print("  gpkg install .   # Install the plugin\n", .{});
+    std.debug.print("\n", .{});
 }
 
 fn buildCommand(allocator: std.mem.Allocator, args: []const []const u8) !void {

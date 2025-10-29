@@ -28,6 +28,9 @@ const lsp_loading_spinner = @import("lsp_loading_spinner.zig");
 // Terminal widget
 const terminal_widget = @import("terminal_widget.zig");
 
+// Command palette
+const command_palette = @import("command_palette.zig");
+
 pub const GrimConfig = struct {
     // Editor settings
     tab_size: u8 = 4,
@@ -67,6 +70,7 @@ pub const GrimApp = struct {
     command_bar: *grim_command_bar.CommandBar,
     status_bar: *powerline_status.PowerlineStatus,
     tab_bar: tab_bar.TabBar,
+    command_palette: *command_palette.CommandPalette,
 
     // State
     mode: Mode,
@@ -164,6 +168,10 @@ pub const GrimApp = struct {
         const search_history = core.SearchHistory.init(allocator, 100);
         const command_history = core.SearchHistory.init(allocator, 100);
 
+        // Initialize command palette
+        const cmd_palette = try command_palette.CommandPalette.init(allocator);
+        errdefer cmd_palette.deinit();
+
         // Initialize theme registry
         var theme_registry = theme_mod.ThemeRegistry.init(allocator);
         errdefer theme_registry.deinit();
@@ -179,6 +187,7 @@ pub const GrimApp = struct {
             .command_bar = command_bar,
             .status_bar = status_bar,
             .tab_bar = tab_bar.TabBar.init(layout_manager),
+            .command_palette = cmd_palette,
             .mode = .normal,
             .running = true,
             .waiting_for_window_command = false,
@@ -214,10 +223,14 @@ pub const GrimApp = struct {
             try self.openFile(file_path);
         }
 
+        // Register default commands in command palette
+        try self.registerCommands();
+
         return self;
     }
 
     pub fn deinit(self: *GrimApp) void {
+        self.command_palette.deinit();
         self.command_history.deinit();
         self.search_history.deinit();
         self.config_manager.deinit();
@@ -280,6 +293,17 @@ pub const GrimApp = struct {
 
     /// Handle keyboard input based on current mode
     fn handleKeyEvent(self: *GrimApp, key: phantom.Key) !bool {
+        // Command palette has highest priority (Ctrl+Shift+P to open)
+        if (self.command_palette.is_open) {
+            return try self.command_palette.handleInput(key);
+        }
+
+        // Ctrl+Shift+P opens command palette
+        if (key == .ctrl_p and self.mode == .normal) {
+            self.command_palette.open(self);
+            return true;
+        }
+
         // Command bar has priority
         if (self.command_bar.visible) {
             return try self.command_bar.handleKey(key, self);
@@ -1022,6 +1046,11 @@ pub const GrimApp = struct {
             self.command_bar.render(buffer, command_bar_area);
         }
 
+        // Render command palette on top of everything (if open)
+        if (self.command_palette.is_open) {
+            try self.command_palette.render(buffer, term_size.width, term_size.height);
+        }
+
         // Flush to terminal (diff-based rendering, no flickering!)
         try self.phantom_app.terminal.flush();
     }
@@ -1376,6 +1405,222 @@ pub const GrimApp = struct {
 
         // Load file into the new tab's editor
         try self.openFile(filepath);
+    }
+
+    // === Command Palette ===
+
+    /// Register all default commands in the command palette
+    fn registerCommands(self: *GrimApp) !void {
+        // File operations
+        try self.command_palette.registerCommand(.{
+            .id = "file.save",
+            .name = "File: Save",
+            .description = "Save the current buffer",
+            .keybinding = ":w",
+            .category = "File",
+            .callback = cmdSaveFile,
+        });
+
+        try self.command_palette.registerCommand(.{
+            .id = "file.saveQuit",
+            .name = "File: Save and Quit",
+            .description = "Save the current buffer and quit",
+            .keybinding = ":wq",
+            .category = "File",
+            .callback = cmdSaveQuit,
+        });
+
+        try self.command_palette.registerCommand(.{
+            .id = "file.quit",
+            .name = "File: Quit",
+            .description = "Quit the editor",
+            .keybinding = ":q",
+            .category = "File",
+            .callback = cmdQuit,
+        });
+
+        // Window operations
+        try self.command_palette.registerCommand(.{
+            .id = "window.split",
+            .name = "Window: Horizontal Split",
+            .description = "Split the window horizontally",
+            .keybinding = ":split",
+            .category = "Window",
+            .callback = cmdHorizontalSplit,
+        });
+
+        try self.command_palette.registerCommand(.{
+            .id = "window.vsplit",
+            .name = "Window: Vertical Split",
+            .description = "Split the window vertically",
+            .keybinding = ":vsplit",
+            .category = "Window",
+            .callback = cmdVerticalSplit,
+        });
+
+        // Tab operations
+        try self.command_palette.registerCommand(.{
+            .id = "tab.new",
+            .name = "Tab: New Tab",
+            .description = "Open a new tab",
+            .keybinding = ":tabnew",
+            .category = "Tab",
+            .callback = cmdNewTab,
+        });
+
+        try self.command_palette.registerCommand(.{
+            .id = "tab.next",
+            .name = "Tab: Next Tab",
+            .description = "Switch to the next tab",
+            .keybinding = "gt",
+            .category = "Tab",
+            .callback = cmdNextTab,
+        });
+
+        try self.command_palette.registerCommand(.{
+            .id = "tab.prev",
+            .name = "Tab: Previous Tab",
+            .description = "Switch to the previous tab",
+            .keybinding = "gT",
+            .category = "Tab",
+            .callback = cmdPrevTab,
+        });
+
+        // Buffer operations
+        try self.command_palette.registerCommand(.{
+            .id = "buffer.next",
+            .name = "Buffer: Next Buffer",
+            .description = "Switch to the next buffer",
+            .keybinding = ":bnext",
+            .category = "Buffer",
+            .callback = cmdNextBuffer,
+        });
+
+        try self.command_palette.registerCommand(.{
+            .id = "buffer.prev",
+            .name = "Buffer: Previous Buffer",
+            .description = "Switch to the previous buffer",
+            .keybinding = ":bprev",
+            .category = "Buffer",
+            .callback = cmdPrevBuffer,
+        });
+
+        // Terminal
+        try self.command_palette.registerCommand(.{
+            .id = "terminal.open",
+            .name = "Terminal: Open Terminal",
+            .description = "Open an embedded terminal",
+            .keybinding = ":term",
+            .category = "Terminal",
+            .callback = cmdOpenTerminal,
+        });
+
+        // LSP
+        try self.command_palette.registerCommand(.{
+            .id = "lsp.diagnostics",
+            .name = "LSP: Toggle Diagnostics Panel",
+            .description = "Show/hide LSP diagnostics",
+            .keybinding = ":LspDiagnostics",
+            .category = "LSP",
+            .callback = cmdToggleDiagnostics,
+        });
+
+        // Config
+        try self.command_palette.registerCommand(.{
+            .id = "config.edit",
+            .name = "Config: Edit Configuration",
+            .description = "Open the configuration file",
+            .keybinding = ":config",
+            .category = "Config",
+            .callback = cmdEditConfig,
+        });
+
+        try self.command_palette.registerCommand(.{
+            .id = "config.reload",
+            .name = "Config: Reload Configuration",
+            .description = "Reload config from disk",
+            .keybinding = ":reload",
+            .category = "Config",
+            .callback = cmdReloadConfig,
+        });
+    }
+
+    // Command callbacks (cast context to GrimApp)
+    fn cmdSaveFile(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        try app.saveCurrentBuffer();
+    }
+
+    fn cmdSaveQuit(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        try app.saveCurrentBuffer();
+        app.running = false;
+    }
+
+    fn cmdQuit(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        app.running = false;
+    }
+
+    fn cmdHorizontalSplit(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        try app.layout_manager.horizontalSplit();
+    }
+
+    fn cmdVerticalSplit(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        try app.layout_manager.verticalSplit();
+    }
+
+    fn cmdNewTab(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        try app.layout_manager.newTab();
+    }
+
+    fn cmdNextTab(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        app.layout_manager.nextTab();
+    }
+
+    fn cmdPrevTab(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        app.layout_manager.prevTab();
+    }
+
+    fn cmdNextBuffer(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        try app.layout_manager.bufferNext();
+    }
+
+    fn cmdPrevBuffer(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        try app.layout_manager.bufferPrev();
+    }
+
+    fn cmdOpenTerminal(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        try app.openTerminal(null);
+    }
+
+    fn cmdToggleDiagnostics(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        if (app.layout_manager.getActiveEditor()) |editor| {
+            editor.toggleDiagnostics();
+        }
+    }
+
+    fn cmdEditConfig(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        const config_path = try core.Config.getDefaultPath(app.allocator);
+        defer app.allocator.free(config_path);
+        try app.openFile(config_path);
+    }
+
+    fn cmdReloadConfig(ctx: *anyopaque) !void {
+        const app: *GrimApp = @ptrCast(@alignCast(ctx));
+        if (try app.config_manager.checkAndReload()) {
+            try app.applyConfig();
+        }
     }
 };
 
