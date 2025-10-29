@@ -22,7 +22,7 @@ pub const GitDiffPanel = struct {
     pub fn init(allocator: std.mem.Allocator) GitDiffPanel {
         return .{
             .allocator = allocator,
-            .hunks = std.ArrayList(DiffHunk).init(allocator),
+            .hunks = std.ArrayList(DiffHunk){},
             .visible = false,
             .selected_hunk = 0,
         };
@@ -32,7 +32,7 @@ pub const GitDiffPanel = struct {
         for (self.hunks.items) |*hunk| {
             hunk.deinit(self.allocator);
         }
-        self.hunks.deinit();
+        self.hunks.deinit(self.allocator);
     }
 
     pub fn loadDiff(self: *GitDiffPanel, filepath: []const u8) !void {
@@ -56,8 +56,8 @@ pub const GitDiffPanel = struct {
 
         // Parse hunks (simplified)
         var lines = std.mem.split(u8, output, "\n");
-        var current_hunk_lines = std.ArrayList(u8).init(self.allocator);
-        defer current_hunk_lines.deinit();
+        var current_hunk_lines = std.ArrayList(u8){};
+        defer current_hunk_lines.deinit(self.allocator);
 
         var in_hunk = false;
         var hunk_start: usize = 0;
@@ -69,10 +69,10 @@ pub const GitDiffPanel = struct {
                     const hunk = DiffHunk{
                         .start_line = hunk_start,
                         .end_line = hunk_start + 10,
-                        .diff_text = try current_hunk_lines.toOwnedSlice(),
+                        .diff_text = try current_hunk_lines.toOwnedSlice(self.allocator),
                     };
-                    try self.hunks.append(hunk);
-                    current_hunk_lines = std.ArrayList(u8).init(self.allocator);
+                    try self.hunks.append(self.allocator, hunk);
+                    current_hunk_lines = std.ArrayList(u8){};
                 }
                 in_hunk = true;
                 // Parse line number
@@ -80,8 +80,8 @@ pub const GitDiffPanel = struct {
             }
 
             if (in_hunk) {
-                try current_hunk_lines.appendSlice(line);
-                try current_hunk_lines.append('\n');
+                try current_hunk_lines.appendSlice(self.allocator, line);
+                try current_hunk_lines.append(self.allocator, '\n');
             }
         }
 
@@ -89,9 +89,9 @@ pub const GitDiffPanel = struct {
             const hunk = DiffHunk{
                 .start_line = hunk_start,
                 .end_line = hunk_start + 10,
-                .diff_text = try current_hunk_lines.toOwnedSlice(),
+                .diff_text = try current_hunk_lines.toOwnedSlice(self.allocator),
             };
-            try self.hunks.append(hunk);
+            try self.hunks.append(self.allocator, hunk);
         }
 
         self.visible = true;

@@ -262,8 +262,8 @@ test "snippet expansion" {
         .description = "Function",
     };
 
-    var tab_stops = std.ArrayList(TabStop).init(allocator);
-    defer tab_stops.deinit();
+    var tab_stops = std.ArrayList(TabStop){};
+    defer tab_stops.deinit(allocator);
 
     const expanded = try expandSnippet(allocator, snippet, &tab_stops);
     defer allocator.free(expanded);

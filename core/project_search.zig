@@ -22,7 +22,7 @@ pub const ProjectSearch = struct {
     pub fn init(allocator: std.mem.Allocator) ProjectSearch {
         return .{
             .allocator = allocator,
-            .results = std.ArrayList(SearchResult).init(allocator),
+            .results = std.ArrayList(SearchResult){},
         };
     }
 
@@ -30,7 +30,7 @@ pub const ProjectSearch = struct {
         for (self.results.items) |*result| {
             result.deinit();
         }
-        self.results.deinit();
+        self.results.deinit(self.allocator);
     }
 
     /// Search for pattern in project using ripgrep
@@ -43,16 +43,16 @@ pub const ProjectSearch = struct {
 
         // Build ripgrep command
         // rg --json --line-number --column <pattern>
-        var argv = std.ArrayList([]const u8).init(self.allocator);
-        defer argv.deinit();
+        var argv = std.ArrayList([]const u8){};
+        defer argv.deinit(self.allocator);
 
-        try argv.append("rg");
-        try argv.append("--json");
-        try argv.append("--line-number");
-        try argv.append("--column");
-        try argv.append("--no-heading");
-        try argv.append("--");
-        try argv.append(pattern);
+        try argv.append(self.allocator, "rg");
+        try argv.append(self.allocator, "--json");
+        try argv.append(self.allocator, "--line-number");
+        try argv.append(self.allocator, "--column");
+        try argv.append(self.allocator, "--no-heading");
+        try argv.append(self.allocator, "--");
+        try argv.append(self.allocator, pattern);
 
         // Run ripgrep
         var child = std.process.Child.init(argv.items, self.allocator);
@@ -151,7 +151,7 @@ pub const ProjectSearch = struct {
         defer {
             var iter = file_map.valueIterator();
             while (iter.next()) |list| {
-                list.deinit();
+                list.deinit(self.allocator);
             }
             file_map.deinit();
         }
@@ -159,9 +159,9 @@ pub const ProjectSearch = struct {
         for (self.results.items) |*result| {
             const entry = try file_map.getOrPut(result.filepath);
             if (!entry.found_existing) {
-                entry.value_ptr.* = std.ArrayList(*SearchResult).init(self.allocator);
+                entry.value_ptr.* = std.ArrayList(*SearchResult){};
             }
-            try entry.value_ptr.append(result);
+            try entry.value_ptr.append(self.allocator, result);
         }
 
         var total_replacements: usize = 0;

@@ -57,9 +57,9 @@ pub const DAPClient = struct {
             .process = null,
             .adapter_command = adapter_command,
             .adapter_args = adapter_args,
-            .breakpoints = std.ArrayList(Breakpoint).init(allocator),
-            .stack_frames = std.ArrayList(StackFrame).init(allocator),
-            .variables = std.ArrayList(Variable).init(allocator),
+            .breakpoints = std.ArrayList(Breakpoint){},
+            .stack_frames = std.ArrayList(StackFrame){},
+            .variables = std.ArrayList(Variable){},
             .next_request_id = 1,
             .running = false,
         };
@@ -69,17 +69,17 @@ pub const DAPClient = struct {
         for (self.breakpoints.items) |*bp| {
             bp.deinit(self.allocator);
         }
-        self.breakpoints.deinit();
+        self.breakpoints.deinit(self.allocator);
 
         for (self.stack_frames.items) |*frame| {
             frame.deinit(self.allocator);
         }
-        self.stack_frames.deinit();
+        self.stack_frames.deinit(self.allocator);
 
         for (self.variables.items) |*variable| {
             variable.deinit(self.allocator);
         }
-        self.variables.deinit();
+        self.variables.deinit(self.allocator);
 
         if (self.process) |*proc| {
             _ = proc.kill() catch {};
@@ -88,12 +88,12 @@ pub const DAPClient = struct {
 
     pub fn start(self: *DAPClient, program_path: []const u8) !void {
         // Build command
-        var argv = std.ArrayList([]const u8).init(self.allocator);
-        defer argv.deinit();
+        var argv = std.ArrayList([]const u8){};
+        defer argv.deinit(self.allocator);
 
-        try argv.append(self.adapter_command);
+        try argv.append(self.allocator, self.adapter_command);
         for (self.adapter_args) |arg| {
-            try argv.append(arg);
+            try argv.append(self.allocator, arg);
         }
 
         // Start adapter process
@@ -197,8 +197,8 @@ pub const DAPClient = struct {
         const request_id = self.next_request_id;
         self.next_request_id += 1;
 
-        var json_buf = std.ArrayList(u8).init(self.allocator);
-        defer json_buf.deinit();
+        var json_buf = std.ArrayList(u8){};
+        defer json_buf.deinit(self.allocator);
 
         try std.json.stringify(.{
             .seq = request_id,

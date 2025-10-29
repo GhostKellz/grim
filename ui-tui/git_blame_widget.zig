@@ -24,7 +24,7 @@ pub const GitBlameWidget = struct {
     pub fn init(allocator: std.mem.Allocator) GitBlameWidget {
         return .{
             .allocator = allocator,
-            .blame_lines = std.ArrayList(?BlameInfo).init(allocator),
+            .blame_lines = std.ArrayList(?BlameInfo){},
             .visible = false,
             .fade_timer = 0,
         };
@@ -36,7 +36,7 @@ pub const GitBlameWidget = struct {
                 info.deinit(self.allocator);
             }
         }
-        self.blame_lines.deinit();
+        self.blame_lines.deinit(self.allocator);
     }
 
     pub fn loadBlame(self: *GitBlameWidget, filepath: []const u8) !void {
