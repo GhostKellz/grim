@@ -71,9 +71,9 @@ Grim bundles Grove's latest tree-sitter toolchain. When you build with `-Dghostl
 - [x] Command mode (:w, :q, :wq, /search, s/find/replace)
 - [x] Fold operations (za, zR, zM)
 - [x] Git integration (blame, diff panels)
-- [ ] File tree explorer UI
-- [ ] Fuzzy finder
-- [ ] Project-wide search & replace UI  
+- [x] File tree explorer UI with git status
+- [x] Fuzzy finder with scoring algorithm
+- [x] Project-wide search & replace UI  
 
 ---
 
