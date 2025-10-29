@@ -16,6 +16,7 @@ pub const Editor = struct {
     // Multi-cursor support
     cursors: std.ArrayList(Position),
     multi_cursor_mode: bool,
+    selected_word: ?[]u8, // Current word for multi-cursor selection
     // Key sequence tracking
     pending_key: ?u21,
     // Rename state
@@ -155,8 +156,9 @@ pub const Editor = struct {
             .fold_regions = &.{},
             .selection_start = null,
             .selection_end = null,
-            .cursors = .empty,
+            .cursors = .{},
             .multi_cursor_mode = false,
+            .selected_word = null,
             .pending_key = null,
             .rename_buffer = null,
             .rename_active = false,
@@ -192,6 +194,9 @@ pub const Editor = struct {
         }
         if (self.search_pattern) |pattern| {
             self.allocator.free(pattern);
+        }
+        if (self.selected_word) |word| {
+            self.allocator.free(word);
         }
         // Free undo stack
         self.undo_stack.deinit();
@@ -1235,6 +1240,201 @@ pub const Editor = struct {
             return self.cursors.items;
         }
         return &.{};
+    }
+
+    // === Multi-Cursor Operations ===
+
+    /// Select next occurrence of current word (gd key binding)
+    pub fn selectNextOccurrence(self: *Editor) !void {
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+
+        // Get word at cursor if we don't have one already
+        if (self.selected_word == null) {
+            const word = self.getWordAtCursor(content) orelse return;
+            self.selected_word = try self.allocator.dupe(u8, word);
+
+            // Add cursor at current position
+            try self.cursors.append(self.allocator, Position{ .offset = self.cursor.offset });
+            self.multi_cursor_mode = true;
+        }
+
+        const word = self.selected_word.?;
+
+        // Find next occurrence after the last cursor
+        const last_cursor_offset = if (self.cursors.items.len > 0)
+            self.cursors.items[self.cursors.items.len - 1].offset
+        else
+            self.cursor.offset;
+
+        // Search from position after last cursor
+        var search_start = last_cursor_offset + 1;
+        while (search_start < content.len) {
+            if (search_start + word.len > content.len) break;
+
+            if (std.mem.eql(u8, content[search_start..search_start + word.len], word)) {
+                // Check word boundaries
+                const is_start_boundary = search_start == 0 or !isWordChar(content[search_start - 1]);
+                const is_end_boundary = search_start + word.len >= content.len or
+                    !isWordChar(content[search_start + word.len]);
+
+                if (is_start_boundary and is_end_boundary) {
+                    // Found next occurrence
+                    try self.cursors.append(self.allocator, Position{ .offset = search_start });
+                    self.cursor.offset = search_start; // Move main cursor to new location
+                    return;
+                }
+            }
+            search_start += 1;
+        }
+
+        // Wrap around to beginning
+        search_start = 0;
+        while (search_start < last_cursor_offset) {
+            if (search_start + word.len > content.len) break;
+
+            if (std.mem.eql(u8, content[search_start..search_start + word.len], word)) {
+                // Check word boundaries
+                const is_start_boundary = search_start == 0 or !isWordChar(content[search_start - 1]);
+                const is_end_boundary = search_start + word.len >= content.len or
+                    !isWordChar(content[search_start + word.len]);
+
+                if (is_start_boundary and is_end_boundary) {
+                    // Found occurrence (wrapped)
+                    try self.cursors.append(self.allocator, Position{ .offset = search_start });
+                    self.cursor.offset = search_start;
+                    return;
+                }
+            }
+            search_start += 1;
+        }
+    }
+
+    /// Select all occurrences of current word (<leader>a key binding)
+    pub fn selectAllOccurrences(self: *Editor) !void {
+        const content = try self.rope.slice(.{ .start = 0, .end = self.rope.len() });
+
+        // Get word at cursor
+        const word = self.getWordAtCursor(content) orelse return;
+
+        // Store selected word
+        if (self.selected_word) |old_word| {
+            self.allocator.free(old_word);
+        }
+        self.selected_word = try self.allocator.dupe(u8, word);
+
+        // Clear existing cursors
+        self.cursors.clearRetainingCapacity();
+
+        // Find all occurrences
+        var search_offset: usize = 0;
+        while (search_offset < content.len) {
+            if (search_offset + word.len > content.len) break;
+
+            if (std.mem.eql(u8, content[search_offset..search_offset + word.len], word)) {
+                // Check word boundaries
+                const is_start_boundary = search_offset == 0 or !isWordChar(content[search_offset - 1]);
+                const is_end_boundary = search_offset + word.len >= content.len or
+                    !isWordChar(content[search_offset + word.len]);
+
+                if (is_start_boundary and is_end_boundary) {
+                    try self.cursors.append(self.allocator, Position{ .offset = search_offset });
+                }
+            }
+            search_offset += 1;
+        }
+
+        if (self.cursors.items.len > 0) {
+            self.multi_cursor_mode = true;
+            // Keep main cursor at current position
+        }
+    }
+
+    /// Exit multi-cursor mode
+    pub fn exitMultiCursorMode(self: *Editor) void {
+        self.multi_cursor_mode = false;
+        self.cursors.clearRetainingCapacity();
+        if (self.selected_word) |word| {
+            self.allocator.free(word);
+            self.selected_word = null;
+        }
+    }
+
+    /// Insert character at all cursor positions
+    pub fn insertCharMultiCursor(self: *Editor, c: u21) !void {
+        if (!self.multi_cursor_mode or self.cursors.items.len == 0) {
+            return self.insertChar(c);
+        }
+
+        var buf: [4]u8 = undefined;
+        const len = try std.unicode.utf8Encode(c, &buf);
+        const char_str = buf[0..len];
+
+        // Insert at all cursors (from back to front to preserve offsets)
+        var i: usize = self.cursors.items.len;
+        var offset_adjustment: usize = 0;
+
+        while (i > 0) {
+            i -= 1;
+            const cursor_offset = self.cursors.items[i].offset + offset_adjustment;
+            try self.rope.insert(cursor_offset, char_str);
+            self.cursors.items[i].offset = cursor_offset + len;
+            offset_adjustment += len;
+        }
+
+        // Update main cursor
+        if (self.cursors.items.len > 0) {
+            self.cursor.offset = self.cursors.items[self.cursors.items.len - 1].offset;
+        }
+    }
+
+    /// Delete character at all cursor positions
+    pub fn deleteCharMultiCursor(self: *Editor) !void {
+        if (!self.multi_cursor_mode or self.cursors.items.len == 0) {
+            return self.deleteCharAtCursor();
+        }
+
+        // Sort cursors by offset (descending) to maintain offsets during deletion
+        std.mem.sort(Position, self.cursors.items, {}, struct {
+            fn lessThan(_: void, a: Position, b: Position) bool {
+                return a.offset > b.offset;
+            }
+        }.lessThan);
+
+        // Delete at all cursors (from back to front)
+        for (self.cursors.items) |*cursor_pos| {
+            if (cursor_pos.offset >= self.rope.len()) continue;
+
+            const slice = try self.rope.slice(.{ .start = cursor_pos.offset, .end = self.rope.len() });
+            var char_len: usize = 1;
+            while (char_len < slice.len and (slice[char_len] & 0xC0) == 0x80) : (char_len += 1) {}
+
+            try self.rope.delete(cursor_pos.offset, char_len);
+        }
+
+        // Update main cursor
+        if (self.cursors.items.len > 0) {
+            self.cursor.offset = self.cursors.items[self.cursors.items.len - 1].offset;
+        }
+    }
+
+    /// Move all cursors left
+    pub fn moveCursorsLeft(self: *Editor) void {
+        for (self.cursors.items) |*cursor_pos| {
+            cursor_pos.moveLeft(&self.rope);
+        }
+        if (self.cursors.items.len > 0) {
+            self.cursor = self.cursors.items[self.cursors.items.len - 1];
+        }
+    }
+
+    /// Move all cursors right
+    pub fn moveCursorsRight(self: *Editor) void {
+        for (self.cursors.items) |*cursor_pos| {
+            cursor_pos.moveRight(&self.rope);
+        }
+        if (self.cursors.items.len > 0) {
+            self.cursor = self.cursors.items[self.cursors.items.len - 1];
+        }
     }
 
     // === Undo/Redo System ===

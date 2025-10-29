@@ -23,6 +23,7 @@ const Cell = struct {
 const lsp_completion_menu_mod = @import("lsp_completion_menu.zig");
 const lsp_hover_widget_mod = @import("lsp_hover_widget.zig");
 const lsp_diagnostics_panel_mod = @import("lsp_diagnostics_panel.zig");
+const snippet_expander = @import("snippet_expander.zig");
 
 pub const GrimEditorWidget = struct {
     widget: phantom.Widget,
@@ -81,6 +82,10 @@ pub const GrimEditorWidget = struct {
     // Tab configuration
     tab_size: u8, // Number of spaces for a tab
     expand_tab: bool, // Convert tabs to spaces
+
+    // Snippet support
+    active_snippet: ?*snippet_expander.SnippetState,
+    snippet_library: core.SnippetLibrary,
 
     const SearchMatch = struct {
         start_offset: usize,
@@ -163,6 +168,8 @@ pub const GrimEditorWidget = struct {
             .is_modified = false,
             .tab_size = 4, // Default to 4 spaces
             .expand_tab = true, // Default to spaces, not tabs
+            .active_snippet = null,
+            .snippet_library = core.SnippetLibrary.init(allocator),
         };
 
         return self;
@@ -171,6 +178,11 @@ pub const GrimEditorWidget = struct {
     fn deinit(widget: *phantom.Widget) void {
         const self: *GrimEditorWidget = @fieldParentPtr("widget", widget);
 
+        if (self.active_snippet) |snippet_state| {
+            snippet_state.deinit();
+            self.allocator.destroy(snippet_state);
+        }
+        self.snippet_library.deinit();
         if (self.lsp_diagnostics_panel) |panel| panel.deinit();
         if (self.lsp_hover_widget) |w| w.deinit();
         if (self.lsp_completion_menu) |m| m.deinit();
@@ -296,8 +308,13 @@ pub const GrimEditorWidget = struct {
             buffer.writeText(area.x, screen_y, "~", tilde_style);
         }
 
-        // Render cursor
+        // Render cursor(s)
         try self.renderCursor(buffer, area, content_start_x);
+
+        // Render additional cursors in multi-cursor mode
+        if (self.editor.multi_cursor_mode) {
+            try self.renderMultiCursors(buffer, area, content_start_x);
+        }
     }
 
     fn renderHighlightedLine(
@@ -415,6 +432,51 @@ pub const GrimEditorWidget = struct {
 
         const cell = Cell.init(cursor_char, cursor_style);
         buffer.setCell(cursor_x, cursor_y, .{ .char = cell.char, .style = cell.style });
+    }
+
+    fn renderMultiCursors(self: *GrimEditorWidget, buffer: anytype, area: phantom.Rect, content_start_x: u16) !void {
+        const cursors = self.editor.getCursors();
+        if (cursors.len == 0) return;
+
+        const content = try self.editor.rope.slice(.{ .start = 0, .end = self.editor.rope.len() });
+
+        // Render each cursor with a different color (cyan background)
+        for (cursors) |cursor_pos| {
+            const cursor_line_col = self.editor.rope.lineColumnAtOffset(cursor_pos.offset) catch continue;
+            const cursor_line = cursor_line_col.line;
+            const cursor_col = cursor_line_col.column;
+
+            // Check if cursor is in viewport
+            if (cursor_line < self.viewport_top_line) continue;
+            const screen_line = cursor_line - self.viewport_top_line;
+            if (screen_line >= area.height) continue;
+
+            if (cursor_col < self.viewport_left_col) continue;
+            const screen_col = cursor_col - self.viewport_left_col;
+
+            const cursor_x = content_start_x + @as(u16, @intCast(screen_col));
+            const cursor_y = area.y + @as(u16, @intCast(screen_line));
+
+            if (cursor_x >= area.x + area.width) continue;
+
+            // Get character at cursor position
+            var cursor_char: u21 = ' ';
+            if (cursor_pos.offset < content.len) {
+                var utf8_view = std.unicode.Utf8View.init(content[cursor_pos.offset..]) catch continue;
+                var iter = utf8_view.iterator();
+                if (iter.nextCodepoint()) |cp| {
+                    cursor_char = cp;
+                }
+            }
+
+            // Render cursor with cyan background (different from main cursor)
+            const multi_cursor_style = phantom.Style.default()
+                .withFg(phantom.Color.black)
+                .withBg(phantom.Color.cyan);
+
+            const cell = Cell.init(cursor_char, multi_cursor_style);
+            buffer.setCell(cursor_x, cursor_y, .{ .char = cell.char, .style = cell.style });
+        }
     }
 
     fn renderLSPOverlays(self: *GrimEditorWidget, buffer: anytype, area: phantom.Rect) !void {
@@ -556,8 +618,21 @@ pub const GrimEditorWidget = struct {
         // Detect language and trigger syntax highlighting
         try self.activateSyntaxHighlighting(filepath);
 
+        // Load snippets for this filetype
+        self.loadSnippetsForFile(filepath);
+
         // Initialize LSP if needed
         self.startLSPForLanguage(filepath);
+    }
+
+    fn loadSnippetsForFile(self: *GrimEditorWidget, filepath: []const u8) void {
+        // Detect filetype from extension
+        const ext = std.fs.path.extension(filepath);
+        const filetype = if (ext.len > 0) ext[1..] else "txt"; // Skip the '.'
+
+        self.snippet_library.loadForFiletype(filetype) catch |err| {
+            std.log.warn("Failed to load snippets for {s}: {}", .{ filetype, err });
+        };
     }
 
     fn startLSPForLanguage(self: *GrimEditorWidget, filepath: []const u8) void {
@@ -651,6 +726,60 @@ pub const GrimEditorWidget = struct {
     }
 
     pub fn insertTab(self: *GrimEditorWidget) !void {
+        // If in snippet mode, navigate to next tab stop
+        if (self.active_snippet) |snippet_state| {
+            if (snippet_state.nextTabStop()) {
+                if (snippet_state.getCurrentOffset()) |offsets| {
+                    self.editor.cursor.offset = offsets.start;
+                    // Select the placeholder text
+                    self.editor.selection_start = offsets.start;
+                    self.editor.selection_end = offsets.end;
+                }
+                return;
+            } else {
+                // Snippet complete - exit snippet mode
+                snippet_state.deinit();
+                self.allocator.destroy(snippet_state);
+                self.active_snippet = null;
+                return;
+            }
+        }
+
+        // Check if we should trigger a snippet
+        const maybe_snippet = snippet_expander.checkSnippetTrigger(
+            &self.editor.rope,
+            self.editor.cursor.offset,
+            &self.snippet_library,
+        );
+
+        if (maybe_snippet) |snippet| {
+            // Delete the trigger word
+            const word_len = snippet.prefix.len;
+            try self.editor.rope.delete(self.editor.cursor.offset - word_len, word_len);
+            self.editor.cursor.offset -= word_len;
+
+            // Insert snippet
+            const snippet_state_ptr = try self.allocator.create(snippet_expander.SnippetState);
+            snippet_state_ptr.* = try snippet_expander.insertSnippet(
+                self.allocator,
+                &self.editor.rope,
+                self.editor.cursor.offset,
+                snippet,
+            );
+            self.active_snippet = snippet_state_ptr;
+
+            // Move to first tab stop
+            if (snippet_state_ptr.getCurrentOffset()) |offsets| {
+                self.editor.cursor.offset = offsets.start;
+                self.editor.selection_start = offsets.start;
+                self.editor.selection_end = offsets.end;
+            }
+            self.highlight_dirty = true;
+            self.is_modified = true;
+            return;
+        }
+
+        // Normal tab insertion
         if (self.expand_tab) {
             // Insert spaces based on tab_size
             var i: u8 = 0;
@@ -1777,6 +1906,93 @@ pub const GrimEditorWidget = struct {
     /// Check if currently recording
     pub fn isRecording(self: *GrimEditorWidget) bool {
         return self.recording_macro != null;
+    }
+
+    /// Save all macros to ~/.config/grim/macros.json
+    pub fn saveMacros(self: *GrimEditorWidget) !void {
+        const home = std.posix.getenv("HOME") orelse return error.NoHomeDirectory;
+        const config_dir = try std.fmt.allocPrint(self.allocator, "{s}/.config/grim", .{home});
+        defer self.allocator.free(config_dir);
+
+        // Ensure directory exists
+        std.fs.cwd().makePath(config_dir) catch {};
+
+        const macro_path = try std.fmt.allocPrint(self.allocator, "{s}/macros.json", .{config_dir});
+        defer self.allocator.free(macro_path);
+
+        const file = try std.fs.cwd().createFile(macro_path, .{});
+        defer file.close();
+
+        // Write JSON format:  {"register": [key1, key2, ...]}
+        try file.writeAll("{\n");
+
+        var iter = self.macros.iterator();
+        var first = true;
+        while (iter.next()) |entry| {
+            if (!first) try file.writeAll(",\n");
+            first = false;
+
+            const register = entry.key_ptr.*;
+            const keys = entry.value_ptr.*;
+
+            try file.writer().print("  \"{s}\": [", .{register});
+
+            for (keys, 0..) |key, i| {
+                if (i > 0) try file.writeAll(", ");
+                // Serialize key as integer (simplified)
+                try file.writer().print("{d}", .{@intFromEnum(key)});
+            }
+
+            try file.writeAll("]");
+        }
+
+        try file.writeAll("\n}\n");
+    }
+
+    /// Load macros from ~/.config/grim/macros.json
+    pub fn loadMacros(self: *GrimEditorWidget) !void {
+        const home = std.posix.getenv("HOME") orelse return error.NoHomeDirectory;
+        const macro_path = try std.fmt.allocPrint(
+            self.allocator,
+            "{s}/.config/grim/macros.json",
+            .{home},
+        );
+        defer self.allocator.free(macro_path);
+
+        const file = std.fs.cwd().openFile(macro_path, .{}) catch |err| {
+            if (err == error.FileNotFound) return; // No macros yet
+            return err;
+        };
+        defer file.close();
+
+        const content = try file.readToEndAlloc(self.allocator, 10 * 1024 * 1024);
+        defer self.allocator.free(content);
+
+        // Parse JSON
+        var parser = std.json.Parser.init(self.allocator, .alloc_always);
+        defer parser.deinit();
+
+        var tree = try parser.parse(content);
+        defer tree.deinit();
+
+        if (tree.root != .object) return error.InvalidMacroFormat;
+
+        var obj_iter = tree.root.object.iterator();
+        while (obj_iter.next()) |entry| {
+            const register_name = entry.key_ptr.*;
+            const keys_array = entry.value_ptr.*;
+
+            if (keys_array != .array) continue;
+
+            // Convert JSON array to phantom.Key array
+            var keys = try self.allocator.alloc(phantom.Key, keys_array.array.items.len);
+            for (keys_array.array.items, 0..) |key_value, i| {
+                if (key_value != .integer) continue;
+                keys[i] = @enumFromInt(key_value.integer);
+            }
+
+            try self.macros.put(try self.allocator.dupe(u8, register_name), keys);
+        }
     }
 
     // === Mouse handling ===

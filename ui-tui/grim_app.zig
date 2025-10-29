@@ -516,6 +516,26 @@ pub const GrimApp = struct {
                         return true;
                     },
 
+                    // Multi-cursor: select all occurrences (<leader>a = space-a)
+                    ' ' => {
+                        // Space is the leader key - wait for next key
+                        self.pending_operator = ' ';
+                        return true;
+                    },
+
+                    // Exit multi-cursor mode
+                    'x' => {
+                        if (editor) |ed| {
+                            if (ed.editor.multi_cursor_mode) {
+                                ed.editor.exitMultiCursorMode();
+                                return true;
+                            }
+                        }
+                        // Normal 'x' behavior - delete char
+                        try self.layout_manager.getActiveEditor().?.deleteCharForward();
+                        return true;
+                    },
+
                     // Undo
                     'u' => {
                         try self.layout_manager.getActiveEditor().?.undo();
@@ -595,6 +615,19 @@ pub const GrimApp = struct {
                             }
                             self.pending_operator = 0;
                             return true;
+                        } else if (self.pending_operator == ' ') {
+                            // Space (leader) commands
+                            if (c == 'a') {
+                                // <leader>a - select all occurrences
+                                if (editor) |ed| {
+                                    ed.editor.selectAllOccurrences() catch |err| {
+                                        std.log.warn("Failed to select all occurrences: {}", .{err});
+                                    };
+                                }
+                                self.pending_operator = 0;
+                                return true;
+                            }
+                            self.pending_operator = 0;
                         } else if (self.pending_operator == 'g') {
                             // gg - goto first line
                             if (c == 'g') {
@@ -602,20 +635,12 @@ pub const GrimApp = struct {
                                 self.pending_operator = 0;
                                 return true;
                             }
-                            // gd - go to definition (LSP)
+                            // gd - select next occurrence (multi-cursor mode)
                             else if (c == 'd') {
-                                if (self.editor_lsp) |lsp| {
-                                    if (editor) |ed| {
-                                        const pos = ed.editor.offsetToLineCol(ed.editor.cursor.offset) catch {
-                                            std.log.warn("Failed to convert cursor position", .{});
-                                            self.pending_operator = 0;
-                                            return true;
-                                        };
-
-                                        lsp.requestDefinition(ed.editor.current_filename orelse "untitled", pos.line, pos.col) catch |err| {
-                                            std.log.warn("LSP go-to-definition request failed: {}", .{err});
-                                        };
-                                    }
+                                if (editor) |ed| {
+                                    ed.editor.selectNextOccurrence() catch |err| {
+                                        std.log.warn("Failed to select next occurrence: {}", .{err});
+                                    };
                                 }
                                 self.pending_operator = 0;
                                 return true;
@@ -716,12 +741,21 @@ pub const GrimApp = struct {
         switch (key) {
             .escape => {
                 self.mode = .normal;
+                // Exit multi-cursor mode when leaving insert mode
+                if (editor.editor.multi_cursor_mode) {
+                    editor.editor.exitMultiCursorMode();
+                }
                 // End undo grouping when leaving insert mode
                 editor.endUndoGroup();
                 return true;
             },
             .char => |c| {
-                try editor.insertChar(c);
+                // Use multi-cursor insert if in multi-cursor mode
+                if (editor.editor.multi_cursor_mode) {
+                    try editor.editor.insertCharMultiCursor(c);
+                } else {
+                    try editor.insertChar(c);
+                }
                 return true;
             },
             .enter => {
@@ -729,7 +763,12 @@ pub const GrimApp = struct {
                 return true;
             },
             .backspace => {
-                try editor.deleteCharBackward();
+                // Use multi-cursor delete if in multi-cursor mode
+                if (editor.editor.multi_cursor_mode) {
+                    try editor.editor.deleteCharMultiCursor();
+                } else {
+                    try editor.deleteCharBackward();
+                }
                 return true;
             },
             .delete => {
