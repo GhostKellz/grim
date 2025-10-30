@@ -112,8 +112,8 @@ pub fn insertSnippet(
     var tab_stops = std.ArrayList(snippets.TabStop){};
     errdefer tab_stops.deinit(allocator);
 
-    // Expand snippet
-    const expanded = try snippets.expandSnippet(allocator, snippet, &tab_stops);
+    // Expand snippet (no context for now - could be enhanced later)
+    const expanded = try snippets.expandSnippet(allocator, snippet, &tab_stops, null);
     errdefer allocator.free(expanded);
 
     // Insert into rope
