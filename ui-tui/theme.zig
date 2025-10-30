@@ -88,7 +88,7 @@ pub const Theme = struct {
 
     /// Get the default theme
     pub fn getDefault() Theme {
-        return defaultDark();
+        return ghostHackerBlue();
     }
 
     /// Default dark theme (current Grim colors)
