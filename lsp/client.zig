@@ -50,6 +50,60 @@ pub const CodeActionsResponse = struct {
     result: std.json.Value,
 };
 
+/// Semantic token types (LSP 3.17 standard + GhostLS extensions)
+pub const SemanticTokenType = enum(u32) {
+    namespace = 0,
+    type = 1,
+    class = 2,
+    @"enum" = 3,
+    interface = 4,
+    @"struct" = 5,
+    typeParameter = 6,
+    parameter = 7,
+    variable = 8,
+    property = 9,
+    enumMember = 10,
+    event = 11,
+    function = 12,
+    method = 13,
+    macro = 14,
+    keyword = 15,
+    modifier = 16,
+    comment = 17,
+    string = 18,
+    number = 19,
+    regexp = 20,
+    operator = 21,
+};
+
+/// Semantic token modifiers (bit flags)
+pub const SemanticTokenModifier = enum(u32) {
+    declaration = 1 << 0, // 0x001
+    definition = 1 << 1, // 0x002
+    readonly = 1 << 2, // 0x004
+    static = 1 << 3, // 0x008
+    deprecated = 1 << 4, // 0x010
+    abstract = 1 << 5, // 0x020
+    async = 1 << 6, // 0x040
+    modification = 1 << 7, // 0x080
+    documentation = 1 << 8, // 0x100
+    defaultLibrary = 1 << 9, // 0x200
+};
+
+/// Document highlight kind
+pub const DocumentHighlightKind = enum(u32) {
+    Text = 1,
+    Read = 2,
+    Write = 3,
+};
+
+/// Folding range kind
+pub const FoldingRangeKind = enum {
+    comment,
+    imports,
+    region,
+};
+
 pub const ResponseCallback = struct {
     ctx: *anyopaque,
     onHover: ?*const fn (ctx: *anyopaque, response: HoverResponse) void,
@@ -71,6 +125,11 @@ pub const PendingRequest = struct {
         completion,
         signature_help,
         inlay_hints,
+        document_highlight,
+        folding_range,
+        prepare_rename,
+        rename,
+        semantic_tokens,
         selection_range,
         code_actions,
     };
@@ -583,6 +642,214 @@ pub const Client = struct {
         return id;
     }
 
+    /// Request document highlights for a symbol at the given position
+    pub fn requestDocumentHighlight(self: *Client, uri: []const u8, line: u32, character: u32) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/documentHighlight",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+                position: struct { line: u32, character: u32 },
+            };
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .position = .{ .line = line, .character = character },
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
+                .id = id,
+                .kind = .document_highlight,
+            });
+        }
+
+        return id;
+    }
+
+    /// Request folding ranges for a document
+    pub fn requestFoldingRange(self: *Client, uri: []const u8) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/foldingRange",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+            };
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
+                .id = id,
+                .kind = .folding_range,
+            });
+        }
+
+        return id;
+    }
+
+    /// Prepare rename - validates that rename is possible at the given position
+    pub fn requestPrepareRename(self: *Client, uri: []const u8, line: u32, character: u32) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/prepareRename",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+                position: struct { line: u32, character: u32 },
+            };
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .position = .{ .line = line, .character = character },
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
+                .id = id,
+                .kind = .prepare_rename,
+            });
+        }
+
+        return id;
+    }
+
+    /// Rename - renames symbol at position across all open documents
+    pub fn requestRename(self: *Client, uri: []const u8, line: u32, character: u32, new_name: []const u8) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/rename",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+                position: struct { line: u32, character: u32 },
+                newName: []const u8,
+            };
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+                .position = .{ .line = line, .character = character },
+                .newName = new_name,
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
+                .id = id,
+                .kind = .rename,
+            });
+        }
+
+        return id;
+    }
+
+    /// Request semantic tokens for full document
+    pub fn requestSemanticTokensFull(self: *Client, uri: []const u8) Error!u32 {
+        const id = self.next_id;
+        self.next_id += 1;
+
+        const Request = struct {
+            jsonrpc: []const u8 = "2.0",
+            id: u32,
+            method: []const u8 = "textDocument/semanticTokens/full",
+            params: Params,
+
+            const Params = struct {
+                textDocument: struct { uri: []const u8 },
+            };
+        };
+
+        const request = Request{
+            .id = id,
+            .params = .{
+                .textDocument = .{ .uri = uri },
+            },
+        };
+
+        const body = try self.jsonStringify(request);
+        defer self.allocator.free(body);
+
+        try self.writeMessage(body);
+
+        {
+            self.pending_mutex.lock();
+            defer self.pending_mutex.unlock();
+            try self.pending_requests.append(self.allocator, .{
+                .id = id,
+                .kind = .semantic_tokens,
+            });
+        }
+
+        return id;
+    }
+
     pub fn poll(self: *Client) Error!void {
         const payload = try self.readMessage();
         defer self.allocator.free(payload);
@@ -710,6 +977,11 @@ pub const Client = struct {
             .inlay_hints => try self.handleInlayHintsResponse(id, result),
             .selection_range => try self.handleSelectionRangeResponse(id, result),
             .code_actions => try self.handleCodeActionsResponse(id, result),
+            .document_highlight => try self.handleDocumentHighlightResponse(id, result),
+            .folding_range => try self.handleFoldingRangeResponse(id, result),
+            .prepare_rename => try self.handlePrepareRenameResponse(id, result),
+            .rename => try self.handleRenameResponse(id, result),
+            .semantic_tokens => try self.handleSemanticTokensResponse(id, result),
         }
     }
 
@@ -847,6 +1119,51 @@ pub const Client = struct {
         };
 
         callback.onCodeActions.?(callback.ctx, response);
+    }
+
+    fn handleDocumentHighlightResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        _ = self;
+        _ = id;
+        _ = result;
+        // TODO: Add callback support for document highlights
+        // Response format: DocumentHighlight[] | null
+        // DocumentHighlight = { range: Range, kind?: DocumentHighlightKind }
+        // DocumentHighlightKind = 1 (Text) | 2 (Read) | 3 (Write)
+    }
+
+    fn handleFoldingRangeResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        _ = self;
+        _ = id;
+        _ = result;
+        // TODO: Add callback support for folding ranges
+        // Response format: FoldingRange[] | null
+        // FoldingRange = { startLine: u32, endLine: u32, kind?: string }
+    }
+
+    fn handlePrepareRenameResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        _ = self;
+        _ = id;
+        _ = result;
+        // TODO: Add callback support for prepare rename
+        // Response format: Range | { range: Range, placeholder: string } | null
+    }
+
+    fn handleRenameResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        _ = self;
+        _ = id;
+        _ = result;
+        // TODO: Add callback support for rename
+        // Response format: WorkspaceEdit | null
+        // WorkspaceEdit = { changes?: { [uri: string]: TextEdit[] } }
+    }
+
+    fn handleSemanticTokensResponse(self: *Client, id: u32, result: std.json.Value) Error!void {
+        _ = self;
+        _ = id;
+        _ = result;
+        // TODO: Add callback support for semantic tokens
+        // Response format: { data: u32[] } (encoded tokens)
+        // Format: [deltaLine, deltaStart, length, tokenType, tokenModifiers]
     }
 
     fn handleDiagnostics(self: *Client, params: std.json.Value) Error!void {

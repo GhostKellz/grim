@@ -21,6 +21,10 @@ pub const LanguageServer = struct {
         codeActionProvider: bool = false,
         renameProvider: bool = false,
         diagnosticProvider: bool = false,
+        // New GhostLS v0.5.0 capabilities
+        documentHighlightProvider: bool = false,
+        foldingRangeProvider: bool = false,
+        semanticTokensProvider: bool = false,
     };
 
     pub const TextDocumentSyncKind = enum(u8) {
