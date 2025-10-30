@@ -4,6 +4,13 @@ const Editor = @import("editor.zig").Editor;
 const GrimEditorWidget = @import("grim_editor_widget.zig").GrimEditorWidget;
 const core = @import("core");
 
+pub const DiagnosticCounts = struct {
+    errors: usize,
+    warnings: usize,
+    info: usize,
+    hints: usize,
+};
+
 pub const StatusBar = struct {
     flex_row: *phantom.widgets.FlexRow,
     allocator: std.mem.Allocator,
@@ -37,7 +44,7 @@ pub const StatusBar = struct {
         self.allocator.destroy(self);
     }
 
-    pub fn update(self: *StatusBar, editor_widget: *GrimEditorWidget, grim_mode: anytype, git: *core.Git) !void {
+    pub fn update(self: *StatusBar, editor_widget: *GrimEditorWidget, grim_mode: anytype, git: *core.Git, lsp_diagnostics: ?DiagnosticCounts) !void {
         // Clean up old widgets before creating new ones
         for (self.flex_row.children.items) |child| {
             child.widget.vtable.deinit(child.widget);
@@ -147,6 +154,36 @@ pub const StatusBar = struct {
             phantom.Style.default().withFg(phantom.Color.bright_white),
         );
         try self.flex_row.addChild(.{ .widget = &percent_widget.widget, .flex_basis =5 });
+
+        // LSP diagnostics
+        if (lsp_diagnostics) |diag| {
+            if (diag.errors > 0 or diag.warnings > 0) {
+                const diag_text = try std.fmt.allocPrint(
+                    self.allocator,
+                    " E:{d} W:{d} ",
+                    .{ diag.errors, diag.warnings },
+                );
+                defer self.allocator.free(diag_text);
+
+                const diag_style = if (diag.errors > 0)
+                    phantom.Style.default()
+                        .withFg(phantom.Color.bright_white)
+                        .withBg(phantom.Color.red)
+                        .withBold()
+                else
+                    phantom.Style.default()
+                        .withFg(phantom.Color.black)
+                        .withBg(phantom.Color.yellow)
+                        .withBold();
+
+                const diag_widget = try phantom.widgets.Text.initWithStyle(
+                    self.allocator,
+                    diag_text,
+                    diag_style,
+                );
+                try self.flex_row.addChild(.{ .widget = &diag_widget.widget, .flex_basis =@intCast(diag_text.len) });
+            }
+        }
 
         // Git branch display
         if (git.getCurrentBranch()) |branch| {

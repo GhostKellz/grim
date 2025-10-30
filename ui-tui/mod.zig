@@ -21,6 +21,7 @@ pub const config_watcher = @import("config_watcher.zig");
 pub const window_manager = @import("window_manager.zig");
 pub const theme_customizer = @import("theme_customizer.zig");
 pub const buffer_sessions = @import("buffer_sessions.zig");
+pub const auto_save_session = @import("auto_save_session.zig");
 pub const font_manager = @import("font_manager.zig");
 pub const file_tree = @import("file_tree.zig");
 
@@ -30,6 +31,7 @@ pub const lsp_diagnostics_panel = @import("lsp_diagnostics_panel.zig");
 pub const lsp_hover_widget = @import("lsp_hover_widget.zig");
 pub const lsp_loading_spinner = @import("lsp_loading_spinner.zig");
 pub const status_bar_flex = @import("status_bar_flex.zig");
+pub const completion_menu = @import("completion_menu.zig");
 
 pub const App = app.App;
 pub const Mode = app.Mode;
@@ -56,6 +58,7 @@ pub const ConfigWatcher = config_watcher.ConfigWatcher;
 pub const WindowManager = window_manager.WindowManager;
 pub const ThemeCustomizer = theme_customizer.ThemeCustomizer;
 pub const BufferSessions = buffer_sessions.BufferSessions;
+pub const AutoSaveSession = auto_save_session.AutoSaveSession;
 pub const FontManager = font_manager.FontManager;
 pub const FileTree = file_tree.FileTree;
 
@@ -65,3 +68,4 @@ pub const LSPDiagnosticsPanel = lsp_diagnostics_panel.LSPDiagnosticsPanel;
 pub const LSPHoverWidget = lsp_hover_widget.LSPHoverWidget;
 pub const LSPLoadingSpinner = lsp_loading_spinner.LSPLoadingSpinner;
 pub const StatusBarFlex = status_bar_flex.StatusBar;
+pub const CompletionMenu = completion_menu.CompletionMenu;

@@ -198,18 +198,49 @@ pub const WindowManager = struct {
 
     /// Navigate to window in direction
     pub fn navigateWindow(self: *WindowManager, direction: Direction) !void {
-        _ = direction;
-        // TODO: Implement directional navigation
-        // For now, cycle through leaf windows
+        const current = try self.getActiveWindow();
         const leaves = try self.getLeafWindows();
         defer self.allocator.free(leaves);
 
-        for (leaves, 0..) |window, i| {
-            if (window.id == self.active_window_id) {
-                const next_idx = (i + 1) % leaves.len;
-                self.active_window_id = leaves[next_idx].id;
-                return;
+        if (leaves.len <= 1) return;
+
+        // Find the closest window in the specified direction
+        var best_window: ?*Window = null;
+        var best_distance: f32 = std.math.floatMax(f32);
+
+        const current_center_x = @as(f32, @floatFromInt(current.layout.x + current.layout.width / 2));
+        const current_center_y = @as(f32, @floatFromInt(current.layout.y + current.layout.height / 2));
+
+        for (leaves) |window| {
+            if (window.id == current.id) continue;
+
+            const center_x = @as(f32, @floatFromInt(window.layout.x + window.layout.width / 2));
+            const center_y = @as(f32, @floatFromInt(window.layout.y + window.layout.height / 2));
+
+            const dx = center_x - current_center_x;
+            const dy = center_y - current_center_y;
+
+            // Check if window is in the correct direction
+            const is_correct_direction = switch (direction) {
+                .left => dx < -5.0,
+                .right => dx > 5.0,
+                .up => dy < -5.0,
+                .down => dy > 5.0,
+            };
+
+            if (!is_correct_direction) continue;
+
+            // Calculate distance with direction bias
+            const distance = @sqrt(dx * dx + dy * dy);
+
+            if (distance < best_distance) {
+                best_distance = distance;
+                best_window = window;
             }
+        }
+
+        if (best_window) |window| {
+            self.active_window_id = window.id;
         }
     }
 
@@ -244,6 +275,34 @@ pub const WindowManager = struct {
             root.layout = .{ .x = 0, .y = 0, .width = width, .height = height };
             self.recalculateLayouts(root);
         }
+    }
+
+    /// Switch active window to specific buffer
+    pub fn switchWindowBuffer(self: *WindowManager, buffer_id: u32) !void {
+        const window = try self.getActiveWindow();
+        window.buffer_id = buffer_id;
+    }
+
+    /// Get window by ID
+    pub fn getWindowById(self: *WindowManager, id: u32) !*Window {
+        const root = self.root_window orelse return error.NoWindows;
+        return try self.findWindowById(root, id) orelse error.WindowNotFound;
+    }
+
+    /// Equalize all window sizes
+    pub fn equalizeWindows(self: *WindowManager) void {
+        if (self.root_window) |root| {
+            self.recalculateLayouts(root);
+        }
+    }
+
+    /// Maximize active window (hide others)
+    pub fn maximizeWindow(self: *WindowManager) !void {
+        // Store the tree state for restoration
+        // For now, just resize to full screen
+        const active = try self.getActiveWindow();
+        const root_layout = self.root_window.?.layout;
+        active.layout = root_layout;
     }
 
     // Private helpers
