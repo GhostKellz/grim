@@ -1385,6 +1385,7 @@ pub const GrimApp = struct {
 
         // Attach LSP to all editor widgets in the layout
         const all_editors = self.layout_manager.getAllEditors();
+        defer self.allocator.free(all_editors);
         for (all_editors) |editor_widget| {
             editor_widget.attachLSP(editor_lsp);
         }
@@ -1394,6 +1395,7 @@ pub const GrimApp = struct {
         // Detach LSP from all editor widgets
         if (self.editor_lsp != null) {
             const all_editors = self.layout_manager.getAllEditors();
+            defer self.allocator.free(all_editors);
             for (all_editors) |editor_widget| {
                 editor_widget.detachLSP();
             }

@@ -18,6 +18,9 @@ pub const Config = struct {
     /// Performance settings
     performance: PerformanceConfig = .{},
 
+    /// Track if theme was allocated (to avoid double-free)
+    theme_allocated: bool = false,
+
     pub const EditorConfig = struct {
         tab_width: u32 = 4,
         use_spaces: bool = true,
@@ -111,12 +114,15 @@ pub const Config = struct {
     fn deepCopyConfig(allocator: std.mem.Allocator, src: Config) !Config {
         var result = src;
         result.ui.theme = try allocator.dupe(u8, src.ui.theme);
+        result.theme_allocated = true;
         return result;
     }
 
     /// Free allocated memory
     pub fn deinit(self: *Config, allocator: std.mem.Allocator) void {
-        allocator.free(self.ui.theme);
+        if (self.theme_allocated) {
+            allocator.free(self.ui.theme);
+        }
     }
 };
 

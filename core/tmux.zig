@@ -29,8 +29,22 @@ pub const TmuxIntegration = struct {
     pub fn init(allocator: std.mem.Allocator) !*Self {
         const self = try allocator.create(Self);
 
-        // Open /dev/tty for terminal output
-        const tty_fd = try std.posix.open("/dev/tty", .{ .ACCMODE = .WRONLY }, 0);
+        // Open /dev/tty for terminal output (gracefully handle if not available)
+        const tty_fd = std.posix.open("/dev/tty", .{ .ACCMODE = .WRONLY }, 0) catch {
+            // /dev/tty not available (e.g., in non-interactive context)
+            // Disable tmux integration
+            self.* = .{
+                .allocator = allocator,
+                .enabled = false,
+                .in_tmux = false,
+                .session_name = null,
+                .window_index = null,
+                .pane_index = null,
+                .pane_id = null,
+                .tty_fd = std.posix.STDOUT_FILENO,
+            };
+            return self;
+        };
 
         self.* = .{
             .allocator = allocator,

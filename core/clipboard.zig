@@ -75,8 +75,9 @@ pub const Clipboard = struct {
     }
 
     pub fn deinit(self: *Clipboard) void {
-        _ = self;
-        // No cleanup needed for now
+        if (self.tmux_integration) |tmux_int| {
+            tmux_int.deinit();
+        }
     }
 
     /// Copy text to system clipboard
