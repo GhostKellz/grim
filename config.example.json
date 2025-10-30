@@ -6,9 +6,18 @@
     "relative_line_numbers": false,
     "cursor_style": "block",
     "word_wrap": false,
-    "auto_save": false,
+    "auto_save": true,
+    "auto_save_interval_ms": 30000,
     "trim_trailing_whitespace": true,
     "insert_final_newline": true
+  },
+  "session": {
+    "restore_on_startup": true,
+    "save_window_layout": true
+  },
+  "window": {
+    "split_border_style": "rounded",
+    "split_border_color": "bright_blue"
   },
   "theme": {
     "name": "gruvbox",
@@ -31,7 +40,16 @@
     "leader": "\\",
     "custom": {
       "<leader>ff": ":FuzzyFinder",
-      "<leader>gg": ":GitStatus"
+      "<leader>gg": ":GitStatus",
+      "<C-w>v": ":vsplit",
+      "<C-w>s": ":hsplit",
+      "<C-w>h": ":wincmd h",
+      "<C-w>j": ":wincmd j",
+      "<C-w>k": ":wincmd k",
+      "<C-w>l": ":wincmd l",
+      "<C-w>c": ":close",
+      "<C-w>=": ":wincmd =",
+      "<C-w>_": ":wincmd _"
     }
   }
 }

@@ -6,12 +6,23 @@ const editor_lsp = @import("editor_lsp.zig");
 
 const Diagnostic = editor_lsp.Diagnostic;
 
+pub const DiagnosticCounts = struct {
+    errors: usize,
+    warnings: usize,
+    info: usize,
+    hints: usize,
+};
+
 pub const LSPDiagnosticsPanel = struct {
     scroll_view: *phantom.widgets.ScrollView,
     border: *phantom.widgets.Border,
     content_lines: std.ArrayListAligned([]const u8, null),
     allocator: std.mem.Allocator,
     visible: bool,
+    error_count: usize,
+    warning_count: usize,
+    info_count: usize,
+    hint_count: usize,
 
     pub fn init(allocator: std.mem.Allocator, width: u16, height: u16) !*LSPDiagnosticsPanel {
         _ = width;
@@ -41,6 +52,10 @@ pub const LSPDiagnosticsPanel = struct {
             },
             .allocator = allocator,
             .visible = false,
+            .error_count = 0,
+            .warning_count = 0,
+            .info_count = 0,
+            .hint_count = 0,
         };
 
         return self;
@@ -63,20 +78,22 @@ pub const LSPDiagnosticsPanel = struct {
         }
         self.content_lines.clearRetainingCapacity();
 
+        // Reset counts
+        self.error_count = 0;
+        self.warning_count = 0;
+        self.info_count = 0;
+        self.hint_count = 0;
+
         // Group diagnostics by file
         var current_file: ?[]const u8 = null;
-        var error_count: usize = 0;
-        var warning_count: usize = 0;
-        var info_count: usize = 0;
-        var hint_count: usize = 0;
 
         for (diagnostics) |diag| {
             // Count by severity
             switch (diag.severity) {
-                .error_sev => error_count += 1,
-                .warning => warning_count += 1,
-                .information => info_count += 1,
-                .hint => hint_count += 1,
+                .error_sev => self.error_count += 1,
+                .warning => self.warning_count += 1,
+                .information => self.info_count += 1,
+                .hint => self.hint_count += 1,
             }
 
             // File header (if changed)
@@ -130,7 +147,7 @@ pub const LSPDiagnosticsPanel = struct {
         const title = try std.fmt.allocPrint(
             self.allocator,
             " Diagnostics (E:{d} W:{d} I:{d} H:{d}) ",
-            .{ error_count, warning_count, info_count, hint_count },
+            .{ self.error_count, self.warning_count, self.info_count, self.hint_count },
         );
         defer self.allocator.free(title);
         try self.border.setTitle(title);
@@ -235,6 +252,15 @@ pub const LSPDiagnosticsPanel = struct {
         if (self.content_lines.items.len > 0) {
             self.visible = true;
         }
+    }
+
+    pub fn getDiagnosticCounts(self: *LSPDiagnosticsPanel) DiagnosticCounts {
+        return .{
+            .errors = self.error_count,
+            .warnings = self.warning_count,
+            .info = self.info_count,
+            .hints = self.hint_count,
+        };
     }
 
     pub fn render(self: *LSPDiagnosticsPanel, buffer: anytype, area: phantom.Rect) void {

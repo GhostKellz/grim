@@ -19,6 +19,10 @@ const ICON_MODIFIED = "";
 const ICON_READONLY = "";
 const ICON_RECORDING = "";
 const ICON_LSP_LOADING = "󰔟"; // LSP loading spinner icon
+const ICON_ERROR = "";
+const ICON_WARNING = "";
+const ICON_INFO = "";
+const ICON_HINT = "";
 
 pub const PowerlineStatus = struct {
     allocator: std.mem.Allocator,
@@ -59,6 +63,14 @@ pub const PowerlineStatus = struct {
         if (editor_widget.lsp_client) |lsp| {
             if (lsp.isLoading()) {
                 try self.renderLSPLoadingSegment();
+            }
+        }
+
+        // Segment 3.5: LSP Diagnostics
+        if (editor_widget.lsp_diagnostics_panel) |diag_panel| {
+            const counts = diag_panel.getDiagnosticCounts();
+            if (counts.errors > 0 or counts.warnings > 0) {
+                try self.renderDiagnosticsSegment(counts.errors, counts.warnings);
             }
         }
 
@@ -182,6 +194,21 @@ pub const PowerlineStatus = struct {
         const text = try std.fmt.allocPrint(self.allocator, "\x1b[46m\x1b[30m {s} LSP \x1b[0m ", .{ICON_LSP_LOADING});
         defer self.allocator.free(text);
         try self.buffer.appendSlice(self.allocator, text);
+    }
+
+    fn renderDiagnosticsSegment(self: *PowerlineStatus, errors: usize, warnings: usize) !void {
+        if (errors > 0) {
+            // Red background for errors
+            const text = try std.fmt.allocPrint(self.allocator, "\x1b[41m\x1b[97m {s} {d} \x1b[0m ", .{ ICON_ERROR, errors });
+            defer self.allocator.free(text);
+            try self.buffer.appendSlice(self.allocator, text);
+        }
+        if (warnings > 0) {
+            // Yellow background for warnings
+            const text = try std.fmt.allocPrint(self.allocator, "\x1b[43m\x1b[30m {s} {d} \x1b[0m ", .{ ICON_WARNING, warnings });
+            defer self.allocator.free(text);
+            try self.buffer.appendSlice(self.allocator, text);
+        }
     }
 
     fn renderModifiedSegment(self: *PowerlineStatus) !void {
