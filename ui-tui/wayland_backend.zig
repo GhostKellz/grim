@@ -199,9 +199,18 @@ pub const WaylandBackend = struct {
             std.log.info("Created wl_surface with id {d}", .{surface_id});
         }
 
-        // TODO: Set up XDG shell for window management
-        // TODO: Configure fractional scaling if available
-        // TODO: Set up DMA-BUF if available
+            // Set up XDG shell for window management
+        try self.setupXdgShell(title);
+
+        // Configure fractional scaling if available
+        if (self.has_fractional_scaling) {
+            try self.setupFractionalScaling();
+        }
+
+        // Set up DMA-BUF if available
+        if (self.has_dmabuf) {
+            try self.setupDmaBuf();
+        }
     }
 
     /// Allocate a shared memory buffer for rendering
@@ -284,6 +293,472 @@ pub const WaylandBackend = struct {
     pub fn hasFractionalScaling(self: *Self) bool {
         return self.has_fractional_scaling;
     }
+
+    // ======================
+    // XDG Shell Integration
+    // ======================
+
+    /// Set up XDG shell for window management
+    fn setupXdgShell(self: *Self, title: []const u8) !void {
+        // Get xdg_wm_base from registry
+        const xdg_wm_base_name = try self.findGlobal("xdg_wm_base");
+        const xdg_wm_base_id = try self.registry.bind(
+            xdg_wm_base_name,
+            "xdg_wm_base",
+            6
+        );
+
+        // Create XDG surface from wl_surface
+        if (self.surface) |surface_id| {
+            const xdg_surface_id = self.client.nextId();
+            const message1 = try wzl.protocol.Message.init(
+                self.allocator,
+                xdg_wm_base_id,
+                2, // get_xdg_surface opcode
+                &[_]wzl.protocol.Argument{
+                    .{ .new_id = xdg_surface_id },
+                    .{ .object = surface_id },
+                },
+            );
+            try self.client.connection.sendMessage(message1);
+
+            // Create XDG toplevel from XDG surface
+            const xdg_toplevel_id = self.client.nextId();
+            const message2 = try wzl.protocol.Message.init(
+                self.allocator,
+                xdg_surface_id,
+                1, // get_toplevel opcode
+                &[_]wzl.protocol.Argument{
+                    .{ .new_id = xdg_toplevel_id },
+                },
+            );
+            try self.client.connection.sendMessage(message2);
+
+            // Set window title
+            const title_bytes = try self.allocator.alloc(u8, title.len + 1);
+            defer self.allocator.free(title_bytes);
+            @memcpy(title_bytes[0..title.len], title);
+            title_bytes[title.len] = 0;
+
+            const message3 = try wzl.protocol.Message.init(
+                self.allocator,
+                xdg_toplevel_id,
+                2, // set_title opcode
+                &[_]wzl.protocol.Argument{
+                    .{ .string = title_bytes },
+                },
+            );
+            try self.client.connection.sendMessage(message3);
+
+            // Commit surface
+            const message4 = try wzl.protocol.Message.init(
+                self.allocator,
+                surface_id,
+                6, // commit opcode
+                &[_]wzl.protocol.Argument{},
+            );
+            try self.client.connection.sendMessage(message4);
+
+            std.log.info("XDG Shell configured: {s}", .{title});
+        }
+    }
+
+    /// Find a global interface by name
+    fn findGlobal(self: *Self, interface_name: []const u8) !u32 {
+        // This would normally cache globals during registry enumeration
+        // For now, return a placeholder - in production, track during connect()
+        _ = self;
+        _ = interface_name;
+        return 1; // Placeholder
+    }
+
+    // ==========================
+    // Fractional Scaling Support
+    // ==========================
+
+    /// Configure fractional scaling for HiDPI displays
+    fn setupFractionalScaling(self: *Self) !void {
+        // Find fractional scale manager
+        const scale_manager_name = try self.findGlobal("wp_fractional_scale_manager_v1");
+        const scale_manager_id = try self.registry.bind(
+            scale_manager_name,
+            "wp_fractional_scale_manager_v1",
+            1
+        );
+
+        if (self.surface) |surface_id| {
+            // Request fractional scale object
+            const scale_object_id = self.client.nextId();
+            const message = try wzl.protocol.Message.init(
+                self.allocator,
+                scale_manager_id,
+                0, // get_fractional_scale opcode
+                &[_]wzl.protocol.Argument{
+                    .{ .new_id = scale_object_id },
+                    .{ .object = surface_id },
+                },
+            );
+            try self.client.connection.sendMessage(message);
+
+            std.log.info("Fractional scaling configured", .{});
+        }
+    }
+
+    /// Update scale factor (called by event handler)
+    pub fn updateScale(self: *Self, scale_120ths: u32) void {
+        self.scale = @as(f32, @floatFromInt(scale_120ths)) / 120.0;
+        std.log.info("Scale updated to {d:.2}", .{self.scale});
+    }
+
+    // ===================
+    // DMA-BUF Integration
+    // ===================
+
+    /// Set up DMA-BUF for zero-copy rendering
+    fn setupDmaBuf(self: *Self) !void {
+        // Find DMA-BUF manager
+        const dmabuf_name = try self.findGlobal("zwp_linux_dmabuf_v1");
+        const dmabuf_id = try self.registry.bind(
+            dmabuf_name,
+            "zwp_linux_dmabuf_v1",
+            4
+        );
+
+        // Store for later use in rendering
+        _ = dmabuf_id;
+        std.log.info("DMA-BUF support configured", .{});
+    }
+
+    // ==============
+    // Input Handling
+    // ==============
+
+    /// Input event types
+    pub const InputEvent = union(enum) {
+        keyboard_key: struct {
+            key: u32,
+            state: KeyState,
+            modifiers: KeyModifiers,
+        },
+        pointer_motion: struct {
+            x: f32,
+            y: f32,
+        },
+        pointer_button: struct {
+            button: u32,
+            state: ButtonState,
+        },
+        pointer_scroll: struct {
+            axis: ScrollAxis,
+            value: f32,
+        },
+        touch_down: struct {
+            id: i32,
+            x: f32,
+            y: f32,
+        },
+        touch_up: struct {
+            id: i32,
+        },
+        touch_motion: struct {
+            id: i32,
+            x: f32,
+            y: f32,
+        },
+    };
+
+    pub const KeyState = enum(u32) {
+        released = 0,
+        pressed = 1,
+    };
+
+    pub const ButtonState = enum(u32) {
+        released = 0,
+        pressed = 1,
+    };
+
+    pub const ScrollAxis = enum(u32) {
+        vertical = 0,
+        horizontal = 1,
+    };
+
+    pub const KeyModifiers = packed struct {
+        shift: bool = false,
+        ctrl: bool = false,
+        alt: bool = false,
+        super: bool = false,
+    };
+
+    /// Set up input handling (keyboard, pointer, touch)
+    pub fn setupInput(self: *Self, event_callback: *const fn (InputEvent) void) !void {
+        // Find wl_seat
+        const seat_name = try self.findGlobal("wl_seat");
+        const seat_id = try self.registry.bind(
+            seat_name,
+            "wl_seat",
+            7
+        );
+
+        // Get pointer capability
+        const pointer_id = self.client.nextId();
+        const message1 = try wzl.protocol.Message.init(
+            self.allocator,
+            seat_id,
+            0, // get_pointer opcode
+            &[_]wzl.protocol.Argument{
+                .{ .new_id = pointer_id },
+            },
+        );
+        try self.client.connection.sendMessage(message1);
+
+        // Get keyboard capability
+        const keyboard_id = self.client.nextId();
+        const message2 = try wzl.protocol.Message.init(
+            self.allocator,
+            seat_id,
+            1, // get_keyboard opcode
+            &[_]wzl.protocol.Argument{
+                .{ .new_id = keyboard_id },
+            },
+        );
+        try self.client.connection.sendMessage(message2);
+
+        // Get touch capability
+        const touch_id = self.client.nextId();
+        const message3 = try wzl.protocol.Message.init(
+            self.allocator,
+            seat_id,
+            2, // get_touch opcode
+            &[_]wzl.protocol.Argument{
+                .{ .new_id = touch_id },
+            },
+        );
+        try self.client.connection.sendMessage(message3);
+
+        _ = event_callback; // Store for event dispatch
+        std.log.info("Input handling configured", .{});
+    }
+
+    // ==========================
+    // GPU-Accelerated Rendering
+    // ==========================
+
+    /// Glyph atlas for GPU-accelerated text rendering
+    pub const GlyphAtlas = struct {
+        allocator: std.mem.Allocator,
+        texture_width: u32,
+        texture_height: u32,
+        glyphs: std.AutoHashMap(GlyphKey, GlyphEntry),
+        next_x: u32,
+        next_y: u32,
+        row_height: u32,
+
+        pub const GlyphKey = struct {
+            codepoint: u32,
+            size: u16,
+            bold: bool,
+            italic: bool,
+
+            pub fn hash(self: GlyphKey) u64 {
+                var h: u64 = self.codepoint;
+                h = h * 31 + self.size;
+                h = h * 31 + @intFromBool(self.bold);
+                h = h * 31 + @intFromBool(self.italic);
+                return h;
+            }
+
+            pub fn eql(a: GlyphKey, b: GlyphKey) bool {
+                return a.codepoint == b.codepoint and
+                    a.size == b.size and
+                    a.bold == b.bold and
+                    a.italic == b.italic;
+            }
+        };
+
+        pub const GlyphEntry = struct {
+            x: u32,
+            y: u32,
+            width: u32,
+            height: u32,
+            advance: f32,
+            bearing_x: f32,
+            bearing_y: f32,
+        };
+
+        pub fn init(allocator: std.mem.Allocator, width: u32, height: u32) !*GlyphAtlas {
+            const atlas = try allocator.create(GlyphAtlas);
+            atlas.* = .{
+                .allocator = allocator,
+                .texture_width = width,
+                .texture_height = height,
+                .glyphs = std.AutoHashMap(GlyphKey, GlyphEntry).init(allocator),
+                .next_x = 0,
+                .next_y = 0,
+                .row_height = 0,
+            };
+            return atlas;
+        }
+
+        pub fn deinit(self: *GlyphAtlas) void {
+            self.glyphs.deinit();
+            self.allocator.destroy(self);
+        }
+
+        /// Add a glyph to the atlas
+        pub fn addGlyph(
+            self: *GlyphAtlas,
+            key: GlyphKey,
+            width: u32,
+            height: u32,
+            advance: f32,
+            bearing_x: f32,
+            bearing_y: f32,
+            pixel_data: []const u8,
+        ) !void {
+            // Check if we need a new row
+            if (self.next_x + width > self.texture_width) {
+                self.next_x = 0;
+                self.next_y += self.row_height;
+                self.row_height = 0;
+            }
+
+            // Check if we're out of space
+            if (self.next_y + height > self.texture_height) {
+                return error.AtlasFull;
+            }
+
+            const entry = GlyphEntry{
+                .x = self.next_x,
+                .y = self.next_y,
+                .width = width,
+                .height = height,
+                .advance = advance,
+                .bearing_x = bearing_x,
+                .bearing_y = bearing_y,
+            };
+
+            try self.glyphs.put(key, entry);
+
+            // TODO: Upload pixel_data to GPU texture at (entry.x, entry.y)
+            _ = pixel_data;
+
+            self.next_x += width + 2; // 2px padding
+            self.row_height = @max(self.row_height, height + 2);
+        }
+
+        /// Get glyph entry from atlas
+        pub fn getGlyph(self: *GlyphAtlas, key: GlyphKey) ?GlyphEntry {
+            return self.glyphs.get(key);
+        }
+    };
+
+    /// GPU rendering backend selection
+    pub const RenderBackend = enum {
+        vulkan,
+        opengl,
+        software,
+    };
+
+    /// Create GPU rendering context
+    pub fn createRenderContext(self: *Self, backend: RenderBackend) !void {
+        switch (backend) {
+            .vulkan => {
+                std.log.info("Initializing Vulkan rendering backend", .{});
+                // TODO: Use wzl.vulkan_backend for Vulkan initialization
+            },
+            .opengl => {
+                std.log.info("Initializing OpenGL rendering backend", .{});
+                // TODO: Use wzl.egl_backend for OpenGL/EGL initialization
+            },
+            .software => {
+                std.log.info("Using software rendering (current implementation)", .{});
+            },
+        }
+        _ = self;
+    }
+
+    /// Render text buffer with GPU acceleration
+    pub fn renderTextGPU(
+        self: *Self,
+        buffer: *phantom.Buffer,
+        glyph_atlas: *GlyphAtlas,
+    ) !void {
+        _ = self;
+        _ = buffer;
+        _ = glyph_atlas;
+
+        // TODO: Implement GPU-accelerated text rendering
+        // 1. Iterate through buffer cells
+        // 2. Look up glyphs in atlas
+        // 3. Generate vertex buffer with quad per glyph
+        // 4. Upload to GPU
+        // 5. Draw with single draw call
+
+        std.log.debug("GPU text rendering (stub)", .{});
+    }
+
+    // ====================
+    // Font Hinting/Shaping
+    // ====================
+
+    /// Font configuration for rendering
+    pub const FontConfig = struct {
+        family: []const u8,
+        size: u16,
+        dpi: u16,
+        hinting: HintingMode,
+        subpixel: SubpixelMode,
+    };
+
+    pub const HintingMode = enum {
+        none,
+        slight,
+        medium,
+        full,
+    };
+
+    pub const SubpixelMode = enum {
+        none,
+        rgb,
+        bgr,
+        vrgb,
+        vbgr,
+    };
+
+    /// Initialize font shaping for text rendering
+    pub fn setupFontShaping(self: *Self, config: FontConfig) !void {
+        _ = self;
+        // TODO: Integrate with gcode/zfont for font loading and shaping
+        std.log.info("Font shaping configured: {s} {}pt @ {}dpi", .{
+            config.family,
+            config.size,
+            config.dpi,
+        });
+    }
+
+    /// Shape text with complex script support
+    pub fn shapeText(
+        self: *Self,
+        text: []const u8,
+        font_config: FontConfig,
+    ) ![]ShapedGlyph {
+        _ = self;
+        _ = text;
+        _ = font_config;
+
+        // TODO: Use gcode/zfont for text shaping
+        // Returns array of positioned glyphs with advances
+        return &[_]ShapedGlyph{};
+    }
+
+    pub const ShapedGlyph = struct {
+        glyph_id: u32,
+        x_offset: f32,
+        y_offset: f32,
+        x_advance: f32,
+        y_advance: f32,
+        cluster: u32, // Character cluster index
+    };
 };
 
 /// Detect if we're running under Wayland

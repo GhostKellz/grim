@@ -343,6 +343,20 @@ pub const CodeAction = struct {
     };
 };
 
+// GhostLS v0.5.0 - Semantic Tokens with Modifiers
+pub const SemanticToken = struct {
+    line: u32,
+    start_char: u32,
+    length: u32,
+    token_type: lsp.SemanticTokenType,
+    modifiers: u32, // Bit flags from lsp.SemanticTokenModifier
+
+    pub fn hasModifier(self: SemanticToken, modifier: lsp.SemanticTokenModifier) bool {
+        const modifier_bit = @intFromEnum(modifier);
+        return (self.modifiers & modifier_bit) != 0;
+    }
+};
+
 pub const EditorLSP = struct {
     allocator: std.mem.Allocator,
     editor: *Editor,
@@ -363,6 +377,9 @@ pub const EditorLSP = struct {
     inlay_hints_enabled: bool,
     selection_ranges: std.ArrayList(SelectionRange),
     code_actions: std.ArrayList(CodeAction),
+    // Ghostls v0.5.0 features
+    semantic_tokens: std.ArrayList(SemanticToken),
+    semantic_tokens_enabled: bool,
 
     pub const Error = lsp.LanguageServer.Error || std.mem.Allocator.Error;
 
@@ -400,6 +417,9 @@ pub const EditorLSP = struct {
             .inlay_hints_enabled = true,
             .selection_ranges = std.ArrayList(SelectionRange).empty,
             .code_actions = std.ArrayList(CodeAction).empty,
+            // Ghostls v0.5.0 features
+            .semantic_tokens = std.ArrayList(SemanticToken).empty,
+            .semantic_tokens_enabled = true,
         };
         self.diagnostics_sink = DiagnosticsSink.init(self);
         return self;
@@ -437,6 +457,9 @@ pub const EditorLSP = struct {
         self.selection_ranges.deinit(self.allocator);
         self.clearCodeActions();
         self.code_actions.deinit(self.allocator);
+
+        // Free ghostls v0.5.0 features
+        self.semantic_tokens.deinit(self.allocator);
 
         self.allocator.destroy(self);
     }
@@ -626,6 +649,31 @@ pub const EditorLSP = struct {
         _ = try server.requestCodeActions(uri, range);
     }
 
+    // GhostLS v0.5.0 - Request semantic tokens for full document
+    pub fn requestSemanticTokens(self: *EditorLSP, path: []const u8) !void {
+        if (self.language == null) return;
+        if (!self.semantic_tokens_enabled) return;
+
+        const server = self.server_registry.getServer(@tagName(self.language.?)) orelse return;
+
+        const uri = try self.pathToUri(path);
+        defer self.allocator.free(uri);
+
+        _ = try server.client.requestSemanticTokensFull(uri);
+    }
+
+    // GhostLS v0.5.0 - Request document highlights at cursor position
+    pub fn requestDocumentHighlight(self: *EditorLSP, path: []const u8, line: u32, character: u32) !void {
+        if (self.language == null) return;
+
+        const server = self.server_registry.getServer(@tagName(self.language.?)) orelse return;
+
+        const uri = try self.pathToUri(path);
+        defer self.allocator.free(uri);
+
+        _ = try server.client.requestDocumentHighlight(uri, line, character);
+    }
+
     pub fn getDiagnostics(self: *EditorLSP, path: []const u8) ?[]const Diagnostic {
         return self.diagnostics.get(path);
     }
@@ -652,6 +700,50 @@ pub const EditorLSP = struct {
 
     pub fn freeDefinitionResult(self: *EditorLSP, result: DefinitionResult) void {
         self.allocator.free(result.path);
+    }
+
+    // GhostLS v0.5.0 - Get semantic tokens
+    pub fn getSemanticTokens(self: *EditorLSP) []const SemanticToken {
+        return self.semantic_tokens.items;
+    }
+
+    // Decode delta-encoded semantic tokens from LSP response
+    // Format: [deltaLine, deltaStart, length, tokenType, tokenModifiers]
+    fn decodeSemanticTokens(self: *EditorLSP, data: []const u32) !void {
+        self.semantic_tokens.clearRetainingCapacity();
+
+        var current_line: u32 = 0;
+        var current_char: u32 = 0;
+
+        var i: usize = 0;
+        while (i + 4 < data.len) : (i += 5) {
+            const delta_line = data[i];
+            const delta_start = data[i + 1];
+            const length = data[i + 2];
+            const token_type_int = data[i + 3];
+            const modifiers = data[i + 4];
+
+            // Update position
+            if (delta_line > 0) {
+                current_line += delta_line;
+                current_char = delta_start;
+            } else {
+                current_char += delta_start;
+            }
+
+            // Convert token type int to enum (safely)
+            const token_type: lsp.SemanticTokenType = @enumFromInt(token_type_int);
+
+            try self.semantic_tokens.append(self.allocator, .{
+                .line = current_line,
+                .start_char = current_char,
+                .length = length,
+                .token_type = token_type,
+                .modifiers = modifiers,
+            });
+        }
+
+        std.log.info("Decoded {d} semantic tokens", .{self.semantic_tokens.items.len});
     }
 
     fn handlePublishDiagnostics(self: *EditorLSP, params: std.json.Value) std.mem.Allocator.Error!void {

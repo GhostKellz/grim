@@ -22,6 +22,7 @@ pub const search_history = @import("search_history.zig");
 pub const plugin_ffi = @import("plugin_ffi.zig");
 pub const plugin_hot_reload = @import("plugin_hot_reload.zig");
 pub const snippets = @import("snippets.zig");
+pub const project_search = @import("project_search.zig");
 
 pub const Rope = rope.Rope;
 pub const Range = rope.Range;
@@ -56,5 +57,7 @@ pub const PluginContext = plugin_ffi.PluginContext;
 pub const HotReloadManager = plugin_hot_reload.HotReloadManager;
 pub const SnippetLibrary = snippets.SnippetLibrary;
 pub const Snippet = snippets.Snippet;
+pub const ProjectSearch = project_search.ProjectSearch;
+pub const SearchResult = project_search.SearchResult;
 pub const ErrorHandler = error_handler;
 pub const ErrorContext = error_handler.ErrorContext;

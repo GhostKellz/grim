@@ -25,6 +25,28 @@ const lsp_hover_widget_mod = @import("lsp_hover_widget.zig");
 const lsp_diagnostics_panel_mod = @import("lsp_diagnostics_panel.zig");
 const snippet_expander = @import("snippet_expander.zig");
 
+const DocumentHighlight = struct {
+    start_line: u32,
+    start_char: u32,
+    end_line: u32,
+    end_char: u32,
+    kind: enum { Text, Read, Write }, // 1=Text, 2=Read, 3=Write
+};
+
+// Code folding support (GhostLS v0.5.0)
+const FoldRange = struct {
+    start_line: u32,
+    end_line: u32,
+    kind: ?FoldKind,
+    folded: bool, // Is this range currently folded?
+};
+
+const FoldKind = enum {
+    comment,
+    imports,
+    region,
+};
+
 pub const GrimEditorWidget = struct {
     widget: phantom.Widget,
     allocator: std.mem.Allocator,
@@ -41,6 +63,15 @@ pub const GrimEditorWidget = struct {
     // Syntax highlighting
     highlight_cache: []syntax.HighlightRange,
     highlight_dirty: bool,
+
+    // LSP Document Highlights (GhostLS v0.5.0)
+    document_highlights: std.ArrayList(DocumentHighlight),
+    highlight_request_id: ?u32,
+    last_highlight_position: ?struct { line: u32, character: u32 },
+
+    // Code folding (GhostLS v0.5.0)
+    fold_ranges: std.ArrayList(FoldRange),
+    fold_enabled: bool,
 
     // Dirty line tracking for rendering optimization
     dirty_lines: std.DynamicBitSet,
@@ -78,6 +109,7 @@ pub const GrimEditorWidget = struct {
 
     // File state
     is_modified: bool, // Track if buffer has unsaved changes
+    current_filepath: ?[]const u8, // Current file path (for LSP)
 
     // Tab configuration
     tab_size: u8, // Number of spaces for a tab
@@ -147,6 +179,11 @@ pub const GrimEditorWidget = struct {
             .lsp_diagnostics_panel = lsp_diagnostics,
             .highlight_cache = &.{},
             .highlight_dirty = true,
+            .document_highlights = std.ArrayList(DocumentHighlight){},
+            .highlight_request_id = null,
+            .last_highlight_position = null,
+            .fold_ranges = std.ArrayList(FoldRange){},
+            .fold_enabled = true,
             .dirty_lines = dirty_lines,
             .full_redraw_needed = true,
             .viewport_top_line = 0,
@@ -166,6 +203,7 @@ pub const GrimEditorWidget = struct {
             .macro_buffer = std.ArrayList(phantom.Key){},
             .macros = std.StringHashMap([]phantom.Key).init(allocator),
             .is_modified = false,
+            .current_filepath = null,
             .tab_size = 4, // Default to 4 spaces
             .expand_tab = true, // Default to spaces, not tabs
             .active_snippet = null,
@@ -188,6 +226,9 @@ pub const GrimEditorWidget = struct {
         if (self.lsp_completion_menu) |m| m.deinit();
         if (self.lsp_client) |lsp| lsp.deinit();
         if (self.highlight_cache.len > 0) self.allocator.free(self.highlight_cache);
+        self.document_highlights.deinit(self.allocator);
+        self.fold_ranges.deinit(self.allocator);
+        if (self.current_filepath) |path| self.allocator.free(path);
         if (self.search_pattern) |pattern| self.allocator.free(pattern);
         self.search_matches.deinit(self.allocator);
         self.dirty_lines.deinit();
@@ -258,13 +299,23 @@ pub const GrimEditorWidget = struct {
             const actual_line_num = self.viewport_top_line + screen_line;
             const screen_y = area.y + @as(u16, @intCast(screen_line));
 
+            // Skip folded lines
+            if (self.fold_enabled and self.isLineFolded(@intCast(actual_line_num))) {
+                // Jump to next line
+                const remaining = content[line_start..];
+                const newline_pos = std.mem.indexOfScalar(u8, remaining, '\n');
+                line_start = if (newline_pos) |pos| line_start + pos + 1 else content.len + 1;
+                screen_line -= 1; // Don't advance screen line
+                continue;
+            }
+
             // Find line end
             const remaining = content[line_start..];
             const newline_pos = std.mem.indexOfScalar(u8, remaining, '\n');
             const line_end = if (newline_pos) |pos| line_start + pos else content.len;
             const line_slice = content[line_start..line_end];
 
-            // Render gutter (line number)
+            // Render gutter (line number + fold icon)
             if (self.show_line_numbers) {
                 var line_num_buf: [6]u8 = undefined;
                 const cursor_line_col = if (self.editor.rope.lineColumnAtOffset(self.editor.cursor.offset)) |result|
@@ -284,6 +335,14 @@ pub const GrimEditorWidget = struct {
 
                 const line_num_style = phantom.Style.default().withFg(phantom.Color.bright_black);
                 buffer.writeText(area.x, screen_y, line_num_str, line_num_style);
+
+                // Render fold icon if present
+                if (self.fold_enabled) {
+                    if (self.getFoldIcon(@intCast(actual_line_num))) |icon| {
+                        const fold_style = phantom.Style.default().withFg(phantom.Color.cyan);
+                        buffer.writeText(area.x + 5, screen_y, icon, fold_style);
+                    }
+                }
             }
 
             // Apply horizontal scrolling
@@ -357,6 +416,60 @@ pub const GrimEditorWidget = struct {
                 }
             }
 
+            // Check semantic tokens (LSP semantic highlighting with modifiers)
+            if (self.lsp_client) |lsp| {
+                const semantic_tokens = lsp.getSemanticTokens();
+                for (semantic_tokens) |token| {
+                    if (token.line == line_num) {
+                        if (col >= token.start_char and col < token.start_char + token.length) {
+                            // Apply semantic token styling with modifiers
+                            cell_style = self.semanticTokenStyle(token, cell_style);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Check document highlights (LSP symbol highlighting)
+            for (self.document_highlights.items) |doc_hl| {
+                if (line_num == doc_hl.start_line and line_num == doc_hl.end_line) {
+                    if (col >= doc_hl.start_char and col < doc_hl.end_char) {
+                        // Different background colors for Read vs Write
+                        const bg_color = switch (doc_hl.kind) {
+                            .Text => phantom.Color.fromRgb(60, 60, 80), // Subtle gray
+                            .Read => phantom.Color.fromRgb(40, 70, 40), // Green tint
+                            .Write => phantom.Color.fromRgb(70, 50, 40), // Orange tint
+                        };
+                        cell_style = cell_style.withBg(bg_color);
+                        break;
+                    }
+                } else if (line_num == doc_hl.start_line and col >= doc_hl.start_char) {
+                    const bg_color = switch (doc_hl.kind) {
+                        .Text => phantom.Color.fromRgb(60, 60, 80),
+                        .Read => phantom.Color.fromRgb(40, 70, 40),
+                        .Write => phantom.Color.fromRgb(70, 50, 40),
+                    };
+                    cell_style = cell_style.withBg(bg_color);
+                    break;
+                } else if (line_num == doc_hl.end_line and col < doc_hl.end_char) {
+                    const bg_color = switch (doc_hl.kind) {
+                        .Text => phantom.Color.fromRgb(60, 60, 80),
+                        .Read => phantom.Color.fromRgb(40, 70, 40),
+                        .Write => phantom.Color.fromRgb(70, 50, 40),
+                    };
+                    cell_style = cell_style.withBg(bg_color);
+                    break;
+                } else if (line_num > doc_hl.start_line and line_num < doc_hl.end_line) {
+                    const bg_color = switch (doc_hl.kind) {
+                        .Text => phantom.Color.fromRgb(60, 60, 80),
+                        .Read => phantom.Color.fromRgb(40, 70, 40),
+                        .Write => phantom.Color.fromRgb(70, 50, 40),
+                    };
+                    cell_style = cell_style.withBg(bg_color);
+                    break;
+                }
+            }
+
             // Check visual selection (higher priority than syntax highlighting)
             if (self.visual_mode != .none) {
                 if (self.getSelectionRange()) |range| {
@@ -391,6 +504,67 @@ pub const GrimEditorWidget = struct {
             current_x += 1;
             written += 1;
             col += 1;
+        }
+
+        // Render inline diagnostics (Error Lens style) at end of line
+        if (self.lsp_client) |lsp| {
+            if (self.current_filepath) |path| {
+                if (lsp.getDiagnostics(path)) |diagnostics| {
+                    // Find diagnostics for this line
+                    for (diagnostics) |diag| {
+                        if (diag.range.start.line == line_num) {
+                            // Add spacing before diagnostic text
+                            if (current_x < x + max_width) {
+                                current_x += 2; // Two spaces padding
+
+                                // Choose color based on severity
+                                const diag_style = switch (diag.severity) {
+                                    .error_sev => phantom.Style.default()
+                                        .withFg(phantom.Color.red)
+                                        .withItalic(),
+                                    .warning => phantom.Style.default()
+                                        .withFg(phantom.Color.yellow)
+                                        .withItalic(),
+                                    .information => phantom.Style.default()
+                                        .withFg(phantom.Color.blue)
+                                        .withItalic(),
+                                    .hint => phantom.Style.default()
+                                        .withFg(phantom.Color.bright_black)
+                                        .withItalic(),
+                                };
+
+                                // Render diagnostic message (truncate if too long)
+                                const available_width = if (current_x < x + max_width)
+                                    (x + max_width) - current_x
+                                else
+                                    0;
+
+                                if (available_width > 0) {
+                                    const message_to_render = if (diag.message.len > available_width)
+                                        diag.message[0..available_width]
+                                    else
+                                        diag.message;
+
+                                    var msg_iter = std.unicode.Utf8Iterator{ .bytes = message_to_render, .i = 0 };
+                                    while (msg_iter.nextCodepoint()) |cp| {
+                                        if (current_x >= x + max_width) break;
+                                        if (current_x >= buffer.size.width) break;
+
+                                        buffer.setCell(current_x, y, .{
+                                            .char = cp,
+                                            .style = diag_style
+                                        });
+                                        current_x += 1;
+                                    }
+                                }
+                            }
+
+                            // Only show first diagnostic per line
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -609,6 +783,12 @@ pub const GrimEditorWidget = struct {
     // === Public API ===
 
     pub fn loadFile(self: *GrimEditorWidget, filepath: []const u8) !void {
+        // Store filepath for LSP use
+        if (self.current_filepath) |old_path| {
+            self.allocator.free(old_path);
+        }
+        self.current_filepath = try self.allocator.dupe(u8, filepath);
+
         try self.editor.loadFile(filepath);
         self.highlight_dirty = true;
         self.viewport_top_line = 0;
@@ -819,21 +999,25 @@ pub const GrimEditorWidget = struct {
     pub fn moveCursorLeft(self: *GrimEditorWidget) !void {
         self.editor.cursor.moveLeft(&self.editor.rope);
         self.scrollToCursor();
+        self.requestDocumentHighlights();
     }
 
     pub fn moveCursorRight(self: *GrimEditorWidget) !void {
         self.editor.cursor.moveRight(&self.editor.rope);
         self.scrollToCursor();
+        self.requestDocumentHighlights();
     }
 
     pub fn moveCursorUp(self: *GrimEditorWidget) !void {
         self.editor.moveCursorUp();
         self.scrollToCursor();
+        self.requestDocumentHighlights();
     }
 
     pub fn moveCursorDown(self: *GrimEditorWidget) !void {
         self.editor.moveCursorDown();
         self.scrollToCursor();
+        self.requestDocumentHighlights();
     }
 
     pub fn moveWordForward(self: *GrimEditorWidget) !void {
@@ -2078,5 +2262,269 @@ pub const GrimEditorWidget = struct {
     /// Detach LSP client from this editor widget
     pub fn detachLSP(self: *GrimEditorWidget) void {
         self.lsp_client = null;
+    }
+
+    /// Request document highlights from LSP for symbol at cursor
+    pub fn requestDocumentHighlights(self: *GrimEditorWidget) void {
+        const lsp = self.lsp_client orelse return;
+        const filepath = self.current_filepath orelse return;
+
+        // Get current cursor position
+        const cursor_pos = self.editor.cursor.offset;
+        const line_col = self.editor.rope.lineColumnAtOffset(cursor_pos) catch return;
+
+        // Skip if same position as last request (avoid redundant requests)
+        if (self.last_highlight_position) |last_pos| {
+            if (last_pos.line == line_col.line and last_pos.character == @as(u32, @intCast(line_col.column))) {
+                return;
+            }
+        }
+
+        // Update last position
+        self.last_highlight_position = .{
+            .line = @intCast(line_col.line),
+            .character = @intCast(line_col.column),
+        };
+
+        // Request highlights from LSP
+        lsp.requestDocumentHighlight(
+            filepath,
+            @intCast(line_col.line),
+            @intCast(line_col.column),
+        ) catch |err| {
+            std.log.warn("Failed to request document highlights: {}", .{err});
+        };
+    }
+
+    /// Handle document highlight response from LSP
+    pub fn handleDocumentHighlights(self: *GrimEditorWidget, highlights: std.json.Value) void {
+        // Clear existing highlights
+        self.document_highlights.clearRetainingCapacity();
+
+        if (highlights != .array) return;
+
+        for (highlights.array.items) |item| {
+            if (item != .object) continue;
+            const obj = item.object;
+
+            // Parse range
+            const range_val = obj.get("range") orelse continue;
+            if (range_val != .object) continue;
+            const range = range_val.object;
+
+            const start = range.get("start") orelse continue;
+            const end = range.get("end") orelse continue;
+
+            if (start != .object or end != .object) continue;
+
+            const start_line = start.object.get("line") orelse continue;
+            const start_char = start.object.get("character") orelse continue;
+            const end_line = end.object.get("line") orelse continue;
+            const end_char = end.object.get("character") orelse continue;
+
+            if (start_line != .integer or start_char != .integer or
+                end_line != .integer or end_char != .integer) continue;
+
+            // Parse kind (1=Text, 2=Read, 3=Write)
+            var kind: DocumentHighlight.kind = .Text;
+            if (obj.get("kind")) |kind_val| {
+                if (kind_val == .integer) {
+                    kind = switch (kind_val.integer) {
+                        2 => .Read,
+                        3 => .Write,
+                        else => .Text,
+                    };
+                }
+            }
+
+            self.document_highlights.append(.{
+                .start_line = @intCast(start_line.integer),
+                .start_char = @intCast(start_char.integer),
+                .end_line = @intCast(end_line.integer),
+                .end_char = @intCast(end_char.integer),
+                .kind = kind,
+            }) catch continue;
+        }
+
+        // Trigger redraw to show highlights
+        self.full_redraw_needed = true;
+    }
+
+    /// Clear document highlights
+    pub fn clearDocumentHighlights(self: *GrimEditorWidget) void {
+        self.document_highlights.clearRetainingCapacity();
+        self.highlight_request_id = null;
+        self.last_highlight_position = null;
+        self.full_redraw_needed = true;
+    }
+
+    /// Apply semantic token styling with modifiers (GhostLS v0.5.0)
+    fn semanticTokenStyle(self: *GrimEditorWidget, token: editor_lsp_mod.SemanticToken, base_style: phantom.Style) phantom.Style {
+        _ = self;
+        const lsp = @import("lsp");
+
+        // Base color for token type
+        var style = switch (token.token_type) {
+            .namespace => base_style.withFg(phantom.Color.cyan),
+            .type, .class, .@"enum", .interface, .@"struct" => base_style.withFg(phantom.Color.yellow),
+            .typeParameter => base_style.withFg(phantom.Color.fromRgb(255, 200, 100)),
+            .parameter, .variable => base_style.withFg(phantom.Color.white),
+            .property, .enumMember => base_style.withFg(phantom.Color.fromRgb(156, 220, 254)),
+            .function, .method => base_style.withFg(phantom.Color.fromRgb(220, 220, 170)),
+            .macro => base_style.withFg(phantom.Color.magenta),
+            .keyword => base_style.withFg(phantom.Color.fromRgb(86, 156, 214)),
+            .modifier => base_style.withFg(phantom.Color.fromRgb(86, 156, 214)),
+            .comment => base_style.withFg(phantom.Color.fromRgb(106, 153, 85)),
+            .string => base_style.withFg(phantom.Color.fromRgb(206, 145, 120)),
+            .number => base_style.withFg(phantom.Color.fromRgb(181, 206, 168)),
+            .regexp => base_style.withFg(phantom.Color.fromRgb(209, 105, 105)),
+            .operator => base_style.withFg(phantom.Color.white),
+            else => base_style,
+        };
+
+        // Apply modifiers (bit flags)
+        if (token.hasModifier(lsp.SemanticTokenModifier.declaration)) {
+            style = style.withBold();
+        }
+        if (token.hasModifier(lsp.SemanticTokenModifier.definition)) {
+            style = style.withBold();
+        }
+        if (token.hasModifier(lsp.SemanticTokenModifier.readonly)) {
+            // Slightly dimmer for readonly
+            style = style.withFg(phantom.Color.fromRgb(180, 180, 180));
+        }
+        if (token.hasModifier(lsp.SemanticTokenModifier.deprecated)) {
+            // Use dimmer color + underline for deprecated (phantom doesn't have strikethrough)
+            style = style.withFg(phantom.Color.fromRgb(128, 128, 128)).withUnderline();
+        }
+        if (token.hasModifier(lsp.SemanticTokenModifier.abstract)) {
+            style = style.withItalic();
+        }
+
+        return style;
+    }
+
+    // ==================== Code Folding Methods ====================
+
+    /// Toggle fold at current cursor line
+    pub fn toggleFold(self: *GrimEditorWidget) void {
+        const cursor_line = self.getCursorLine();
+
+        // Find fold range at this line
+        for (self.fold_ranges.items) |*fold| {
+            if (fold.start_line == cursor_line) {
+                fold.folded = !fold.folded;
+                self.full_redraw_needed = true;
+                return;
+            }
+        }
+    }
+
+    /// Fold region at cursor
+    pub fn foldAtCursor(self: *GrimEditorWidget) void {
+        const cursor_line = self.getCursorLine();
+
+        for (self.fold_ranges.items) |*fold| {
+            if (fold.start_line == cursor_line and !fold.folded) {
+                fold.folded = true;
+                self.full_redraw_needed = true;
+                return;
+            }
+        }
+    }
+
+    /// Unfold region at cursor
+    pub fn unfoldAtCursor(self: *GrimEditorWidget) void {
+        const cursor_line = self.getCursorLine();
+
+        for (self.fold_ranges.items) |*fold| {
+            if (fold.start_line == cursor_line and fold.folded) {
+                fold.folded = false;
+                self.full_redraw_needed = true;
+                return;
+            }
+        }
+    }
+
+    /// Fold all regions
+    pub fn foldAll(self: *GrimEditorWidget) void {
+        for (self.fold_ranges.items) |*fold| {
+            fold.folded = true;
+        }
+        self.full_redraw_needed = true;
+    }
+
+    /// Unfold all regions
+    pub fn unfoldAll(self: *GrimEditorWidget) void {
+        for (self.fold_ranges.items) |*fold| {
+            fold.folded = false;
+        }
+        self.full_redraw_needed = true;
+    }
+
+    /// Check if a line is hidden by folding
+    fn isLineFolded(self: *GrimEditorWidget, line: u32) bool {
+        for (self.fold_ranges.items) |fold| {
+            if (fold.folded and line > fold.start_line and line <= fold.end_line) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /// Get fold icon for a line (▼ = open, ► = folded, null = no fold)
+    fn getFoldIcon(self: *GrimEditorWidget, line: u32) ?[]const u8 {
+        for (self.fold_ranges.items) |fold| {
+            if (fold.start_line == line) {
+                return if (fold.folded) "►" else "▼";
+            }
+        }
+        return null;
+    }
+
+    fn getCursorLine(self: *GrimEditorWidget) u32 {
+        const cursor_offset = self.editor.cursor.offset;
+        const line_col = self.editor.rope.lineColumnAtOffset(cursor_offset) catch return 0;
+        return @intCast(line_col.line);
+    }
+
+    /// Handle folding range response from LSP
+    pub fn handleFoldingRanges(self: *GrimEditorWidget, ranges: std.json.Value) void {
+        self.fold_ranges.clearRetainingCapacity();
+
+        if (ranges != .array) return;
+
+        for (ranges.array.items) |range_val| {
+            if (range_val != .object) continue;
+            const range_obj = range_val.object;
+
+            const start_line = range_obj.get("startLine") orelse continue;
+            const end_line = range_obj.get("endLine") orelse continue;
+
+            if (start_line != .integer or end_line != .integer) continue;
+
+            // Parse optional kind
+            var kind: ?FoldKind = null;
+            if (range_obj.get("kind")) |kind_val| {
+                if (kind_val == .string) {
+                    if (std.mem.eql(u8, kind_val.string, "comment")) {
+                        kind = .comment;
+                    } else if (std.mem.eql(u8, kind_val.string, "imports")) {
+                        kind = .imports;
+                    } else if (std.mem.eql(u8, kind_val.string, "region")) {
+                        kind = .region;
+                    }
+                }
+            }
+
+            self.fold_ranges.append(self.allocator, .{
+                .start_line = @intCast(start_line.integer),
+                .end_line = @intCast(end_line.integer),
+                .kind = kind,
+                .folded = false, // Start unfolded
+            }) catch continue;
+        }
+
+        self.full_redraw_needed = true;
     }
 };
