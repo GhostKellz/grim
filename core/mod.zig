@@ -23,6 +23,7 @@ pub const plugin_ffi = @import("plugin_ffi.zig");
 pub const plugin_hot_reload = @import("plugin_hot_reload.zig");
 pub const snippets = @import("snippets.zig");
 pub const project_search = @import("project_search.zig");
+pub const session = @import("session.zig");
 
 pub const Rope = rope.Rope;
 pub const Range = rope.Range;
@@ -59,5 +60,9 @@ pub const SnippetLibrary = snippets.SnippetLibrary;
 pub const Snippet = snippets.Snippet;
 pub const ProjectSearch = project_search.ProjectSearch;
 pub const SearchResult = project_search.SearchResult;
+pub const SessionManager = session.SessionManager;
+pub const Session = session.Session;
+pub const OpenFile = session.OpenFile;
+pub const RecentProject = session.RecentProject;
 pub const ErrorHandler = error_handler;
 pub const ErrorContext = error_handler.ErrorContext;

@@ -116,6 +116,10 @@ pub const GrimApp = struct {
     search_history: core.SearchHistory,
     command_history: core.SearchHistory,
 
+    // Session management
+    session_manager: ?*core.SessionManager,
+    project_path: ?[]const u8,
+
     pub fn init(allocator: std.mem.Allocator, config: GrimConfig) !*GrimApp {
         const self = try allocator.create(GrimApp);
         errdefer allocator.destroy(self);
@@ -208,7 +212,14 @@ pub const GrimApp = struct {
             .config_manager = config_manager,
             .search_history = search_history,
             .command_history = command_history,
+            .session_manager = null,
+            .project_path = null,
         };
+
+        // Initialize session manager
+        const session_manager = try core.SessionManager.init(allocator);
+        errdefer session_manager.deinit();
+        self.session_manager = session_manager;
 
         // Create initial editor (needed even if opening a file)
         try self.layout_manager.createInitialEditor();
@@ -230,6 +241,16 @@ pub const GrimApp = struct {
     }
 
     pub fn deinit(self: *GrimApp) void {
+        // Save session before shutting down
+        if (self.session_manager) |sm| {
+            self.saveCurrentSession() catch |err| {
+                std.log.warn("Failed to save session on exit: {}", .{err});
+            };
+            sm.deinit();
+        }
+        if (self.project_path) |path| {
+            self.allocator.free(path);
+        }
         self.command_palette.deinit();
         self.command_history.deinit();
         self.search_history.deinit();
@@ -284,6 +305,13 @@ pub const GrimApp = struct {
                 }
             },
             .tick => {
+                // Auto-save session
+                if (self.session_manager) |sm| {
+                    sm.tick() catch |err| {
+                        std.log.warn("Session auto-save failed: {}", .{err});
+                    };
+                }
+
                 // Render on each tick
                 try self.render();
                 return true;
@@ -1219,6 +1247,38 @@ pub const GrimApp = struct {
             const theme_name = std.mem.trim(u8, command[6..], " ");
             try self.setTheme(theme_name);
             std.log.info("Theme set to: {s}", .{theme_name});
+        } else if (std.mem.eql(u8, command, "session save") or std.mem.eql(u8, command, "ssave")) {
+            // Save current session
+            if (self.session_manager) |sm| {
+                try sm.saveSession();
+                std.log.info("Session saved", .{});
+            }
+        } else if (std.mem.startsWith(u8, command, "session load ") or std.mem.startsWith(u8, command, "sload ")) {
+            // Load a session by project path
+            const prefix_len: usize = if (std.mem.startsWith(u8, command, "session load ")) 13 else 6;
+            const project_path = std.mem.trim(u8, command[prefix_len..], " ");
+            if (self.session_manager) |sm| {
+                try sm.loadSession(project_path);
+                try self.restoreSession();
+                std.log.info("Session loaded: {s}", .{project_path});
+            }
+        } else if (std.mem.eql(u8, command, "session list") or std.mem.eql(u8, command, "slist")) {
+            // List recent projects
+            if (self.session_manager) |sm| {
+                const recent = sm.getRecentProjects();
+                std.log.info("=== Recent Projects ===", .{});
+                for (recent, 0..) |project, i| {
+                    std.log.info("  [{d}] {s}", .{ i + 1, project.path });
+                }
+            }
+        } else if (std.mem.startsWith(u8, command, "session delete ") or std.mem.startsWith(u8, command, "sdelete ")) {
+            // Delete a session
+            const prefix_len: usize = if (std.mem.startsWith(u8, command, "session delete ")) 15 else 8;
+            const project_path = std.mem.trim(u8, command[prefix_len..], " ");
+            if (self.session_manager) |sm| {
+                try sm.deleteSession(project_path);
+                std.log.info("Session deleted: {s}", .{project_path});
+            }
         } else {
             // Unknown command
             std.log.warn("Unknown command: {s}", .{command});
@@ -1284,6 +1344,32 @@ pub const GrimApp = struct {
     fn openFile(self: *GrimApp, filepath: []const u8) !void {
         const editor = self.layout_manager.getActiveEditor() orelse return error.NoActiveEditor;
         try editor.loadFile(filepath);
+
+        // Update session with opened file
+        if (self.session_manager) |sm| {
+            if (editor.editor.rope.lineColumnAtOffset(editor.editor.cursor.offset)) |cursor_pos| {
+                sm.addOpenFile(filepath, cursor_pos.line, cursor_pos.column) catch |err| {
+                    std.log.warn("Failed to add file to session: {}", .{err});
+                };
+            } else |_| {
+                sm.addOpenFile(filepath, 0, 0) catch |err| {
+                    std.log.warn("Failed to add file to session: {}", .{err});
+                };
+            }
+        }
+
+        // Auto-create session if this is the first file in a project directory
+        if (self.project_path == null and self.session_manager != null) {
+            // Get the directory of the opened file
+            if (std.fs.path.dirname(filepath)) |dir| {
+                self.project_path = try self.allocator.dupe(u8, dir);
+                if (self.session_manager) |sm| {
+                    sm.createSession(dir) catch |err| {
+                        std.log.warn("Failed to create session: {}", .{err});
+                    };
+                }
+            }
+        }
     }
 
     fn saveCurrentBuffer(self: *GrimApp) !void {
@@ -1662,6 +1748,62 @@ pub const GrimApp = struct {
         if (try app.config_manager.checkAndReload()) {
             try app.applyConfig();
         }
+    }
+
+    // ==================
+    // Session Management
+    // ==================
+
+    fn saveCurrentSession(self: *GrimApp) !void {
+        const sm = self.session_manager orelse return;
+
+        // Update open files in session
+        const editor = self.layout_manager.getActiveEditor() orelse return;
+        if (editor.editor.current_filename) |filepath| {
+            if (editor.editor.rope.lineColumnAtOffset(editor.editor.cursor.offset)) |cursor_pos| {
+                try sm.addOpenFile(filepath, cursor_pos.line, cursor_pos.column);
+            } else |_| {
+                try sm.addOpenFile(filepath, 0, 0);
+            }
+        }
+
+        // Save session
+        try sm.saveSession();
+    }
+
+    fn restoreSession(self: *GrimApp) !void {
+        const sm = self.session_manager orelse return;
+        const open_files = sm.getOpenFiles() orelse return;
+
+        // Open all files from session
+        for (open_files, 0..) |file, i| {
+            if (i == 0) {
+                // First file - open in current editor
+                try self.openFile(file.path);
+                if (self.layout_manager.getActiveEditor()) |editor| {
+                    // Convert line/column to offset
+                    if (editor.editor.rope.lineRange(file.cursor_line)) |range| {
+                        editor.editor.cursor.offset = range.start + file.cursor_col;
+                    } else |_| {
+                        editor.editor.cursor.offset = 0;
+                    }
+                }
+            } else {
+                // Additional files - open in new tabs
+                try self.layout_manager.newTab();
+                try self.openFile(file.path);
+                if (self.layout_manager.getActiveEditor()) |editor| {
+                    // Convert line/column to offset
+                    if (editor.editor.rope.lineRange(file.cursor_line)) |range| {
+                        editor.editor.cursor.offset = range.start + file.cursor_col;
+                    } else |_| {
+                        editor.editor.cursor.offset = 0;
+                    }
+                }
+            }
+        }
+
+        std.log.info("Restored {d} files from session", .{open_files.len});
     }
 };
 
