@@ -34,11 +34,11 @@
     .dependencies = .{
         .zsync = .{
             .url = "https://github.com/ghostkellz/zsync/archive/main.tar.gz",
-            .hash = "zsync-0.6.1-KAuhedFXIADqHJzPi8ZCIVkvWRzaY5L5CXVd7vA9jfLM",
+            .hash = "zsync-0.7.1-KAuhef8qIQApcisOPygXIeE9pC8qzdQL2Jp96JbNQyRm",
         },
         .phantom = .{
-            .url = "https://github.com/ghostkellz/phantom/archive/refs/heads/main.tar.gz",
-            .hash = "phantom-0.6.3-E0eWBGflEwAwWSHDM-uBCKSbwbHFCzxOL7GEjXdYki3P",
+            .url = "https://github.com/ghostkellz/phantom/archive/main.tar.gz",
+            .hash = "phantom-0.7.1-E0eWBDWcFgANh9ISYUokz6XnF5G4LEFzaOF3dYsnC6Fx",
         },
         .gcode = .{
             .url = "https://github.com/ghostkellz/gcode/archive/refs/heads/main.tar.gz",
@@ -46,47 +46,59 @@
         },
         .flare = .{
             .url = "https://github.com/ghostkellz/flare/archive/main.tar.gz",
-            .hash = "flare-0.1.0-NK4JafGMAQA8xE2ah8YBxO74sOkWrsQYTkWQ64D1PJVg",
+            .hash = "flare-0.1.1-NK4JaX6MAQBQc-bpbfSy32p6mw3OAU0kV_2L4rhCl_qC",
         },
         .grove = .{
             .url = "https://github.com/ghostkellz/grove/archive/refs/heads/main.tar.gz",
             .hash = "grove-0.2.0-rGFsN0Tq6QTEsvGnA667q1GaWiXEJRPS6xkhjWgU22-L",
         },
         .ghostlang = .{
-            .url = "https://github.com/ghostkellz/ghostlang/archive/refs/heads/main.tar.gz",
-            .hash = "ghostlang-0.2.1-_SzSPa8iBgAWfv0ezCCILl8BUlmNtwnM6sbQq4nH6m9U",
+            .url = "https://github.com/ghostkellz/ghostlang/archive/main.tar.gz",
+            .hash = "ghostlang-0.2.2-_SzSPdorBgDb16jpad7AWbfK0_D_mSlhFcNaKaLc5v9o",
         },
         .zap = .{
-            .url = "https://github.com/ghostkellz/zap/archive/refs/heads/main.tar.gz",
-            .hash = "zap-0.1.0--jHF1uDGAQAYX2E8H_F70MbwPXANmOevSfOForA2n-ay",
+            .url = "https://github.com/ghostkellz/zap/archive/main.tar.gz",
+            .hash = "zap-0.1.0--jHF1iHJAQBu4cjW37XrtM461vbS7IWxGAgP0T8fTPQU",
         },
         .ghostls = .{
-            .url = "https://github.com/ghostkellz/ghostls/archive/refs/heads/main.tar.gz",
-            .hash = "ghostls-0.5.0-fDo9dEjzAwDZgEhSIJNbHLVmMFKWpnxIIAIt_mQQ8quV",
+            .url = "https://github.com/ghostkellz/ghostls/archive/main.tar.gz",
+            .hash = "ghostls-0.5.0-fDo9dEjzAwC3qdSADtgVvDNH0OYx6kpdu_TT37pdMJta",
         },
         .zhttp = .{
             .url = "https://github.com/ghostkellz/zhttp/archive/main.tar.gz",
-            .hash = "zhttp-0.1.2-jZpECDOWBQCOEsW_NbGrkZMFBQTRLAe6ANMoWh99bJap",
+            .hash = "zhttp-0.1.3-jZpECEXOBQDPJzBeBpiDXQ1VvqxvKb_gCx2iQ00Mqsa2",
         },
         .zrpc = .{
-            .url = "https://github.com/ghostkellz/zrpc/archive/refs/heads/main.tar.gz",
-            .hash = "zrpc-0.1.0-b2XibxcnCABT6GCuPe6brXrWWCFo0SYw3xFOET6d6VBd",
+            .url = "https://github.com/ghostkellz/zrpc/archive/main.tar.gz",
+            .hash = "zrpc-0.2.1-b2Xib2etCQADsHxrnk_Y84gAPdWBtWjoYOUbT48GE5sM",
         },
         .rune = .{
-            .url = "https://github.com/ghostkellz/rune/archive/refs/heads/main.tar.gz",
-            .hash = "rune-0.1.0-MvDOXoHBBgCHgRttRNzUaP0qnKmNsgWoiA95P0a2C3L6",
+            .url = "https://github.com/ghostkellz/rune/archive/main.tar.gz",
+            .hash = "rune-0.1.0-MvDOXqPDBgDVKcKjxy2M5_5KSpCGIE7IqhUR-KQJIp9g",
         },
         .zlog = .{
-            .url = "https://github.com/ghostkellz/zlog/archive/refs/heads/main.tar.gz",
-            .hash = "zlog-0.1.0-kS0sWERcCAD4GivJW2gmFSr5XTSvs9go-5-9zZng-RjR",
+            .url = "https://github.com/ghostkellz/zlog/archive/main.tar.gz",
+            .hash = "zlog-0.1.2-kS0sWPD2CAAC0AEFacslajC4VOPVe9gInDl3nDKDsAJF",
         },
         .zigzag = .{
-            .url = "https://github.com/ghostkellz/zigzag/archive/refs/heads/main.tar.gz",
-            .hash = "zigzag-0.1.0-NmTasN9ICAAVgsLxNF42rJLLmh8SnQWU8zcEFitzH2EI",
+            .url = "https://github.com/ghostkellz/zigzag/archive/main.tar.gz",
+            .hash = "zigzag-0.1.1-NmTasOiVCACn1EYap_AxCOmLGnI8LXIb5wXVib6Bi697",
         },
         .wzl = .{
-            .url = "https://github.com/ghostkellz/wzl/archive/refs/heads/main.tar.gz",
-            .hash = "wzl-0.0.0-027x-DvjBwAub4UwhEP379YR6rfBxydQ09bUvREqa6BV",
+            .url = "https://github.com/ghostkellz/wzl/archive/main.tar.gz",
+            .hash = "wzl-0.0.0-027x-CfnBwCScGEJCazmCNqb024eQHz06zd3wsgjV32A",
+        },
+        .zcrypto = .{
+            .url = "https://github.com/ghostkellz/zcrypto/archive/main.tar.gz",
+            .hash = "zcrypto-0.9.1-rgQAIxmIDQAxHWnfkN4mqbLivb2FdKyUpODpRxlmh15Q",
+        },
+        .flash = .{
+            .url = "https://github.com/ghostkellz/flash/archive/main.tar.gz",
+            .hash = "flash-0.3.1-dnj738qSBQDhwSkZ5GoK5IE_aKIjwRGR8730Bgakrkc8",
+        },
+        .zontom = .{
+            .url = "https://github.com/ghostkellz/zontom/archive/main.tar.gz",
+            .hash = "zontom-0.1.0-2iAquJfUAgCaGwCZPlUUShBC6e1dhfgSioYvIjC9qOvF",
         },
     },
     .paths = .{
