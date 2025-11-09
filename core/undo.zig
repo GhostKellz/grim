@@ -59,7 +59,12 @@ pub const UndoStack = struct {
         const snapshot = Snapshot{
             .content = content_copy,
             .cursor_offset = cursor_offset,
-            .timestamp = std.time.milliTimestamp(),
+            .timestamp = blk: {
+                const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch {
+                    break :blk @as(i64, 0);
+                };
+                break :blk @as(i64, @intCast(ts.sec)) * 1000 + @divFloor(ts.nsec, 1_000_000);
+            },
             .description = desc_copy,
         };
 

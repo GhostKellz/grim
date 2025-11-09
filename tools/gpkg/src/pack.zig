@@ -124,7 +124,7 @@ pub const Pack = struct {
         const content = try allocator.alloc(u8, max_size);
         defer allocator.free(content);
 
-        const bytes_read = try file.readAll(content);
+        const bytes_read = try file.read(content);
         const actual_content = content[0..bytes_read];
 
         return try parseReaperZon(allocator, actual_content);

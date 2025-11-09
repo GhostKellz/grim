@@ -281,7 +281,7 @@ pub const Editor = struct {
         const content = try self.allocator.alloc(u8, stat.size);
         errdefer self.allocator.free(content);
 
-        const bytes_read = try file.readAll(content);
+        const bytes_read = try file.read(content);
         return content[0..bytes_read];
     }
 

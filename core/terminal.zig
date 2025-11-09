@@ -267,7 +267,7 @@ pub const Terminal = struct {
         // Wait for process to exit (with timeout)
         var attempts: usize = 0;
         while (attempts < 10) : (attempts += 1) {
-            std.Thread.sleep(100 * std.time.ns_per_ms);
+            std.posix.nanosleep(0, 100 * std.time.ns_per_ms);
 
             if (!try self.checkStatus()) {
                 return;

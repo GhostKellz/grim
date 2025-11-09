@@ -75,7 +75,7 @@ pub const Config = struct {
         const stat = try file.stat();
         const content = try allocator.alloc(u8, stat.size);
         errdefer allocator.free(content);
-        _ = try file.readAll(content);
+        _ = try file.read(content);
         defer allocator.free(content);
 
         const parsed = try std.json.parseFromSlice(Config, allocator, content, .{
@@ -192,7 +192,7 @@ pub const ConfigManager = struct {
 /// Get file modification time
 fn getFileModTime(path: []const u8) !i128 {
     const stat = try std.fs.cwd().statFile(path);
-    return stat.mtime;
+    return stat.mtime.nanoseconds;
 }
 
 test "config default values" {

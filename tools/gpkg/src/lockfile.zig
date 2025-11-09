@@ -113,7 +113,12 @@ pub const Lockfile = struct {
             .source = try self.allocator.dupe(u8, source),
             .type = try self.allocator.dupe(u8, plugin_type),
             .dependencies = owned_deps,
-            .updated_at = std.time.timestamp(),
+            .updated_at = blk: {
+                const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch {
+                    break :blk @as(i64, 0);
+                };
+                break :blk @as(i64, @intCast(ts.sec)) * 1000 + @divFloor(ts.nsec, 1_000_000);
+            },
         };
 
         try self.plugins.put(owned_name, entry);
@@ -213,7 +218,7 @@ pub const Lockfile = struct {
         const content = try allocator.alloc(u8, max_size);
         defer allocator.free(content);
 
-        const bytes_read = try file.readAll(content);
+        const bytes_read = try file.read(content);
         const actual_content = content[0..bytes_read];
 
         return try parseZon(allocator, actual_content);
@@ -371,7 +376,7 @@ pub fn hashPluginDirectory(allocator: std.mem.Allocator, plugin_path: []const u8
         const content = try allocator.alloc(u8, max_size);
         defer allocator.free(content);
 
-        const bytes_read = try file.readAll(content);
+        const bytes_read = try file.read(content);
         const actual_content = content[0..bytes_read];
 
         hasher.update(actual_content);

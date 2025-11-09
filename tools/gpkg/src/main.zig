@@ -185,7 +185,7 @@ fn installAllPlugins(allocator: std.mem.Allocator) !void {
     const stat = try file.stat();
     const content = try allocator.alloc(u8, stat.size);
     defer allocator.free(content);
-    _ = try file.readAll(content);
+    _ = try file.read(content);
 
     // Parse and install non-bundled zig plugins
     std.debug.print("Scanning plugins.zon for zig plugins...\n", .{});

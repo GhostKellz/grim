@@ -102,7 +102,7 @@ pub const LanguageServer = struct {
                     return Error.ServerCrashed;
                 }
             };
-            std.Thread.sleep(100 * std.time.ns_per_ms);
+            std.posix.nanosleep(0, 100 * std.time.ns_per_ms);
         }
 
         if (!self.client.isInitialized()) {

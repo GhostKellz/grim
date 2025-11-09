@@ -123,7 +123,7 @@ pub const TmuxIntegration = struct {
         try child.spawn();
 
         var stdout_buf: [1024]u8 = undefined;
-        const n = try child.stdout.?.readAll(&stdout_buf);
+        const n = try child.stdout.?.read(&stdout_buf);
         _ = try child.wait();
 
         if (n == 0) return null;

@@ -5,7 +5,8 @@ const EditorLSP = @import("ui_tui").EditorLSP;
 const core = grim.core;
 
 pub fn main() !void {
-    const start_time = std.time.nanoTimestamp();
+    var timer = try std.time.Timer.start();
+    const start_time = timer.read();
 
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
     defer _ = gpa.deinit();
@@ -190,7 +191,7 @@ pub fn main() !void {
             }
         }
 
-        const init_time = std.time.nanoTimestamp() - start_time;
+        const init_time = timer.read() - start_time;
         std.log.info("Initialized in {d:.2}ms ({} plugins loaded)", .{
             @as(f64, @floatFromInt(init_time)) / 1_000_000.0,
             loaded_count,

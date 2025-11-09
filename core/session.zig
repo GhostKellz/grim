@@ -9,6 +9,14 @@
 
 const std = @import("std");
 
+/// Get current time in milliseconds (Unix timestamp)
+inline fn getCurrentTimeMs() i64 {
+    const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch {
+        return 0;
+    };
+    return @as(i64, @intCast(ts.sec)) * 1000 + @divFloor(ts.nsec, 1_000_000);
+}
+
 pub const SessionManager = struct {
     allocator: std.mem.Allocator,
     session_dir: []const u8,
@@ -47,7 +55,7 @@ pub const SessionManager = struct {
             .recent_projects = .empty,
             .auto_save_enabled = true,
             .auto_save_interval_ms = 30_000, // 30 seconds
-            .last_save_time = std.time.milliTimestamp(),
+            .last_save_time = getCurrentTimeMs(),
         };
 
         // Load recent projects
@@ -83,8 +91,8 @@ pub const SessionManager = struct {
             .open_files = .empty,
             .window_layout = WindowLayout{},
             .search_history = .empty,
-            .created_at = std.time.timestamp(),
-            .last_modified = std.time.timestamp(),
+            .created_at = @divFloor(getCurrentTimeMs(), @as(i64, 1000)),
+            .last_modified = @divFloor(getCurrentTimeMs(), @as(i64, 1000)),
         };
 
         self.current_session = session;
@@ -113,7 +121,7 @@ pub const SessionManager = struct {
         const stat = try file.stat();
         const content = try self.allocator.alloc(u8, stat.size);
         errdefer self.allocator.free(content);
-        _ = try file.readAll(content);
+        _ = try file.read(content);
         defer self.allocator.free(content);
 
         // Parse JSON
@@ -149,7 +157,7 @@ pub const SessionManager = struct {
         defer self.allocator.free(json_str);
         try file.writeAll(json_str);
 
-        self.last_save_time = std.time.milliTimestamp();
+        self.last_save_time = getCurrentTimeMs();
         std.log.debug("Saved session for: {s}", .{session.project_path});
     }
 
@@ -158,7 +166,7 @@ pub const SessionManager = struct {
         if (!self.auto_save_enabled) return;
         if (self.current_session == null) return;
 
-        const now = std.time.milliTimestamp();
+        const now = getCurrentTimeMs();
         if (now - self.last_save_time >= self.auto_save_interval_ms) {
             try self.saveSession();
         }
@@ -186,7 +194,7 @@ pub const SessionManager = struct {
             .scroll_top = 0,
         });
 
-        session.last_modified = std.time.timestamp();
+        session.last_modified = @divFloor(getCurrentTimeMs(), @as(i64, 1000));
     }
 
     /// Remove file from current session
@@ -198,7 +206,7 @@ pub const SessionManager = struct {
             if (std.mem.eql(u8, session.open_files.items[i].path, file_path)) {
                 const removed = session.open_files.orderedRemove(i);
                 self.allocator.free(removed.path);
-                session.last_modified = std.time.timestamp();
+                session.last_modified = @divFloor(getCurrentTimeMs(), @as(i64, 1000));
                 return;
             }
             i += 1;
@@ -265,7 +273,7 @@ pub const SessionManager = struct {
         for (self.recent_projects.items, 0..) |*project, i| {
             if (std.mem.eql(u8, project.path, project_path)) {
                 // Move to front
-                project.last_accessed = std.time.timestamp();
+                project.last_accessed = @divFloor(getCurrentTimeMs(), @as(i64, 1000));
                 const moved = self.recent_projects.orderedRemove(i);
                 try self.recent_projects.insert(self.allocator, 0, moved);
                 try self.saveRecentProjects();
@@ -276,7 +284,7 @@ pub const SessionManager = struct {
         // Add new
         try self.recent_projects.insert(self.allocator, 0, RecentProject{
             .path = try self.allocator.dupe(u8, project_path),
-            .last_accessed = std.time.timestamp(),
+            .last_accessed = @divFloor(getCurrentTimeMs(), @as(i64, 1000)),
         });
 
         // Keep only last 20
@@ -303,7 +311,7 @@ pub const SessionManager = struct {
         const stat = try file.stat();
         const content = try self.allocator.alloc(u8, stat.size);
         errdefer self.allocator.free(content);
-        _ = try file.readAll(content);
+        _ = try file.read(content);
         defer self.allocator.free(content);
 
         const parsed = try std.json.parseFromSlice([]RecentProjectJson, self.allocator, content, .{});

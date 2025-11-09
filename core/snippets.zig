@@ -78,7 +78,7 @@ pub const SnippetLibrary = struct {
         if (file_size > 10 * 1024 * 1024) return error.FileTooLarge;
         const content = try self.allocator.alloc(u8, file_size);
         defer self.allocator.free(content);
-        const bytes_read = try file.readAll(content);
+        const bytes_read = try file.read(content);
 
         // Parse JSON
         try self.parseSnippets(content[0..bytes_read]);
@@ -185,7 +185,12 @@ pub const SnippetContext = struct {
     /// Get the value for a variable name
     pub fn getVariable(self: *const SnippetContext, name: []const u8) !?[]const u8 {
         if (std.mem.eql(u8, name, "DATE")) {
-            const timestamp = std.time.timestamp();
+            const timestamp = blk: {
+                const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch {
+                    break :blk @as(i64, 0);
+                };
+                break :blk ts.sec;
+            };
             const epoch_day = @divTrunc(timestamp, 86400) + 719468;
             const year = @divTrunc(epoch_day * 400, 146097);
             const day_of_year = epoch_day - @divTrunc(year * 146097, 400);
@@ -196,7 +201,12 @@ pub const SnippetContext = struct {
 
             return try std.fmt.allocPrint(self.allocator, "{d}-{d:0>2}-{d:0>2}", .{ actual_year, actual_month, day });
         } else if (std.mem.eql(u8, name, "TIME")) {
-            const timestamp = std.time.timestamp();
+            const timestamp = blk: {
+                const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch {
+                    break :blk @as(i64, 0);
+                };
+                break :blk ts.sec;
+            };
             const seconds_today = @mod(timestamp, 86400);
             const hours = @divTrunc(seconds_today, 3600);
             const minutes = @divTrunc(@mod(seconds_today, 3600), 60);
@@ -243,7 +253,12 @@ pub const SnippetContext = struct {
             }
             return null;
         } else if (std.mem.eql(u8, name, "YEAR")) {
-            const timestamp = std.time.timestamp();
+            const timestamp = blk: {
+                const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch {
+                    break :blk @as(i64, 0);
+                };
+                break :blk ts.sec;
+            };
             const epoch_day = @divTrunc(timestamp, 86400) + 719468;
             const year = @divTrunc(epoch_day * 400, 146097);
             return try std.fmt.allocPrint(self.allocator, "{d}", .{year});

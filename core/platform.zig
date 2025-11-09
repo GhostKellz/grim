@@ -199,7 +199,7 @@ fn detectAVX512() bool {
     defer cpuinfo.close();
 
     var buf: [4096]u8 = undefined;
-    const n = cpuinfo.readAll(&buf) catch return false;
+    const n = cpuinfo.read(&buf) catch return false;
 
     return std.mem.indexOf(u8, buf[0..n], "avx512f") != null;
 }
@@ -209,7 +209,7 @@ fn detectAVX2() bool {
     defer cpuinfo.close();
 
     var buf: [4096]u8 = undefined;
-    const n = cpuinfo.readAll(&buf) catch return false;
+    const n = cpuinfo.read(&buf) catch return false;
 
     return std.mem.indexOf(u8, buf[0..n], "avx2") != null;
 }
@@ -219,7 +219,7 @@ fn detectSSE42() bool {
     defer cpuinfo.close();
 
     var buf: [4096]u8 = undefined;
-    const n = cpuinfo.readAll(&buf) catch return false;
+    const n = cpuinfo.read(&buf) catch return false;
 
     return std.mem.indexOf(u8, buf[0..n], "sse4_2") != null;
 }
@@ -229,7 +229,7 @@ fn getCpuModel(allocator: std.mem.Allocator) ![]const u8 {
     defer cpuinfo.close();
 
     var buf: [4096]u8 = undefined;
-    const n = try cpuinfo.readAll(&buf);
+    const n = try cpuinfo.read(&buf);
 
     // Find "model name" line
     var iter = std.mem.splitScalar(u8, buf[0..n], '\n');
@@ -251,7 +251,7 @@ fn detectAmd3DVCache() bool {
     defer cpuinfo.close();
 
     var buf: [4096]u8 = undefined;
-    const n = cpuinfo.readAll(&buf) catch return false;
+    const n = cpuinfo.read(&buf) catch return false;
 
     // AMD 3D V-Cache CPUs have "AMD Ryzen" and "3D" in model name
     return std.mem.indexOf(u8, buf[0..n], "AMD Ryzen") != null and

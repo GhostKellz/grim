@@ -1,5 +1,13 @@
 const std = @import("std");
 const ghostlang = @import("ghostlang");
+
+/// Get current time in milliseconds (Unix timestamp)
+inline fn getCurrentTimeMs() i64 {
+    const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch {
+        return 0;
+    };
+    return @as(i64, @intCast(ts.sec)) * 1000 + @divFloor(ts.nsec, 1_000_000);
+}
 const ai = @import("ai");
 
 threadlocal var active_host: ?*Host = null;
@@ -858,11 +866,11 @@ pub const Host = struct {
 
     pub fn startExecution(self: *Host) i64 {
         self.execution_stats.execution_count += 1;
-        return std.time.milliTimestamp();
+        return getCurrentTimeMs();
     }
 
     pub fn endExecution(self: *Host, start_time: i64) Error!void {
-        const end_time = std.time.milliTimestamp();
+        const end_time = getCurrentTimeMs();
         const duration = @as(u64, @intCast(end_time - start_time));
 
         self.execution_stats.total_execution_time_ms += duration;

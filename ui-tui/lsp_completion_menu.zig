@@ -100,7 +100,9 @@ pub const LSPCompletionMenu = struct {
         const self = try allocator.create(LSPCompletionMenu);
 
         // Create ListView
-        const list_view = try phantom.widgets.ListView.init(allocator);
+        // ListView.init now requires an allocator and config (phantom v0.8.0+)
+        const config = phantom.widgets.ListViewConfig.default();
+        const list_view = try phantom.widgets.ListView.init(allocator, config);
 
         // Configure styles
         list_view.selected_style = phantom.Style.default()

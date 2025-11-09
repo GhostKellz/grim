@@ -18,6 +18,7 @@ pub const Config = struct {
     color_scheme: ColorScheme = .gruvbox_dark,
     font_size: u16 = 14,
     font_family: []const u8,
+    nerd_fonts_enabled: bool = true,
     show_statusline: bool = true,
     show_tabline: bool = true,
     show_gutter_signs: bool = true,
@@ -40,19 +41,26 @@ pub const Config = struct {
     keybindings: std.StringHashMap([]const u8),
 
     pub const ColorScheme = enum {
+        ghost_hacker_blue,
+        tokyonight_moon,
+        tokyonight_storm,
+        nord,
         gruvbox_dark,
         gruvbox_light,
-        one_dark,
-        nord,
+        catppuccin_mocha,
+        catppuccin_latte,
         dracula,
+        one_dark,
+        solarized_dark,
+        solarized_light,
         custom,
     };
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return Config{
             .allocator = allocator,
-            .theme = "gruvbox",
-            .font_family = "JetBrains Mono",
+            .theme = "tokyonight-moon",
+            .font_family = "JetBrainsMono Nerd Font",
             .keybindings = std.StringHashMap([]const u8).init(allocator),
         };
     }
@@ -143,6 +151,8 @@ pub const Config = struct {
             self.font_size = try std.fmt.parseInt(u16, value, 10);
         } else if (std.mem.eql(u8, key, "font_family")) {
             self.font_family = value; // Note: Should be duped for ownership
+        } else if (std.mem.eql(u8, key, "nerd_fonts_enabled")) {
+            self.nerd_fonts_enabled = try parseBool(value);
         } else if (std.mem.eql(u8, key, "show_statusline")) {
             self.show_statusline = try parseBool(value);
         } else if (std.mem.eql(u8, key, "show_tabline")) {
@@ -210,6 +220,7 @@ pub const Config = struct {
         try writer.print("color_scheme = {s}\n", .{@tagName(self.color_scheme)});
         try writer.print("font_size = {d}\n", .{self.font_size});
         try writer.print("font_family = {s}\n", .{self.font_family});
+        try writer.print("nerd_fonts_enabled = {s}\n", .{if (self.nerd_fonts_enabled) "true" else "false"});
         try writer.print("show_statusline = {s}\n", .{if (self.show_statusline) "true" else "false"});
         try writer.print("show_tabline = {s}\n", .{if (self.show_tabline) "true" else "false"});
         try writer.print("show_gutter_signs = {s}\n\n", .{if (self.show_gutter_signs) "true" else "false"});
@@ -294,11 +305,18 @@ pub const Config = struct {
     }
 
     fn parseColorScheme(value: []const u8) !ColorScheme {
+        if (std.mem.eql(u8, value, "ghost_hacker_blue")) return .ghost_hacker_blue;
+        if (std.mem.eql(u8, value, "tokyonight_moon")) return .tokyonight_moon;
+        if (std.mem.eql(u8, value, "tokyonight_storm")) return .tokyonight_storm;
+        if (std.mem.eql(u8, value, "nord")) return .nord;
         if (std.mem.eql(u8, value, "gruvbox_dark")) return .gruvbox_dark;
         if (std.mem.eql(u8, value, "gruvbox_light")) return .gruvbox_light;
-        if (std.mem.eql(u8, value, "one_dark")) return .one_dark;
-        if (std.mem.eql(u8, value, "nord")) return .nord;
+        if (std.mem.eql(u8, value, "catppuccin_mocha")) return .catppuccin_mocha;
+        if (std.mem.eql(u8, value, "catppuccin_latte")) return .catppuccin_latte;
         if (std.mem.eql(u8, value, "dracula")) return .dracula;
+        if (std.mem.eql(u8, value, "one_dark")) return .one_dark;
+        if (std.mem.eql(u8, value, "solarized_dark")) return .solarized_dark;
+        if (std.mem.eql(u8, value, "solarized_light")) return .solarized_light;
         if (std.mem.eql(u8, value, "custom")) return .custom;
         return error.InvalidColorScheme;
     }

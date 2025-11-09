@@ -104,7 +104,7 @@ pub const ZigZagPhantomBridge = struct {
 
             if (!had_events) {
                 // Sleep for 10ms if no events
-                std.Thread.sleep(10 * std.time.ns_per_ms);
+                std.posix.nanosleep(0, 10 * std.time.ns_per_ms);
             }
         }
     }

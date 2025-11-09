@@ -9,6 +9,14 @@
 
 const std = @import("std");
 
+/// Get current time in milliseconds (Unix timestamp)
+inline fn getCurrentTimeMs() i64 {
+    const ts = std.posix.clock_gettime(std.posix.CLOCK.REALTIME) catch {
+        return 0;
+    };
+    return @as(i64, @intCast(ts.sec)) * 1000 + @divFloor(ts.nsec, 1_000_000);
+}
+
 pub const PluginProfiler = struct {
     allocator: std.mem.Allocator,
     profiles: std.StringHashMap(PluginProfile),
@@ -206,7 +214,7 @@ pub const PluginSandbox = struct {
         return .{
             .cpu_limit_ms = cpu_limit_ms,
             .memory_limit_bytes = memory_limit_bytes,
-            .start_time = std.time.milliTimestamp(),
+            .start_time = getCurrentTimeMs(),
             .allocator = allocator,
             .tracking_allocator = TrackingAllocator.init(allocator, memory_limit_bytes),
         };
@@ -220,7 +228,7 @@ pub const PluginSandbox = struct {
     /// Check if sandbox limits are exceeded
     pub fn checkLimits(self: *PluginSandbox) !void {
         // Check CPU time
-        const elapsed_ms = @as(u64, @intCast(std.time.milliTimestamp() - self.start_time));
+        const elapsed_ms = @as(u64, @intCast(getCurrentTimeMs() - self.start_time));
         if (elapsed_ms > self.cpu_limit_ms) {
             return error.CPULimitExceeded;
         }
@@ -230,7 +238,7 @@ pub const PluginSandbox = struct {
 
     /// Get resource usage
     pub fn getUsage(self: *PluginSandbox) Usage {
-        const elapsed_ms = @as(u64, @intCast(std.time.milliTimestamp() - self.start_time));
+        const elapsed_ms = @as(u64, @intCast(getCurrentTimeMs() - self.start_time));
         const memory_used = self.tracking_allocator.bytes_allocated;
 
         return .{

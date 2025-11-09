@@ -184,6 +184,28 @@ pub const Theme = struct {
     pub fn get(name: []const u8) !Theme {
         if (std.mem.eql(u8, name, "ghost-hacker-blue")) {
             return ghostHackerBlue();
+        } else if (std.mem.eql(u8, name, "tokyonight-moon")) {
+            return tokyonightMoon();
+        } else if (std.mem.eql(u8, name, "tokyonight-storm")) {
+            return tokyonightStorm();
+        } else if (std.mem.eql(u8, name, "nord")) {
+            return nord();
+        } else if (std.mem.eql(u8, name, "gruvbox-dark")) {
+            return gruvboxDark();
+        } else if (std.mem.eql(u8, name, "gruvbox-light")) {
+            return gruvboxLight();
+        } else if (std.mem.eql(u8, name, "catppuccin-mocha")) {
+            return catppuccinMocha();
+        } else if (std.mem.eql(u8, name, "catppuccin-latte")) {
+            return catppuccinLatte();
+        } else if (std.mem.eql(u8, name, "dracula")) {
+            return dracula();
+        } else if (std.mem.eql(u8, name, "one-dark")) {
+            return oneDark();
+        } else if (std.mem.eql(u8, name, "solarized-dark")) {
+            return solarizedDark();
+        } else if (std.mem.eql(u8, name, "solarized-light")) {
+            return solarizedLight();
         } else if (std.mem.eql(u8, name, "default-dark")) {
             return defaultDark();
         } else if (std.mem.eql(u8, name, "default-light")) {
@@ -217,6 +239,270 @@ pub const Theme = struct {
             .line_number = Color.fromHex("7aa2f7") catch unreachable, // light blue
             .status_bar_bg = Color.fromHex("1e1e2e") catch unreachable, // dark bg
             .status_bar_fg = Color.fromHex("88ffcc") catch unreachable, // mint green
+        };
+    }
+
+    /// Tokyo Night Moon - Deep purple-blue theme
+    fn tokyonightMoon() Theme {
+        return .{
+            .keyword = Color.fromHex("bb9af7") catch unreachable, // purple
+            .string_literal = Color.fromHex("9ece6a") catch unreachable, // green
+            .number_literal = Color.fromHex("ff9e64") catch unreachable, // orange
+            .comment = Color.fromHex("565f89") catch unreachable, // comment blue
+            .function_name = Color.fromHex("7aa2f7") catch unreachable, // blue
+            .type_name = Color.fromHex("2ac3de") catch unreachable, // cyan
+            .variable = Color.fromHex("c0caf5") catch unreachable, // foreground
+            .operator = Color.fromHex("89ddff") catch unreachable, // sky blue
+            .punctuation = Color.fromHex("9d7cd8") catch unreachable, // muted purple
+            .error_bg = Color.fromHex("db4b4b") catch unreachable,
+            .error_fg = Color.fromHex("c0caf5") catch unreachable,
+            .background = Color.fromHex("222436") catch unreachable,
+            .foreground = Color.fromHex("c8d3f5") catch unreachable,
+            .cursor = Color.fromHex("c8d3f5") catch unreachable,
+            .selection = Color.fromHex("2d3f76") catch unreachable,
+            .line_number = Color.fromHex("636da6") catch unreachable,
+            .status_bar_bg = Color.fromHex("1e2030") catch unreachable,
+            .status_bar_fg = Color.fromHex("82aaff") catch unreachable,
+        };
+    }
+
+    /// Tokyo Night Storm - Balanced blue theme
+    fn tokyonightStorm() Theme {
+        return .{
+            .keyword = Color.fromHex("bb9af7") catch unreachable,
+            .string_literal = Color.fromHex("9ece6a") catch unreachable,
+            .number_literal = Color.fromHex("ff9e64") catch unreachable,
+            .comment = Color.fromHex("565f89") catch unreachable,
+            .function_name = Color.fromHex("7aa2f7") catch unreachable,
+            .type_name = Color.fromHex("2ac3de") catch unreachable,
+            .variable = Color.fromHex("a9b1d6") catch unreachable,
+            .operator = Color.fromHex("89ddff") catch unreachable,
+            .punctuation = Color.fromHex("9d7cd8") catch unreachable,
+            .error_bg = Color.fromHex("db4b4b") catch unreachable,
+            .error_fg = Color.fromHex("c0caf5") catch unreachable,
+            .background = Color.fromHex("24283b") catch unreachable,
+            .foreground = Color.fromHex("c0caf5") catch unreachable,
+            .cursor = Color.fromHex("c0caf5") catch unreachable,
+            .selection = Color.fromHex("364a82") catch unreachable,
+            .line_number = Color.fromHex("3b4261") catch unreachable,
+            .status_bar_bg = Color.fromHex("1f2335") catch unreachable,
+            .status_bar_fg = Color.fromHex("7aa2f7") catch unreachable,
+        };
+    }
+
+    /// Nord - Arctic, north-bluish color palette
+    fn nord() Theme {
+        return .{
+            .keyword = Color.fromHex("81a1c1") catch unreachable, // nord9 - blue
+            .string_literal = Color.fromHex("a3be8c") catch unreachable, // nord14 - green
+            .number_literal = Color.fromHex("b48ead") catch unreachable, // nord15 - purple
+            .comment = Color.fromHex("616e88") catch unreachable, // nord3 - bright comment
+            .function_name = Color.fromHex("88c0d0") catch unreachable, // nord8 - cyan
+            .type_name = Color.fromHex("8fbcbb") catch unreachable, // nord7 - frost cyan
+            .variable = Color.fromHex("d8dee9") catch unreachable, // nord4 - snow
+            .operator = Color.fromHex("81a1c1") catch unreachable, // nord9
+            .punctuation = Color.fromHex("81a1c1") catch unreachable,
+            .error_bg = Color.fromHex("bf616a") catch unreachable, // nord11 - red
+            .error_fg = Color.fromHex("eceff4") catch unreachable,
+            .background = Color.fromHex("2e3440") catch unreachable, // nord0 - polar night
+            .foreground = Color.fromHex("d8dee9") catch unreachable, // nord4
+            .cursor = Color.fromHex("d8dee9") catch unreachable,
+            .selection = Color.fromHex("434c5e") catch unreachable, // nord1
+            .line_number = Color.fromHex("4c566a") catch unreachable, // nord3
+            .status_bar_bg = Color.fromHex("3b4252") catch unreachable, // nord1
+            .status_bar_fg = Color.fromHex("88c0d0") catch unreachable, // nord8
+        };
+    }
+
+    /// Gruvbox Dark - Retro groove warm color scheme
+    fn gruvboxDark() Theme {
+        return .{
+            .keyword = Color.fromHex("fe8019") catch unreachable, // orange
+            .string_literal = Color.fromHex("b8bb26") catch unreachable, // green
+            .number_literal = Color.fromHex("d3869b") catch unreachable, // purple
+            .comment = Color.fromHex("928374") catch unreachable, // gray
+            .function_name = Color.fromHex("fabd2f") catch unreachable, // yellow
+            .type_name = Color.fromHex("83a598") catch unreachable, // blue
+            .variable = Color.fromHex("ebdbb2") catch unreachable, // fg
+            .operator = Color.fromHex("fe8019") catch unreachable,
+            .punctuation = Color.fromHex("a89984") catch unreachable,
+            .error_bg = Color.fromHex("cc241d") catch unreachable, // red
+            .error_fg = Color.fromHex("fbf1c7") catch unreachable,
+            .background = Color.fromHex("282828") catch unreachable, // bg
+            .foreground = Color.fromHex("ebdbb2") catch unreachable, // fg
+            .cursor = Color.fromHex("fbf1c7") catch unreachable,
+            .selection = Color.fromHex("504945") catch unreachable,
+            .line_number = Color.fromHex("7c6f64") catch unreachable,
+            .status_bar_bg = Color.fromHex("3c3836") catch unreachable,
+            .status_bar_fg = Color.fromHex("fabd2f") catch unreachable,
+        };
+    }
+
+    /// Gruvbox Light - Retro groove bright color scheme
+    fn gruvboxLight() Theme {
+        return .{
+            .keyword = Color.fromHex("af3a03") catch unreachable,
+            .string_literal = Color.fromHex("79740e") catch unreachable,
+            .number_literal = Color.fromHex("8f3f71") catch unreachable,
+            .comment = Color.fromHex("928374") catch unreachable,
+            .function_name = Color.fromHex("b57614") catch unreachable,
+            .type_name = Color.fromHex("076678") catch unreachable,
+            .variable = Color.fromHex("3c3836") catch unreachable,
+            .operator = Color.fromHex("af3a03") catch unreachable,
+            .punctuation = Color.fromHex("665c54") catch unreachable,
+            .error_bg = Color.fromHex("cc241d") catch unreachable,
+            .error_fg = Color.fromHex("f9f5d7") catch unreachable,
+            .background = Color.fromHex("f9f5d7") catch unreachable,
+            .foreground = Color.fromHex("3c3836") catch unreachable,
+            .cursor = Color.fromHex("282828") catch unreachable,
+            .selection = Color.fromHex("d5c4a1") catch unreachable,
+            .line_number = Color.fromHex("bdae93") catch unreachable,
+            .status_bar_bg = Color.fromHex("ebdbb2") catch unreachable,
+            .status_bar_fg = Color.fromHex("b57614") catch unreachable,
+        };
+    }
+
+    /// Catppuccin Mocha - Soothing pastel dark theme
+    fn catppuccinMocha() Theme {
+        return .{
+            .keyword = Color.fromHex("cba6f7") catch unreachable, // mauve
+            .string_literal = Color.fromHex("a6e3a1") catch unreachable, // green
+            .number_literal = Color.fromHex("fab387") catch unreachable, // peach
+            .comment = Color.fromHex("6c7086") catch unreachable, // overlay0
+            .function_name = Color.fromHex("89b4fa") catch unreachable, // blue
+            .type_name = Color.fromHex("f5e0dc") catch unreachable, // rosewater
+            .variable = Color.fromHex("cdd6f4") catch unreachable, // text
+            .operator = Color.fromHex("94e2d5") catch unreachable, // teal
+            .punctuation = Color.fromHex("bac2de") catch unreachable, // subtext1
+            .error_bg = Color.fromHex("f38ba8") catch unreachable, // red
+            .error_fg = Color.fromHex("1e1e2e") catch unreachable,
+            .background = Color.fromHex("1e1e2e") catch unreachable, // base
+            .foreground = Color.fromHex("cdd6f4") catch unreachable, // text
+            .cursor = Color.fromHex("f5e0dc") catch unreachable,
+            .selection = Color.fromHex("585b70") catch unreachable, // surface2
+            .line_number = Color.fromHex("45475a") catch unreachable, // surface1
+            .status_bar_bg = Color.fromHex("181825") catch unreachable, // mantle
+            .status_bar_fg = Color.fromHex("89b4fa") catch unreachable,
+        };
+    }
+
+    /// Catppuccin Latte - Soothing pastel light theme
+    fn catppuccinLatte() Theme {
+        return .{
+            .keyword = Color.fromHex("8839ef") catch unreachable, // mauve
+            .string_literal = Color.fromHex("40a02b") catch unreachable, // green
+            .number_literal = Color.fromHex("fe640b") catch unreachable, // peach
+            .comment = Color.fromHex("9ca0b0") catch unreachable, // overlay0
+            .function_name = Color.fromHex("1e66f5") catch unreachable, // blue
+            .type_name = Color.fromHex("dc8a78") catch unreachable, // rosewater
+            .variable = Color.fromHex("4c4f69") catch unreachable, // text
+            .operator = Color.fromHex("179299") catch unreachable, // teal
+            .punctuation = Color.fromHex("5c5f77") catch unreachable, // subtext1
+            .error_bg = Color.fromHex("d20f39") catch unreachable, // red
+            .error_fg = Color.fromHex("eff1f5") catch unreachable,
+            .background = Color.fromHex("eff1f5") catch unreachable, // base
+            .foreground = Color.fromHex("4c4f69") catch unreachable, // text
+            .cursor = Color.fromHex("dc8a78") catch unreachable,
+            .selection = Color.fromHex("ccd0da") catch unreachable, // surface2
+            .line_number = Color.fromHex("bcc0cc") catch unreachable, // surface1
+            .status_bar_bg = Color.fromHex("e6e9ef") catch unreachable, // mantle
+            .status_bar_fg = Color.fromHex("1e66f5") catch unreachable,
+        };
+    }
+
+    /// Dracula - Dark theme with vibrant colors
+    fn dracula() Theme {
+        return .{
+            .keyword = Color.fromHex("ff79c6") catch unreachable, // pink
+            .string_literal = Color.fromHex("f1fa8c") catch unreachable, // yellow
+            .number_literal = Color.fromHex("bd93f9") catch unreachable, // purple
+            .comment = Color.fromHex("6272a4") catch unreachable, // comment
+            .function_name = Color.fromHex("50fa7b") catch unreachable, // green
+            .type_name = Color.fromHex("8be9fd") catch unreachable, // cyan
+            .variable = Color.fromHex("f8f8f2") catch unreachable, // foreground
+            .operator = Color.fromHex("ff79c6") catch unreachable,
+            .punctuation = Color.fromHex("f8f8f2") catch unreachable,
+            .error_bg = Color.fromHex("ff5555") catch unreachable, // red
+            .error_fg = Color.fromHex("f8f8f2") catch unreachable,
+            .background = Color.fromHex("282a36") catch unreachable, // background
+            .foreground = Color.fromHex("f8f8f2") catch unreachable,
+            .cursor = Color.fromHex("f8f8f2") catch unreachable,
+            .selection = Color.fromHex("44475a") catch unreachable, // selection
+            .line_number = Color.fromHex("6272a4") catch unreachable,
+            .status_bar_bg = Color.fromHex("21222c") catch unreachable,
+            .status_bar_fg = Color.fromHex("bd93f9") catch unreachable,
+        };
+    }
+
+    /// One Dark - Atom's iconic dark theme
+    fn oneDark() Theme {
+        return .{
+            .keyword = Color.fromHex("c678dd") catch unreachable, // purple
+            .string_literal = Color.fromHex("98c379") catch unreachable, // green
+            .number_literal = Color.fromHex("d19a66") catch unreachable, // orange
+            .comment = Color.fromHex("5c6370") catch unreachable, // comment gray
+            .function_name = Color.fromHex("61afef") catch unreachable, // blue
+            .type_name = Color.fromHex("e5c07b") catch unreachable, // yellow
+            .variable = Color.fromHex("abb2bf") catch unreachable, // foreground
+            .operator = Color.fromHex("56b6c2") catch unreachable, // cyan
+            .punctuation = Color.fromHex("abb2bf") catch unreachable,
+            .error_bg = Color.fromHex("e06c75") catch unreachable, // red
+            .error_fg = Color.fromHex("abb2bf") catch unreachable,
+            .background = Color.fromHex("282c34") catch unreachable,
+            .foreground = Color.fromHex("abb2bf") catch unreachable,
+            .cursor = Color.fromHex("528bff") catch unreachable,
+            .selection = Color.fromHex("3e4451") catch unreachable,
+            .line_number = Color.fromHex("4b5263") catch unreachable,
+            .status_bar_bg = Color.fromHex("21252b") catch unreachable,
+            .status_bar_fg = Color.fromHex("61afef") catch unreachable,
+        };
+    }
+
+    /// Solarized Dark - Precision colors for professionals
+    fn solarizedDark() Theme {
+        return .{
+            .keyword = Color.fromHex("268bd2") catch unreachable, // blue
+            .string_literal = Color.fromHex("859900") catch unreachable, // green
+            .number_literal = Color.fromHex("2aa198") catch unreachable, // cyan
+            .comment = Color.fromHex("586e75") catch unreachable, // base01
+            .function_name = Color.fromHex("b58900") catch unreachable, // yellow
+            .type_name = Color.fromHex("cb4b16") catch unreachable, // orange
+            .variable = Color.fromHex("839496") catch unreachable, // base0
+            .operator = Color.fromHex("93a1a1") catch unreachable,
+            .punctuation = Color.fromHex("93a1a1") catch unreachable,
+            .error_bg = Color.fromHex("dc322f") catch unreachable, // red
+            .error_fg = Color.fromHex("fdf6e3") catch unreachable,
+            .background = Color.fromHex("002b36") catch unreachable, // base03
+            .foreground = Color.fromHex("839496") catch unreachable, // base0
+            .cursor = Color.fromHex("93a1a1") catch unreachable,
+            .selection = Color.fromHex("073642") catch unreachable, // base02
+            .line_number = Color.fromHex("586e75") catch unreachable,
+            .status_bar_bg = Color.fromHex("073642") catch unreachable,
+            .status_bar_fg = Color.fromHex("268bd2") catch unreachable,
+        };
+    }
+
+    /// Solarized Light - Precision colors for bright environments
+    fn solarizedLight() Theme {
+        return .{
+            .keyword = Color.fromHex("268bd2") catch unreachable,
+            .string_literal = Color.fromHex("859900") catch unreachable,
+            .number_literal = Color.fromHex("2aa198") catch unreachable,
+            .comment = Color.fromHex("93a1a1") catch unreachable, // base1
+            .function_name = Color.fromHex("b58900") catch unreachable,
+            .type_name = Color.fromHex("cb4b16") catch unreachable,
+            .variable = Color.fromHex("657b83") catch unreachable, // base00
+            .operator = Color.fromHex("586e75") catch unreachable,
+            .punctuation = Color.fromHex("586e75") catch unreachable,
+            .error_bg = Color.fromHex("dc322f") catch unreachable,
+            .error_fg = Color.fromHex("002b36") catch unreachable,
+            .background = Color.fromHex("fdf6e3") catch unreachable, // base3
+            .foreground = Color.fromHex("657b83") catch unreachable,
+            .cursor = Color.fromHex("586e75") catch unreachable,
+            .selection = Color.fromHex("eee8d5") catch unreachable, // base2
+            .line_number = Color.fromHex("93a1a1") catch unreachable,
+            .status_bar_bg = Color.fromHex("eee8d5") catch unreachable,
+            .status_bar_fg = Color.fromHex("268bd2") catch unreachable,
         };
     }
 
